@@ -1,1 +1,29 @@
-pytest==8.4.2
+# LLM & Agent Framework
+langchain>=0.3.0
+langchain-openai>=0.3.0
+langchain-community>=0.3.0
+langchain-chroma>=0.2.0
+langchain-huggingface>=0.1.0
+langgraph>=0.2.0
+
+# Vector Database
+chromadb>=0.5.0
+
+# Long-term Memory
+mem0ai>=0.1.0
+
+# RAG - BM25
+rank-bm25>=0.2.2
+
+# Document Parsing
+pypdf>=4.0.0
+python-docx>=1.0.0
+
+# Token Counting
+tiktoken>=0.7.0
+
+# MCP (预留)
+# langchain-mcp-adapters>=0.1.0
+
+# Testing
+pytest>=8.4.0

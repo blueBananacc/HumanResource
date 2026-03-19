@@ -1,0 +1,42 @@
+[
+  {
+    "query": "年假政策是什么",
+    "expected_intent": "policy_qa",
+    "expected_confidence_min": 0.8
+  },
+  {
+    "query": "查询张三的部门",
+    "expected_intent": "employee_lookup",
+    "expected_confidence_min": 0.8
+  },
+  {
+    "query": "请假流程是什么",
+    "expected_intent": "process_inquiry",
+    "expected_confidence_min": 0.7
+  },
+  {
+    "query": "帮我查一下员工手册",
+    "expected_intent": "document_search",
+    "expected_confidence_min": 0.7
+  },
+  {
+    "query": "查一下我的假期余额",
+    "expected_intent": "tool_action",
+    "expected_confidence_min": 0.7
+  },
+  {
+    "query": "我们之前聊过什么",
+    "expected_intent": "memory_recall",
+    "expected_confidence_min": 0.7
+  },
+  {
+    "query": "你好",
+    "expected_intent": "chitchat",
+    "expected_confidence_min": 0.8
+  },
+  {
+    "query": "今天天气怎么样",
+    "expected_intent": "unknown",
+    "expected_confidence_min": 0.5
+  }
+]

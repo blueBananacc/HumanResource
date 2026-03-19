@@ -4,5 +4,9 @@ __pycache__/
 .venv/
 .vscode/
 .DS_Store
-.gitignore
-tests/
+
+# 运行时数据（保留 .gitkeep）
+data/documents/*
+data/chroma_db/*
+data/sessions/*
+!data/**/.gitkeep
