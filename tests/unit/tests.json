@@ -1,0 +1,46 @@
+[
+  {
+    "module": "intent.classifier",
+    "test_file": "tests/unit/test_orchestrator.py",
+    "test_class": "TestIntentClassifierParsing",
+    "tests": [
+      {"name": "test_parse_single_intent", "status": "passed"},
+      {"name": "test_parse_multi_intent", "status": "passed"},
+      {"name": "test_parse_markdown_wrapped_json", "status": "passed"},
+      {"name": "test_parse_unknown_label_fallback", "status": "passed"},
+      {"name": "test_parse_empty_intents_fallback", "status": "passed"}
+    ]
+  },
+  {
+    "module": "agents.orchestrator",
+    "test_file": "tests/unit/test_orchestrator.py",
+    "tests": [
+      {"class": "TestLoadContextNode", "name": "test_returns_default_context", "status": "passed"},
+      {"class": "TestClassifyIntentNode", "name": "test_classifies_message", "status": "passed"},
+      {"class": "TestClassifyIntentNode", "name": "test_empty_messages_returns_unknown", "status": "passed"},
+      {"class": "TestRouteAgentsNode", "name": "test_routes_employee_lookup", "status": "passed"},
+      {"class": "TestRouteAgentsNode", "name": "test_routes_policy_qa", "status": "passed"},
+      {"class": "TestRouteAgentsNode", "name": "test_routes_chitchat_to_orchestrator", "status": "passed"},
+      {"class": "TestRouteAgentsNode", "name": "test_routes_process_inquiry_serial", "status": "passed"},
+      {"class": "TestRouteAgentsNode", "name": "test_none_intent_fallback", "status": "passed"},
+      {"class": "TestRagNode", "name": "test_returns_empty_results", "status": "passed"},
+      {"class": "TestToolNode", "name": "test_no_tools_required", "status": "passed"},
+      {"class": "TestToolNode", "name": "test_executes_lookup_employee", "status": "passed"},
+      {"class": "TestBuildToolParams", "name": "test_lookup_employee_params", "status": "passed"},
+      {"class": "TestBuildToolParams", "name": "test_get_leave_balance_params", "status": "passed"},
+      {"class": "TestBuildToolParams", "name": "test_unknown_tool_returns_empty", "status": "passed"},
+      {"class": "TestGenerateResponseNode", "name": "test_generates_response", "status": "passed"},
+      {"class": "TestGenerateResponseNode", "name": "test_tool_results_in_prompt", "status": "passed"},
+      {"class": "TestPostProcessNode", "name": "test_saves_session", "status": "passed"}
+    ]
+  },
+  {
+    "module": "agents.graph",
+    "test_file": "tests/unit/test_orchestrator.py",
+    "test_class": "TestGraphCompilation",
+    "tests": [
+      {"name": "test_graph_compiles", "status": "passed"},
+      {"name": "test_graph_full_execution", "status": "passed"}
+    ]
+  }
+]

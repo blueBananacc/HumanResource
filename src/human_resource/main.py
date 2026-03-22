@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 
+from langchain_core.messages import HumanMessage
+
 from human_resource.config import DATA_DIR
+
+logger = logging.getLogger(__name__)
 
 
 def _ensure_data_dirs() -> None:
@@ -15,9 +20,20 @@ def _ensure_data_dirs() -> None:
 
 def run() -> None:
     """CLI 交互循环入口。"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+
     _ensure_data_dirs()
 
+    # 编译 LangGraph
+    from human_resource.agents.graph import compile_graph
+
+    app = compile_graph()
+
     session_id = uuid.uuid4().hex[:8]
+    user_id = "default_user"
     print("=" * 50)
     print("  HR 智能助手 (输入 exit 退出)")
     print(f"  Session: {session_id}")
@@ -27,6 +43,7 @@ def run() -> None:
         try:
             user_input = input("\n你: ").strip()
         except (EOFError, KeyboardInterrupt):
+            print("\n再见！")
             break
 
         if not user_input:
@@ -35,8 +52,23 @@ def run() -> None:
             print("再见！")
             break
 
-        # TODO: 接入 Orchestrator Agent 处理用户输入
-        print(f"助手: [系统搭建中] 收到: {user_input}")
+        # 通过 LangGraph 图处理用户输入
+        try:
+            result = app.invoke({
+                "messages": [HumanMessage(content=user_input)],
+                "session_id": session_id,
+                "user_id": user_id,
+            })
+
+            response = result.get("final_response", "")
+            if response:
+                print(f"\n助手: {response}")
+            else:
+                print("\n助手: 抱歉，我暂时无法回答这个问题。")
+
+        except Exception:
+            logger.exception("处理请求时发生错误")
+            print("\n助手: 抱歉，系统处理出错，请稍后再试。")
 
 
 if __name__ == "__main__":

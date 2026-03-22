@@ -21,7 +21,7 @@ Human Resources Support Agent — Implementation Outline
 | 向量数据库   | ChromaDB（本地）                  | 零配置、Python 原生，用于 RAG 文档检索                               |
 | Session 存储 | 本地内存 + JSON 文件              | 进程内 dict + JSON 持久化                                            |
 | 长期记忆     | mem0 Cloud                        | 托管服务，内置 embedding/向量存储/去重/重要性评估                   |
-| Prompt 框架  | CRISPE                            | Capacity-Role / Insight / Statement / Personality / Experiment        |
+| agent的Prompt 框架  | CRISPE                            | Capacity-Role / Insight / Statement / Personality / Experiment        |
 | MCP          | MCP Client（后续接入）            | 预留 MCP Client 架构，MCP Server 后续提供或构建                      |
 
 ## 1.2 Required Credentials
@@ -188,7 +188,7 @@ AgentState {
 |------|------|
 | Intent Classifier | LLM-based 分类，输出 intent label + confidence + entities |
 | Intent Router | 根据分类结果映射到目标 Agent 和执行计划 |
-**意图分类体系（MVP**）：
+**意图分类体系（MVP）**：
 | Intent Label | 描述 | 路由目标 |
 |-------------|------|----------|
 | policy_qa | HR 政策问答 | RAG Agent |
@@ -597,19 +597,7 @@ Session {
 
 **技术实现**：Orchestrator 即 LangGraph StateGraph 的编译图（compiled graph），上述职责对应图中的不同 Node 和 Edge。
 
-## 4.2 Agent 通信机制
-- **消息格式**：统一的 AgentMessage 结构
-AgentMessage {
-  sender: str          // "orchestrator" | "rag_agent" | "tool_agent" | "memory_agent"
-  receiver: str
-  message_type: str    // "request" | "response" | "error"
-  payload: dict        // 任务参数或结果数据
-  metadata: dict       // trace_id, timestamp, etc.
-}
-- **通信方式**：MVP 采用 同步函数调用（直接方法调用），不需要消息队列
-- **LangGraph 实现**：Agent 间通信通过 LangGraph State 传递——每个 Node 接收 State、执行任务、返回 State 更新。AgentMessage 概念映射为 State 中的字段更新。
-
-## 4.3 Agent Routing 规则
+## 4.2 Agent Routing 规则
 | 意图 | 主 Agent | 辅助 Agent | 执行模式 |
 |------|----------|------------|----------|
 | policy_qa | RAG Agent | Memory Agent（提供历史上下文） | 串行 |
@@ -624,7 +612,7 @@ AgentMessage {
 
 **技术实现**：路由规则通过 LangGraph conditional_edges 实现，Router Node 根据 state.intent.label 返回目标 Node 名称。
 
-## 4.4 错误处理与降级
+## 4.3 错误处理与降级
 - 任何 specialist agent 失败 → Orchestrator 捕获异常 → 生成降级响应（告知用户该功能暂不可用）
 - LLM 调用失败 → 重试 1 次 → 仍失败则返回预设错误消息
 - 全局 trace_id 贯穿调用链，便于日志追踪
@@ -699,7 +687,7 @@ src/human_resource/
 ├── schemas/                         # 共享数据模型
 │   ├── __init__.py
 │   ├── models.py                    # AgentMessage, IntentResult, ToolResult 等
-│   └── state.py                     # LangGraph State 定义 (TypedDict / Pydantic)
+│   └── state.py                     # LangGraph State 定义 (TypedDict)
 │
 └── utils/                           # 工具层
     ├── __init__.py

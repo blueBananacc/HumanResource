@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 .vscode/
+.env
 .DS_Store
 
 # 运行时数据（保留 .gitkeep）
