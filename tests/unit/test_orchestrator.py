@@ -246,10 +246,12 @@ class TestGenerateResponseNode:
 
 class TestPostProcessNode:
     def test_saves_session(self, tmp_path):
-        with patch("human_resource.agents.orchestrator._get_session_memory") as mock_sm:
+        with patch("human_resource.agents.orchestrator._get_session_memory") as mock_sm, \
+             patch("human_resource.agents.orchestrator._get_compressor") as mock_comp:
             from human_resource.memory.session import SessionMemory
             sm = SessionMemory(persist_dir=tmp_path)
             mock_sm.return_value = sm
+            mock_comp.return_value = MagicMock()
 
             state = {
                 "session_id": "test_session",

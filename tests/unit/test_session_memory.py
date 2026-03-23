@@ -319,7 +319,7 @@ class TestPersistence:
 class TestLoadContextWithStoredSummary:
     @patch("human_resource.agents.orchestrator._get_session_memory")
     def test_uses_stored_summary(self, mock_sm):
-        """有存储摘要时应优先使用，不调用 compressor。"""
+        """有存储摘要时，摘要 + 消息一起返回。"""
         from human_resource.agents.orchestrator import load_context_node
 
         sm = MagicMock()
@@ -338,10 +338,9 @@ class TestLoadContextWithStoredSummary:
         assert "user: 最近的问题" in snippets
         assert "assistant: 最近的回答" in snippets
 
-    @patch("human_resource.agents.orchestrator._get_compressor")
     @patch("human_resource.agents.orchestrator._get_session_memory")
-    def test_no_summary_many_turns_falls_back_to_compression(self, mock_sm, mock_comp):
-        """无存储摘要且 >5 轮时 fallback 到实时压缩。"""
+    def test_no_summary_returns_all_messages(self, mock_sm):
+        """无存储摘要时直接返回所有消息（压缩由 post_process 负责）。"""
         from human_resource.agents.orchestrator import load_context_node
 
         sm = MagicMock()
@@ -353,18 +352,12 @@ class TestLoadContextWithStoredSummary:
         sm.get_summary.return_value = ""
         mock_sm.return_value = sm
 
-        compressor = MagicMock()
-        compressor.compress_history.return_value = ("压缩摘要", [
-            {"role": "user", "content": "q6"},
-            {"role": "assistant", "content": "a6"},
-        ])
-        mock_comp.return_value = compressor
-
         state = {"session_id": "test"}
         result = load_context_node(state)
 
-        compressor.compress_history.assert_called_once()
-        assert any("[历史摘要]" in s for s in result["memory_context"])
+        # 无摘要，直接获取全部 14 条消息
+        assert len(result["memory_context"]) == 14
+        assert result["memory_context"][0] == "user: q0"
 
 
 # ── post_process_node 元数据与 trim 集成测试 ─────────────────

@@ -54,15 +54,14 @@ class TestExtractUserMessage:
         assert _extract_user_message(messages) == ""
 
 
-# ── load_context_node 压缩测试 ───────────────────────────────
+# ── load_context_node 测试 ───────────────────────────────────
 
 
-class TestLoadContextNodeCompression:
+class TestLoadContextNode:
     @patch("human_resource.agents.orchestrator._get_session_memory")
-    def test_few_turns_no_compression(self, mock_sm):
-        """≤5 轮时直接提取，不触发压缩。"""
+    def test_no_summary_returns_all_messages(self, mock_sm):
+        """无摘要时直接返回所有消息。"""
         sm = MagicMock()
-        # 3 轮 = 6 条消息
         sm.get_history.return_value = [
             SessionMessage(role="user", content="问题1"),
             SessionMessage(role="assistant", content="回答1"),
@@ -82,38 +81,23 @@ class TestLoadContextNodeCompression:
         assert result["reflection_count"] == 0
         assert result["current_agent_index"] == 0
 
-    @patch("human_resource.agents.orchestrator._get_compressor")
     @patch("human_resource.agents.orchestrator._get_session_memory")
-    def test_many_turns_triggers_compression(self, mock_sm, mock_compressor):
-        """>5 轮时无存储摘要时 fallback 到实时压缩。"""
+    def test_with_stored_summary(self, mock_sm):
+        """有存储摘要时，摘要 + 消息一起返回。"""
         sm = MagicMock()
-        # 7 轮 = 14 条消息
-        messages = []
-        for i in range(7):
-            messages.append(SessionMessage(role="user", content=f"问题{i+1}"))
-            messages.append(SessionMessage(role="assistant", content=f"回答{i+1}"))
-        sm.get_history.return_value = messages
-        sm.get_summary.return_value = ""  # 无存储摘要，触发实时压缩
+        sm.get_history.return_value = [
+            SessionMessage(role="user", content="最近问题"),
+            SessionMessage(role="assistant", content="最近回答"),
+        ]
+        sm.get_summary.return_value = "早期对话摘要"
         mock_sm.return_value = sm
-
-        compressor = MagicMock()
-        compressor.compress_history.return_value = (
-            "用户询问了问题1-2，助手给出了回答。",
-            [
-                {"role": "user", "content": "问题6"},
-                {"role": "assistant", "content": "回答6"},
-                {"role": "user", "content": "问题7"},
-                {"role": "assistant", "content": "回答7"},
-            ],
-        )
-        mock_compressor.return_value = compressor
 
         state = {"session_id": "test"}
         result = load_context_node(state)
 
-        # 应有 1 条摘要 + 4 条最近消息 = 5
-        assert any("[历史摘要]" in s for s in result["memory_context"])
-        compressor.compress_history.assert_called_once()
+        assert result["memory_context"][0] == "[历史摘要] 早期对话摘要"
+        assert "user: 最近问题" in result["memory_context"]
+        assert len(result["memory_context"]) == 3  # 1 摘要 + 2 消息
 
     @patch("human_resource.agents.orchestrator._get_session_memory")
     def test_empty_history(self, mock_sm):
@@ -124,22 +108,6 @@ class TestLoadContextNodeCompression:
         state = {"session_id": "test"}
         result = load_context_node(state)
         assert result["memory_context"] == []
-
-    @patch("human_resource.agents.orchestrator._get_session_memory")
-    def test_exactly_five_turns_no_compression(self, mock_sm):
-        """恰好 5 轮，不压缩。"""
-        sm = MagicMock()
-        messages = []
-        for i in range(5):
-            messages.append(SessionMessage(role="user", content=f"问题{i+1}"))
-            messages.append(SessionMessage(role="assistant", content=f"回答{i+1}"))
-        sm.get_history.return_value = messages
-        sm.get_summary.return_value = ""
-        mock_sm.return_value = sm
-
-        state = {"session_id": "test"}
-        result = load_context_node(state)
-        assert len(result["memory_context"]) == 10  # 5 轮 * 2
 
 
 # ── memory_retrieval_node 测试 ───────────────────────────────

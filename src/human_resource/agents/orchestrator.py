@@ -22,7 +22,6 @@ from human_resource.config import (
     MEMORY_SEARCH_TOP_K,
     MEMORY_WRITE_INTERVAL,
     MEMORY_WRITE_KEYWORDS,
-    SESSION_COMPRESS_THRESHOLD,
 )
 from human_resource.context.compressor import ContextCompressor
 from human_resource.context.prompt_builder import PromptBuilder
@@ -167,7 +166,8 @@ def load_context_node(state: AgentState) -> dict[str, Any]:
     """Node: 加载上下文。
 
     从 Session Memory 获取会话历史。
-    优先使用已存储的增量摘要，避免重复 LLM 压缩。
+    压缩由 post_process_node 的 trim_and_summarize 在写时完成，
+    此处只读取存储的摘要 + 当前消息列表。
     """
     session_id = state.get("session_id", "default")
     sm = _get_session_memory()
@@ -181,31 +181,14 @@ def load_context_node(state: AgentState) -> dict[str, Any]:
             "current_agent_index": 0,
         }
 
-    # 优先使用已存储的摘要（write-time trimming 的产物）
+    # 读取 write-time trimming 产生的增量摘要
     stored_summary = sm.get_summary(session_id)
     if stored_summary:
         memory_snippets.append(f"[历史摘要] {stored_summary}")
-        for msg in history:
-            memory_snippets.append(f"{msg.role}: {msg.content}")
-    else:
-        turn_count = len(history) // 2
-        if turn_count <= SESSION_COMPRESS_THRESHOLD:
-            for msg in history:
-                memory_snippets.append(f"{msg.role}: {msg.content}")
-        else:
-            # 无存储摘要时 fallback 到实时压缩
-            messages_as_dicts = [
-                {"role": m.role, "content": m.content} for m in history
-            ]
-            compressor = _get_compressor()
-            summary, recent = compressor.compress_history(
-                messages_as_dicts,
-                keep_recent=SESSION_COMPRESS_THRESHOLD,
-            )
-            if summary:
-                memory_snippets.append(f"[历史摘要] {summary}")
-            for msg in recent:
-                memory_snippets.append(f"{msg['role']}: {msg['content']}")
+
+    # 当前保留的消息（已被 trim 过，数量不会无限增长）
+    for msg in history:
+        memory_snippets.append(f"{msg.role}: {msg.content}")
 
     logger.info(
         "加载上下文: session=%s, 消息数=%d, 片段数=%d",
