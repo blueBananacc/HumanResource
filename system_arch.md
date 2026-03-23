@@ -490,8 +490,8 @@ Session {
   - 读取时返回最近 K 轮原文 + 更早部分的摘要
 
 - **Memory Trimming**：
-  - 触发条件：消息列表 token 数超过 session_memory_budget
-  - 策略：保留最近 N 轮原文（如 10 轮），更早的消息移入 pending_summarize 队列
+  - 触发条件：对话轮数超过 5 轮或消息列表 token 数超过 session_memory_budget
+  - 策略：保留最近 N 轮原文（如 2 轮），更早的消息移入 pending_summarize 队列
 
 - **Memory Summarization**：
   - 将 pending_summarize 的消息用 LLM 生成增量摘要
@@ -547,10 +547,6 @@ Session {
   - 每次会话结束生成一条 episodic memory
   - 包含：session_summary, key_topics, key_decisions, timestamp
   - 向量化存储，支持"之前我们讨论过什么"类查询
-
-- **Vector Memory**：
-  - 使用与 RAG 相同的向量数据库（ChromaDB），但使用独立 collection（memory_collection）
-  - 存储嵌入向量 + 原文 + metadata（type, user_id, timestamp, importance）
 
 **技术选型映射** — mem0 Cloud：
 - 后端引擎：使用 mem0 Cloud 作为长期记忆的统一后端，mem0 内部自动处理：

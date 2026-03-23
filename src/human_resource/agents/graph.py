@@ -4,8 +4,8 @@
 Orchestrator 即此图的 compiled graph。
 
 图结构：
-  START → load_context → classify_intent → route_agents
-    → dispatch（条件路由）→ [rag_node / tool_node / memory_node / chitchat_response]
+  START → load_context → memory_retrieval → classify_intent → route_agents
+    → dispatch（条件路由）→ [rag_node / tool_node / memory_node]
     → check_next_agent（检查是否还有后续 Agent）→ dispatch / generate_response
     → generate_response → post_process → END
 """
@@ -22,6 +22,7 @@ from human_resource.agents.orchestrator import (
     generate_response_node,
     load_context_node,
     memory_node,
+    memory_retrieval_node,
     post_process_node,
     rag_node,
     register_default_tools,
@@ -82,6 +83,7 @@ def build_graph() -> StateGraph:
 
     # ── 添加 Nodes ──
     graph.add_node("load_context", load_context_node)
+    graph.add_node("memory_retrieval", memory_retrieval_node)
     graph.add_node("classify_intent", classify_intent_node)
     graph.add_node("route_agents", route_agents_node)
     graph.add_node("rag_node", rag_node)
@@ -92,9 +94,10 @@ def build_graph() -> StateGraph:
     graph.add_node("post_process", post_process_node)
 
     # ── 添加 Edges ──
-    # 入口 → 加载上下文 → 意图识别 → 路由决策
+    # 入口 → 加载上下文 → 长期记忆检索 → 意图识别 → 路由决策
     graph.add_edge(START, "load_context")
-    graph.add_edge("load_context", "classify_intent")
+    graph.add_edge("load_context", "memory_retrieval")
+    graph.add_edge("memory_retrieval", "classify_intent")
     graph.add_edge("classify_intent", "route_agents")
 
     # 路由决策 → 条件分发到具体 Agent

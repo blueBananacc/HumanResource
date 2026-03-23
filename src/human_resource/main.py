@@ -18,6 +18,16 @@ def _ensure_data_dirs() -> None:
         (DATA_DIR / sub).mkdir(parents=True, exist_ok=True)
 
 
+def _on_exit(session_id: str, user_id: str) -> None:
+    """会话结束时执行清理和 episodic 记忆写入。"""
+    try:
+        from human_resource.agents.orchestrator import finalize_session
+
+        finalize_session(session_id, user_id)
+    except Exception:
+        logger.exception("会话结束处理失败")
+
+
 def run() -> None:
     """CLI 交互循环入口。"""
     logging.basicConfig(
@@ -44,12 +54,14 @@ def run() -> None:
             user_input = input("\n你: ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\n再见！")
+            _on_exit(session_id, user_id)
             break
 
         if not user_input:
             continue
         if user_input.lower() in ("exit", "quit", "q"):
             print("再见！")
+            _on_exit(session_id, user_id)
             break
 
         # 通过 LangGraph 图处理用户输入

@@ -66,6 +66,10 @@ class ContextCompressor:
         summary = self._summarize(early_text)
         return summary, recent_messages
 
+    def summarize_text(self, text: str) -> str:
+        """公开的摘要接口，供外部模块调用。"""
+        return self._summarize(text)
+
     def _summarize(self, text: str) -> str:
         """使用 LLM 生成摘要。"""
         try:

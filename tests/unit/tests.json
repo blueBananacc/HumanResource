@@ -42,5 +42,32 @@
       {"name": "test_graph_compiles", "status": "passed"},
       {"name": "test_graph_full_execution", "status": "passed"}
     ]
+  },
+  {
+    "module": "memory.longterm",
+    "test_file": "tests/unit/test_memory_longterm.py",
+    "tests": [
+      {"class": "TestExtractUserMessage", "name": "test_extract_last_human_message", "status": "passed"},
+      {"class": "TestExtractUserMessage", "name": "test_empty_messages", "status": "passed"},
+      {"class": "TestExtractUserMessage", "name": "test_no_human_message", "status": "passed"},
+      {"class": "TestLoadContextNodeCompression", "name": "test_few_turns_no_compression", "status": "passed"},
+      {"class": "TestLoadContextNodeCompression", "name": "test_many_turns_triggers_compression", "status": "passed"},
+      {"class": "TestLoadContextNodeCompression", "name": "test_empty_history", "status": "passed"},
+      {"class": "TestLoadContextNodeCompression", "name": "test_exactly_five_turns_no_compression", "status": "passed"},
+      {"class": "TestMemoryRetrievalNode", "name": "test_retrieves_memories", "status": "passed"},
+      {"class": "TestMemoryRetrievalNode", "name": "test_no_results", "status": "passed"},
+      {"class": "TestMemoryRetrievalNode", "name": "test_empty_messages", "status": "passed"},
+      {"class": "TestMemoryRetrievalNode", "name": "test_mem0_failure_graceful", "status": "passed"},
+      {"class": "TestMemoryRetrievalNode", "name": "test_empty_memory_text_filtered", "status": "passed"},
+      {"class": "TestMemoryNode", "name": "test_retrieves_and_deduplicates", "status": "passed"},
+      {"class": "TestPostProcessNodeFixed", "name": "test_extracts_last_user_msg", "status": "passed"},
+      {"class": "TestPostProcessNodeFixed", "name": "test_triggers_longterm_write", "status": "passed"},
+      {"class": "TestPostProcessNodeFixed", "name": "test_no_write_when_empty", "status": "passed"},
+      {"class": "TestWriteLongtermMemory", "name": "test_writes_conversation_to_mem0", "status": "passed"},
+      {"class": "TestWriteLongtermMemory", "name": "test_write_failure_does_not_raise", "status": "passed"},
+      {"class": "TestGraphWithMemoryRetrieval", "name": "test_graph_includes_memory_retrieval_node", "status": "passed"},
+      {"class": "TestGraphWithMemoryRetrieval", "name": "test_graph_flow_order", "status": "passed"},
+      {"class": "TestGraphWithMemoryRetrieval", "name": "test_full_graph_with_mem0", "status": "passed"}
+    ]
   }
 ]

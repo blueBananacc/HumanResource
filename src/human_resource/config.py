@@ -72,6 +72,16 @@ TOKEN_BUDGET: dict[str, int] = {
 # ── Session Memory 配置 ──────────────────────────────────
 SESSION_MEMORY_BUDGET_TOKENS = 4000
 SESSION_KEEP_RECENT_TURNS = 10
+SESSION_COMPRESS_THRESHOLD = 5  # 超过此轮次数触发历史压缩
+
+# ── Long-term Memory 配置 ─────────────────────────────────
+MEMORY_SEARCH_TOP_K = 5  # mem0 检索返回结果数量
+MEMORY_WRITE_INTERVAL = 3  # 固定轮次触发写入间隔
+MEMORY_IMPORTANCE_THRESHOLD = 0.5  # 记忆重要性阈值，仅 > 此值才写入
+MEMORY_WRITE_KEYWORDS: list[str] = [
+    "记住这个", "记住", "请记住", "帮我记一下", "记下来",
+    "remember this", "remember", "请记下",
+]  # 用户显式触发长期记忆写入的关键词
 
 # ── Intent 配置 ──────────────────────────────────────────
 INTENT_CONFIDENCE_THRESHOLD = 0.7

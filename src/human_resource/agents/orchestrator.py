@@ -4,8 +4,9 @@
 函数签名：接收 AgentState，返回需要更新的 state 字段字典。
 
 Node 执行流程：
-  load_context → classify_intent → route_agents → dispatch_agent
-  → (rag_node / tool_node / memory_node) → generate_response → post_process
+  load_context → memory_retrieval → classify_intent → route_agents
+  → dispatch_agent → (rag_node / tool_node / memory_node)
+  → generate_response → post_process（含长期记忆写入）
 """
 
 from __future__ import annotations
@@ -15,10 +16,20 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from human_resource.config import INTENT_CONFIDENCE_THRESHOLD
+from human_resource.config import (
+    INTENT_CONFIDENCE_THRESHOLD,
+    MEMORY_IMPORTANCE_THRESHOLD,
+    MEMORY_SEARCH_TOP_K,
+    MEMORY_WRITE_INTERVAL,
+    MEMORY_WRITE_KEYWORDS,
+    SESSION_COMPRESS_THRESHOLD,
+)
+from human_resource.context.compressor import ContextCompressor
 from human_resource.context.prompt_builder import PromptBuilder
 from human_resource.intent.classifier import IntentClassifier
 from human_resource.intent.router import resolve_route
+from human_resource.memory.longterm import LongTermMemory
+from human_resource.memory.profile import UserProfileStore
 from human_resource.memory.session import SessionMemory
 from human_resource.schemas.models import (
     IntentItem,
@@ -36,6 +47,8 @@ logger = logging.getLogger(__name__)
 _classifier: IntentClassifier | None = None
 _session_memory: SessionMemory | None = None
 _prompt_builder: PromptBuilder | None = None
+_compressor: ContextCompressor | None = None
+_longterm_memory: LongTermMemory | None = None
 
 
 def _get_classifier() -> IntentClassifier:
@@ -59,22 +72,145 @@ def _get_prompt_builder() -> PromptBuilder:
     return _prompt_builder
 
 
+def _get_compressor() -> ContextCompressor:
+    global _compressor
+    if _compressor is None:
+        _compressor = ContextCompressor()
+    return _compressor
+
+
+def _get_longterm_memory() -> LongTermMemory:
+    global _longterm_memory
+    if _longterm_memory is None:
+        _longterm_memory = LongTermMemory()
+    return _longterm_memory
+
+
+def _extract_user_message(messages: list) -> str:
+    """从消息列表中提取最后一条用户消息文本。"""
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            content = msg.content
+            return content if isinstance(content, str) else str(content)
+    return ""
+
+
+def _is_explicit_memory_command(user_message: str) -> bool:
+    """检查用户消息是否包含显式记忆写入指令。"""
+    lower = user_message.lower().strip()
+    return any(kw in lower for kw in MEMORY_WRITE_KEYWORDS)
+
+
+def _is_turn_interval_trigger(session_id: str) -> bool:
+    """检查当前轮次是否达到固定写入间隔。"""
+    sm = _get_session_memory()
+    history = sm.get_history(session_id)
+    # 加上本轮（当前还未写入 session 时调用）
+    turn_count = (len(history) // 2) + 1
+    return turn_count > 0 and turn_count % MEMORY_WRITE_INTERVAL == 0
+
+
+def _assess_memory_worthiness(user_msg: str, assistant_msg: str) -> bool:
+    """使用 LLM 判断当前对话是否包含值得记忆的信息。"""
+    prompt = (
+        "请判断以下对话是否包含值得长期记忆的信息。\n"
+        "值得记忆的信息包括：用户个人信息（姓名、部门、职位）、"
+        "用户偏好、重要决策、关键事实等。\n"
+        "闲聊、问候、简单确认等不值得记忆。\n\n"
+        f"用户: {user_msg}\n"
+        f"助手: {assistant_msg}\n\n"
+        "请仅回答 'yes' 或 'no'，不要输出其他内容。"
+    )
+    try:
+        llm = get_llm("memory_extraction")
+        response = llm.invoke(prompt)
+        answer = str(response.content).strip().lower()
+        return answer.startswith("yes")
+    except Exception:
+        logger.exception("记忆价值评估失败，默认跳过写入")
+        return False
+
+
+def _should_write_memory(
+    user_msg: str,
+    assistant_msg: str,
+    session_id: str,
+) -> str | None:
+    """三级触发判断，返回触发原因或 None（不写入）。
+
+    优先级：
+    1. 用户显式命令 → "explicit_command"
+    2. 固定轮次触发 → "turn_interval"
+    3. LLM 语义评估 → "llm_assessment"
+    """
+    # 策略 1: 用户显式命令
+    if _is_explicit_memory_command(user_msg):
+        logger.info("长期记忆触发: 用户显式命令")
+        return "explicit_command"
+
+    # 策略 2: 固定轮次间隔
+    if _is_turn_interval_trigger(session_id):
+        logger.info("长期记忆触发: 固定轮次间隔 (每 %d 轮)", MEMORY_WRITE_INTERVAL)
+        return "turn_interval"
+
+    # 策略 3: LLM 语义评估
+    if _assess_memory_worthiness(user_msg, assistant_msg):
+        logger.info("长期记忆触发: LLM 评估对话有记忆价值")
+        return "llm_assessment"
+
+    logger.info("长期记忆: 未触发写入")
+    return None
+
+
 # ── Node 函数 ────────────────────────────────────────────────
 def load_context_node(state: AgentState) -> dict[str, Any]:
     """Node: 加载上下文。
 
-    从 Session Memory 获取会话历史
+    从 Session Memory 获取会话历史。
+    优先使用已存储的增量摘要，避免重复 LLM 压缩。
     """
     session_id = state.get("session_id", "default")
     sm = _get_session_memory()
     history = sm.get_history(session_id)
 
-    # 将 session history 格式化为 memory_context
     memory_snippets: list[str] = []
-    if history:
-        recent = history[-6:]  # 最近 3 轮
-        for msg in recent:
+    if not history:
+        return {
+            "memory_context": memory_snippets,
+            "reflection_count": 0,
+            "current_agent_index": 0,
+        }
+
+    # 优先使用已存储的摘要（write-time trimming 的产物）
+    stored_summary = sm.get_summary(session_id)
+    if stored_summary:
+        memory_snippets.append(f"[历史摘要] {stored_summary}")
+        for msg in history:
             memory_snippets.append(f"{msg.role}: {msg.content}")
+    else:
+        turn_count = len(history) // 2
+        if turn_count <= SESSION_COMPRESS_THRESHOLD:
+            for msg in history:
+                memory_snippets.append(f"{msg.role}: {msg.content}")
+        else:
+            # 无存储摘要时 fallback 到实时压缩
+            messages_as_dicts = [
+                {"role": m.role, "content": m.content} for m in history
+            ]
+            compressor = _get_compressor()
+            summary, recent = compressor.compress_history(
+                messages_as_dicts,
+                keep_recent=SESSION_COMPRESS_THRESHOLD,
+            )
+            if summary:
+                memory_snippets.append(f"[历史摘要] {summary}")
+            for msg in recent:
+                memory_snippets.append(f"{msg['role']}: {msg['content']}")
+
+    logger.info(
+        "加载上下文: session=%s, 消息数=%d, 片段数=%d",
+        session_id, len(history), len(memory_snippets),
+    )
 
     return {
         "memory_context": memory_snippets,
@@ -97,11 +233,7 @@ def classify_intent_node(state: AgentState) -> dict[str, Any]:
         }
 
     # 获取最后一条用户消息
-    user_message = ""
-    for msg in reversed(messages):
-        if isinstance(msg, HumanMessage):
-            user_message = msg.content
-            break
+    user_message = _extract_user_message(messages)
 
     if not user_message:
         return {
@@ -154,11 +286,7 @@ def rag_node(state: AgentState) -> dict[str, Any]:
     MVP 阶段返回空结果占位，待 RAG Pipeline 完整实现后接入。
     """
     messages = state.get("messages", [])
-    user_message = ""
-    for msg in reversed(messages):
-        if isinstance(msg, HumanMessage):
-            user_message = msg.content
-            break
+    user_message = _extract_user_message(messages)
 
     logger.info("RAG Agent 执行查询: %s", user_message[:50])
 
@@ -214,14 +342,78 @@ def _build_tool_params(tool_name: str, entities: dict[str, Any]) -> dict[str, An
     return {}
 
 
+def memory_retrieval_node(state: AgentState) -> dict[str, Any]:
+    """Node: 对话前长期记忆检索。
+
+    在意图识别之前：
+    1. 用用户消息检索 mem0 长期记忆（factual + episodic）
+    2. 加载用户画像（profile 类型记忆）至 state.user_profile
+    """
+    user_id = state.get("user_id", "default_user")
+    messages = state.get("messages", [])
+    memory_ctx: list[str] = list(state.get("memory_context", []))
+
+    # 提取用户消息
+    user_message = _extract_user_message(messages)
+
+    updates: dict[str, Any] = {"memory_context": memory_ctx}
+
+    # ── 加载用户画像 ──
+    try:
+        ltm = _get_longterm_memory()
+        profile_store = UserProfileStore(ltm)
+        profile = profile_store.get_profile(user_id)
+        if profile:
+            updates["user_profile"] = profile
+            logger.info("用户画像已加载: user=%s, fields=%d", user_id, len(profile))
+    except Exception:
+        logger.exception("用户画像加载失败，跳过")
+
+    if not user_message:
+        return updates
+
+    # ── 语义检索相关长期记忆 ──
+    try:
+        ltm = _get_longterm_memory()
+        results = ltm.search(user_message, user_id=user_id, top_k=MEMORY_SEARCH_TOP_K)
+        for item in results:
+            memory_text = item.get("memory", "")
+            if memory_text:
+                memory_ctx.append(f"[长期记忆] {memory_text}")
+        logger.info("长期记忆检索完成: user=%s, 结果数=%d", user_id, len(results))
+    except Exception:
+        logger.exception("长期记忆检索失败，跳过")
+
+    return updates
+
+
 def memory_node(state: AgentState) -> dict[str, Any]:
     """Node: Memory Agent 执行。
 
-    检索长期记忆。MVP 阶段返回已有的 memory_context。
+    当路由决策将 memory_recall 意图分发至此节点时，
+    根据用户 query 从 mem0 检索相关长期记忆。
     """
-    logger.info("Memory Agent 执行检索")
-    # TODO: 接入 mem0 Cloud 检索
-    return {"memory_context": state.get("memory_context", [])}
+    user_id = state.get("user_id", "default_user")
+    messages = state.get("messages", [])
+    memory_ctx: list[str] = list(state.get("memory_context", []))
+
+    user_message = _extract_user_message(messages)
+
+    if not user_message:
+        return {"memory_context": memory_ctx}
+
+    try:
+        ltm = _get_longterm_memory()
+        results = ltm.search(user_message, user_id=user_id, top_k=MEMORY_SEARCH_TOP_K)
+        for item in results:
+            memory_text = item.get("memory", "")
+            if memory_text and f"[长期记忆] {memory_text}" not in memory_ctx:
+                memory_ctx.append(f"[长期记忆] {memory_text}")
+        logger.info("Memory Agent 检索完成: 结果数=%d", len(results))
+    except Exception:
+        logger.exception("Memory Agent 检索失败")
+
+    return {"memory_context": memory_ctx}
 
 
 def generate_response_node(state: AgentState) -> dict[str, Any]:
@@ -234,11 +426,7 @@ def generate_response_node(state: AgentState) -> dict[str, Any]:
     intent = state.get("intent")
 
     # 获取用户消息
-    user_message = ""
-    for msg in reversed(messages):
-        if isinstance(msg, HumanMessage):
-            user_message = msg.content
-            break
+    user_message = _extract_user_message(messages)
 
     # ── chitchat 直接响应 ──
     if intent and intent.primary_intent:
@@ -273,6 +461,12 @@ def generate_response_node(state: AgentState) -> dict[str, Any]:
     # 记忆上下文
     memory_text = "\n".join(state.get("memory_context", []))
 
+    # 用户画像
+    user_profile = state.get("user_profile")
+    profile_text = ""
+    if user_profile:
+        profile_text = "\n".join(f"{k}: {v}" for k, v in user_profile.items())
+
     # 对话历史
     history_parts = []
     for msg in messages[:-1]:  # 排除当前消息
@@ -285,6 +479,7 @@ def generate_response_node(state: AgentState) -> dict[str, Any]:
     # 构建 prompt
     prompt = builder.build(
         user_message=user_message,
+        user_profile=profile_text,
         retrieved_context=rag_text,
         tool_results=tool_text,
         relevant_memories=memory_text,
@@ -303,7 +498,7 @@ def generate_response_node(state: AgentState) -> dict[str, Any]:
     try:
         llm = get_llm(purpose)
         response = llm.invoke(prompt)
-        final_text = response.content.strip()
+        final_text = str(response.content).strip()
     except Exception:
         logger.exception("LLM 生成回复失败")
         final_text = "抱歉，系统暂时处理出错，请稍后再试或联系 HR 部门。"
@@ -324,7 +519,7 @@ def _handle_chitchat(user_message: str) -> dict[str, Any]:
             f"用户: {user_message}"
         )
         response = llm.invoke(prompt)
-        text = response.content.strip()
+        text = str(response.content).strip()
     except Exception:
         text = "你好！我是 HR 智能助手，有什么可以帮你的吗？"
 
@@ -337,32 +532,203 @@ def _handle_chitchat(user_message: str) -> dict[str, Any]:
 def post_process_node(state: AgentState) -> dict[str, Any]:
     """Node: 后处理。
 
-    1. 将当轮对话写入 Session Memory 并持久化。
-    2. 判断是否需要写入长期记忆（MVP 阶段简化）。
+    1. 将当轮对话写入 Session Memory（含 intent/tools 元数据）并持久化。
+    2. 超过阈值时执行 trim_and_summarize（write-time 裁剪 + 增量摘要）。
+    3. 三级触发机制判断是否需要写入长期记忆。
     """
     session_id = state.get("session_id", "default")
+    user_id = state.get("user_id", "default_user")
     sm = _get_session_memory()
 
-    # 获取本轮的用户消息和助手回复
+    # 获取本轮的用户消息（取最后一条 HumanMessage）
     messages = state.get("messages", [])
-    user_msg = ""
-    assistant_msg = state.get("final_response", "")
+    user_msg = _extract_user_message(messages)
 
-    for msg in messages:
-        if isinstance(msg, HumanMessage):
-            user_msg = msg.content
+    assistant_msg = state.get("final_response") or ""
 
-    # 追加到会话并持久化
+    # ── 收集元数据 ──
+    intent = state.get("intent")
+    intent_label = ""
+    if intent and intent.primary_intent:
+        intent_label = intent.primary_intent.label.value
+
+    tools_used: list[str] = []
+    tool_results = state.get("tool_results", [])
+    if tool_results:
+        tools_used = [tr.tool_name for tr in tool_results if hasattr(tr, "tool_name")]
+
+    target_agents = state.get("target_agents", [])
+
+    metadata = {
+        "intent_label": intent_label,
+        "tools_used": tools_used,
+        "target_agents": target_agents,
+    }
+
+    # ── 三级触发判断（在写入 session 之前，以便 turn count 计算正确）
+    trigger_reason: str | None = None
+    if user_msg and assistant_msg:
+        trigger_reason = _should_write_memory(user_msg, assistant_msg, session_id)
+
+    # 追加到会话（含元数据）并持久化
     if user_msg:
-        sm.append(session_id, "user", user_msg)
+        sm.append(session_id, "user", user_msg, metadata=metadata)
     if assistant_msg:
         sm.append(session_id, "assistant", assistant_msg)
     sm.save(session_id)
 
+    # ── Write-time trim + summarize ──
+    compressor = _get_compressor()
+    trimmed = sm.trim_and_summarize(
+        session_id, summarize_fn=compressor.summarize_text,
+    )
+    if trimmed:
+        sm.save(session_id)
+        logger.info("会话裁剪完成: session=%s", session_id)
+
     logger.info("会话已持久化: session=%s", session_id)
 
-    # TODO: 触发长期记忆写入（判断是否包含值得记忆的信息）
+    # ── 触发长期记忆写入 ──
+    if trigger_reason is not None:
+        _write_longterm_memory(user_id, session_id, user_msg, assistant_msg)
+
     return {}
+
+
+def _write_longterm_memory(
+    user_id: str,
+    session_id: str,
+    user_msg: str,
+    assistant_msg: str,
+) -> None:
+    """使用 LLM 提取值得记住的信息，按类型分类写入 mem0。
+
+    提取流程：
+    1. LLM 分析对话，输出 [{type, content, importance}]
+    2. 过滤 importance > 阈值的记忆
+    3. 按 type (profile/episodic/factual) 分类写入 mem0
+    """
+    extracted = _extract_memorable_info(user_msg, assistant_msg)
+
+    if not extracted:
+        logger.info("LLM 未提取到值得记忆的信息，跳过写入")
+        return
+
+    ltm = _get_longterm_memory()
+    for item in extracted:
+        importance = item.get("importance", 0.0)
+        if importance <= MEMORY_IMPORTANCE_THRESHOLD:
+            continue
+
+        memory_type = item.get("type", "factual")
+        content = item.get("content", "")
+        if not content:
+            continue
+
+        try:
+            conversation = [
+                {"role": "user", "content": content},
+            ]
+            metadata = {"session_id": session_id}
+            ltm.add(
+                conversation,
+                user_id=user_id,
+                memory_type=memory_type,
+                metadata=metadata,
+            )
+            logger.info(
+                "长期记忆写入: type=%s, importance=%.2f, user=%s",
+                memory_type, importance, user_id,
+            )
+        except Exception:
+            logger.exception("长期记忆写入失败 (type=%s)", memory_type)
+
+
+def _extract_memorable_info(
+    user_msg: str,
+    assistant_msg: str,
+) -> list[dict[str, Any]]:
+    """使用 LLM 从对话中提取值得长期记忆的信息。
+
+    Returns:
+        提取结果列表，每项包含 type/content/importance。
+    """
+    import json
+
+    prompt = (
+        "请分析以下对话，提取值得长期记忆的信息。\n\n"
+        "记忆类型说明：\n"
+        '- "profile": 用户个人信息（姓名、部门、职位、角色、偏好等）\n'
+        '- "episodic": 会话中的关键事件或决策（如确认了某个流程、做出了某个选择）\n'
+        '- "factual": 用户明确告知的事实（如直属上级、常用的系统等）\n\n'
+        "请严格以 JSON 数组格式输出，不要包含其他文字：\n"
+        '[{"type": "profile|episodic|factual", "content": "提取的信息", "importance": 0.0-1.0}]\n\n'
+        "如果对话中没有值得记忆的信息（如闲聊、问候），请返回空数组 []\n\n"
+        f"用户: {user_msg}\n"
+        f"助手: {assistant_msg}"
+    )
+
+    try:
+        llm = get_llm("memory_extraction")
+        response = llm.invoke(prompt)
+        text = str(response.content).strip()
+
+        # 处理 markdown 代码块包裹
+        if text.startswith("```"):
+            lines = text.split("\n")
+            text = "\n".join(lines[1:-1]).strip()
+
+        result = json.loads(text)
+        if not isinstance(result, list):
+            return []
+        return result
+    except Exception:
+        logger.exception("LLM 记忆提取失败")
+        return []
+
+
+def finalize_session(session_id: str, user_id: str) -> None:
+    """会话结束时生成 episodic memory 并写入长期记忆。
+
+    将整个会话历史摘要为 episodic 记忆，包含关键问题和决策。
+    """
+    sm = _get_session_memory()
+    session = sm.get_or_create(session_id)
+
+    # 构建完整对话文本（存储摘要 + 当前消息）
+    parts: list[str] = []
+    if session.summary:
+        parts.append(f"早期对话摘要: {session.summary}")
+    for msg in session.messages:
+        parts.append(f"{msg.role}: {msg.content}")
+
+    full_text = "\n".join(parts)
+    if not full_text.strip():
+        logger.info("会话为空，跳过 episodic 记忆写入: session=%s", session_id)
+        return
+
+    # 生成会话级 episodic 摘要
+    compressor = _get_compressor()
+    episodic_summary = compressor.summarize_text(full_text)
+
+    if not episodic_summary:
+        return
+
+    # 写入 mem0 作为 episodic memory
+    try:
+        ltm = _get_longterm_memory()
+        ltm.add(
+            [{"role": "user", "content": episodic_summary}],
+            user_id=user_id,
+            memory_type="episodic",
+            metadata={"session_id": session_id, "type": "session_summary"},
+        )
+        logger.info(
+            "会话结束 episodic 记忆已写入: session=%s, user=%s",
+            session_id, user_id,
+        )
+    except Exception:
+        logger.exception("会话结束 episodic 记忆写入失败")
 
 
 # ── 工具注册初始化 ───────────────────────────────────────────
