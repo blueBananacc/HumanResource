@@ -134,15 +134,15 @@ AgentState {
    └─→ Memory Agent → mem0 Cloud: 检索相关长期记忆 (memory snippets)
    │
 ③ Intent Recognition(DeepSeek-reasoner, structured output)
-   │  输入: 用户消息 + 会话摘要
+   │  输入: 用户消息 + 会话摘要 + 长短期记忆
    │  输出: intent_label, confidence, entities, requires_tools[]
    │
 ④ Router 决策(LangGraph conditional_edges)
    │  输入: intent 分类结果
-   │  输出: target_agents[], execution_plan
+   │  输出: target_agents[]
    │
 ⑤ Agent 执行 — ReAct 循环（可并行）
-   ├─→ RAG Agent (policy_qa / document_search)
+   ├─→ RAG Agent (policy_qa / document_search / process_inquiry)
    │   输入: query + metadata_filter
    │   内部: retrieve → rerank → context_filter
    │   输出: retrieved_chunks[] → 写入 state.rag_results
@@ -201,20 +201,19 @@ AgentState {
 | unknown | 无法识别 | Fallback 流程 |
 
 **关键技术考虑**：
-
 - 分类方式：使用 LLM structured output（JSON mode），prompt 中包含意图定义与示例。对于 MVP 不需要训练分类模型，LLM few-shot 足够
 - Prompt Routing：Classifier 输出 intent label → Router 查表映射到 Agent。映射表可配置，便于扩展新意图
 - Tool Routing：当 intent 包含工具需求时，Classifier 同时输出 required_tools[]，Tool Agent 根据此列表选择工具
-- Multi-intent 处理：Classifier prompt 设计为可返回 intent_list[]（多意图数组）。Router 按优先级顺序执行，或并行分发到多个 Agent，最后由 Orchestrator 聚合结果
+- Multi-intent 处理：Classifier prompt 设计为可返回 intent_list[]（多意图数组），并返回意图执行的顺序。Router 按顺序执行，或并行分发到多个 Agent，最后由 Orchestrator 聚合结果
 - Fallback 策略：三级回退机制：
-  confidence < 阈值 → 追问澄清（生成澄清问题返回给用户）
-  重试后仍无法识别 → 路由到 RAG Agent 做宽泛检索
-  RAG 也无结果 → 返回友好的"无法回答"提示 + 建议联系 HR
+  1. confidence < 阈值 → 追问澄清（生成澄清问题返回给用户）
+  2. 重试后仍无法识别 → 路由到 RAG Agent 做宽泛检索
+  3. RAG 也无结果 → 返回友好的"无法回答"提示 + 建议联系 HR
 
 **技术选型映射**：
 - LLM：使用 DeepSeek-reasoner 进行意图分类
 
-**输入**：用户消息 (str) + 会话摘要 (str, optional)
+**输入**：用户消息 (str) + 会话摘要 (str, optional) + 长短期记忆
 **输出**：IntentResult { intents: [{label, confidence, entities}], requires_tools: [str] }
 **依赖**：LLM Client
 **被调用方**：Orchestrator Agent
@@ -596,7 +595,7 @@ Session {
 ## 4.2 Agent Routing 规则
 | 意图 | 主 Agent | 辅助 Agent | 执行模式 |
 |------|----------|------------|----------|
-| policy_qa | RAG Agent | Memory Agent（提供历史上下文） | 串行 |
+| policy_qa | RAG Agent | — | 单一 |
 | document_search | RAG Agent | — | 单一 |
 | employee_lookup | Tool Agent | — | 单一 |
 | tool_action | Tool Agent | — | 单一 |

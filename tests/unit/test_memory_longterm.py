@@ -138,7 +138,7 @@ class TestMemoryRetrievalNode:
         assert len(result["memory_context"]) == 3
         assert "[长期记忆] 用户是研发部的工程师" in result["memory_context"]
         assert "[长期记忆] 用户之前问过年假政策" in result["memory_context"]
-        ltm.search.assert_called_once_with("年假还有几天", user_id="u1", top_k=5)
+        ltm.search.assert_called_once_with("年假还有几天", user_id="u1", top_k=3)
 
     @patch("human_resource.agents.orchestrator.UserProfileStore")
     @patch("human_resource.agents.orchestrator._get_longterm_memory")
@@ -718,7 +718,7 @@ class TestGraphWithMemoryRetrieval:
         mock_llm = MagicMock()
 
         intent_response = MagicMock()
-        intent_response.content = '{"intents": [{"label": "chitchat", "confidence": 0.95, "entities": {}}], "requires_tools": []}'
+        intent_response.content = '{"intents": [{"label": "chitchat", "confidence": 0.95, "entities": {}, "requires_tools": []}]}'
 
         reply_response = MagicMock()
         reply_response.content = "你好！有什么可以帮你的？"

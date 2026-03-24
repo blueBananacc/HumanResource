@@ -166,8 +166,7 @@ def load_context_node(state: AgentState) -> dict[str, Any]:
     """Node: 加载上下文。
 
     从 Session Memory 获取会话历史。
-    压缩由 post_process_node 的 trim_and_summarize 在写时完成，
-    此处只读取存储的摘要 + 当前消息列表。
+    读取存储的摘要 + 当前消息列表。
     """
     session_id = state.get("session_id", "default")
     sm = _get_session_memory()
@@ -191,7 +190,7 @@ def load_context_node(state: AgentState) -> dict[str, Any]:
         memory_snippets.append(f"{msg.role}: {msg.content}")
 
     logger.info(
-        "加载上下文: session=%s, 消息数=%d, 片段数=%d",
+        "加载上下文: session_id=%s, 原始消息数=%d, 摘要数=%d",
         session_id, len(history), len(memory_snippets),
     )
 
@@ -225,41 +224,97 @@ def classify_intent_node(state: AgentState) -> dict[str, Any]:
             )
         }
 
-    # 获取会话摘要作为上下文
+    # 从 memory_context 中分离会话上下文和长期记忆
     session_summary = ""
+    long_term_memory = ""
     memory_ctx = state.get("memory_context", [])
     if memory_ctx:
-        session_summary = "\n".join(memory_ctx[-3:])
+        session_parts = []
+        ltm_parts = []
+        for item in memory_ctx:
+            if item.startswith("[长期记忆]"):
+                ltm_parts.append(item.removeprefix("[长期记忆] "))
+            else:
+                session_parts.append(item)
+        if session_parts:
+            session_summary = "\n".join(session_parts)
+        if ltm_parts:
+            long_term_memory = "\n".join(ltm_parts)
+
+    # 提取用户画像
+    user_profile_text = ""
+    user_profile = state.get("user_profile")
+    if user_profile:
+        user_profile_text = "\n".join(f"{k}: {v}" for k, v in user_profile.items())
 
     classifier = _get_classifier()
-    intent_result = classifier.classify(user_message, session_summary)
+    intent_result = classifier.classify(
+        user_message,
+        session_summary=session_summary,
+        long_term_memory=long_term_memory,
+        user_profile=user_profile_text,
+    )
 
     logger.info(
         "意图识别完成: %s",
         [(i.label.value, i.confidence) for i in intent_result.intents],
     )
 
-    return {"intent": intent_result}
+    # 低置信度回退：当所有意图的置信度都低于阈值时标记需要澄清
+    needs_clarification = False
+    if intent_result.intents:
+        max_confidence = max(i.confidence for i in intent_result.intents)
+        if max_confidence < INTENT_CONFIDENCE_THRESHOLD:
+            needs_clarification = True
+            logger.info(
+                "所有意图置信度 (最高=%.2f) 低于阈值 %.2f，标记需要澄清",
+                max_confidence,
+                INTENT_CONFIDENCE_THRESHOLD,
+            )
+
+    return {"intent": intent_result, "needs_clarification": needs_clarification}
 
 
 def route_agents_node(state: AgentState) -> dict[str, Any]:
     """Node: 路由决策。
 
     根据意图分类结果确定目标 Agent 列表。
+    低置信度三级回退策略：
+    1. 追问澄清 — needs_clarification=True 时直接进入 generate_response
+       生成澄清问题，不执行任何 Agent
+    2. 用户重试后若 UNKNOWN 意图，由 ROUTING_TABLE 路由到 RAG 做宽泛检索
+    3. RAG 也无结果 → generate_response 生成友好的"无法回答"提示
     """
     intent = state.get("intent")
     if intent is None:
-        return {"target_agents": ["rag_agent"]}
+        return {
+            "target_agents": ["rag_agent"],
+            "current_agent_index": 0,
+            "agent_intent_map": [{"agent": "rag_agent", "intent_indices": [0]}],
+        }
 
-    target_agents = resolve_route(intent)
+    needs_clarification = state.get("needs_clarification", False)
 
-    # 低置信度时追加提示
-    primary = intent.primary_intent
-    if primary and primary.confidence < INTENT_CONFIDENCE_THRESHOLD:
-        logger.info("低置信度意图，将使用 fallback 策略")
+    # 三级回退 Level 1：低置信度，直接追问澄清，不执行 Agent
+    if needs_clarification:
+        primary = intent.primary_intent
+        logger.info(
+            "低置信度回退 Level-1: 主意图=%s, 置信度=%.2f, 追问澄清",
+            primary.label.value if primary else "None",
+            primary.confidence if primary else 0.0,
+        )
+        # target_agents 为空 → _dispatch_router 直接到 generate_response
+        return {"target_agents": [], "current_agent_index": 0, "agent_intent_map": []}
+
+    target_agents, agent_intent_map = resolve_route(intent)
 
     logger.info("路由目标: %s", target_agents)
-    return {"target_agents": target_agents, "current_agent_index": 0}
+    logger.info("意图映射: %s", agent_intent_map)
+    return {
+        "target_agents": target_agents,
+        "current_agent_index": 0,
+        "agent_intent_map": agent_intent_map,
+    }
 
 
 def rag_node(state: AgentState) -> dict[str, Any]:
@@ -281,8 +336,14 @@ def rag_node(state: AgentState) -> dict[str, Any]:
 def tool_node(state: AgentState) -> dict[str, Any]:
     """Node: Tool Agent 执行。
 
-    执行工具调用。
-    MVP 阶段通过 intent.requires_tools 和 entities 调用工具。
+    执行工具调用。根据 agent_intent_map 确定当前 tool_agent 服务的意图，
+    仅执行这些意图声明的工具，并使用对应意图的 entities 构建参数。
+
+    支持四种场景：
+    - 单意图单工具：直接执行
+    - 单意图多工具：依次执行同一意图的所有工具
+    - 多意图各有工具：按意图映射执行各自的工具
+    - 无映射信息时降级为遍历所有意图的工具（向后兼容）
     """
     from human_resource.tools.executor import execute_tool
 
@@ -293,12 +354,32 @@ def tool_node(state: AgentState) -> dict[str, Any]:
         logger.info("Tool Agent: 无工具调用需求")
         return {"tool_results": results}
 
-    # 从意图实体中提取参数
-    primary = intent.primary_intent
-    entities = primary.entities if primary else {}
+    # 确定当前 tool_agent 服务哪些意图
+    agent_intent_map = state.get("agent_intent_map", [])
+    current_idx = state.get("current_agent_index", 0)
 
-    for tool_name in intent.requires_tools:
-        # 根据工具名构建参数
+    serving_indices: list[int] | None = None
+    if current_idx < len(agent_intent_map):
+        entry = agent_intent_map[current_idx]
+        if entry.get("agent") == "tool_agent":
+            serving_indices = entry.get("intent_indices", [])
+
+    # 收集需要执行的 (tool_name, entities) 对
+    tool_tasks: list[tuple[str, dict[str, Any]]] = []
+    if serving_indices is not None:
+        # 有映射：精确匹配每个意图声明的工具 + 对应 entities
+        for idx in serving_indices:
+            if idx < len(intent.intents):
+                intent_item = intent.intents[idx]
+                for tool_name in intent_item.requires_tools:
+                    tool_tasks.append((tool_name, intent_item.entities))
+    else:
+        # 无映射降级：遍历所有意图的工具
+        for intent_item in intent.intents:
+            for tool_name in intent_item.requires_tools:
+                tool_tasks.append((tool_name, intent_item.entities))
+
+    for tool_name, entities in tool_tasks:
         params = _build_tool_params(tool_name, entities)
         logger.info("执行工具: %s, 参数: %s", tool_name, params)
 
@@ -411,6 +492,11 @@ def generate_response_node(state: AgentState) -> dict[str, Any]:
     # 获取用户消息
     user_message = _extract_user_message(messages)
 
+    # ── 低置信度回退 Level 1：生成澄清问题 ──
+    needs_clarification = state.get("needs_clarification", False)
+    if needs_clarification:
+        return _generate_clarification(user_message, intent)
+
     # ── chitchat 直接响应 ──
     if intent and intent.primary_intent:
         label = intent.primary_intent.label
@@ -459,6 +545,19 @@ def generate_response_node(state: AgentState) -> dict[str, Any]:
             history_parts.append(f"助手: {msg.content}")
     conversation_history = "\n".join(history_parts[-6:])  # 最近 3 轮
 
+    # ── 三级回退 Level 3：UNKNOWN 意图 + RAG 无结果 → 友好提示 ──
+    if (intent and intent.primary_intent
+            and intent.primary_intent.label == IntentLabel.UNKNOWN
+            and not rag_text and not tool_text):
+        fallback_text = (
+            "抱歉，我暂时无法理解您的问题，也未找到相关信息。\n"
+            "您可以尝试换个方式描述，或直接联系 HR 部门获取帮助。"
+        )
+        return {
+            "final_response": fallback_text,
+            "messages": [AIMessage(content=fallback_text)],
+        }
+
     # 构建 prompt
     prompt = builder.build(
         user_message=user_message,
@@ -505,6 +604,43 @@ def _handle_chitchat(user_message: str) -> dict[str, Any]:
         text = str(response.content).strip()
     except Exception:
         text = "你好！我是 HR 智能助手，有什么可以帮你的吗？"
+
+    return {
+        "final_response": text,
+        "messages": [AIMessage(content=text)],
+    }
+
+
+def _generate_clarification(
+    user_message: str, intent: IntentResult | None
+) -> dict[str, Any]:
+    """低置信度回退 Level-1：生成澄清问题返回给用户。"""
+    try:
+        llm = get_llm("response_simple")
+        intent_hint = ""
+        if intent and intent.primary_intent:
+            intent_hint = f"（系统猜测可能与 {intent.primary_intent.label.value} 相关，但不确定）"
+
+        prompt = (
+            "你是一个 HR 智能助手。用户发送了一条消息，但你无法确定其意图。"
+            "请根据用户消息生成一个友好的澄清问题，帮助用户明确需求。\n"
+            "要求：\n"
+            "1. 简洁友好，不超过两句话\n"
+            "2. 给出 2-3 个可能的选项供用户选择\n"
+            "3. 不要编造信息\n\n"
+            f"用户消息: {user_message}\n"
+            f"{intent_hint}"
+        )
+        response = llm.invoke(prompt)
+        text = str(response.content).strip()
+    except Exception:
+        text = (
+            "抱歉，我不太确定您的具体需求。您可以尝试：\n"
+            "1. 咨询 HR 政策（如年假、薪资等）\n"
+            "2. 查询员工信息\n"
+            "3. 了解 HR 流程（如请假、入职等）\n"
+            "请更详细地描述您的问题，我会尽力帮助您。"
+        )
 
     return {
         "final_response": text,

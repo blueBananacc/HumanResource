@@ -27,8 +27,10 @@ class AgentState(TypedDict, total=False):
     tool_results: list[ToolResult]
     memory_context: list[str]
     user_profile: dict[str, Any] | None
+    needs_clarification: bool
     final_response: str | None
     reflection_count: int
     session_id: str
     user_id: str
     current_agent_index: int
+    agent_intent_map: list[dict[str, Any]]

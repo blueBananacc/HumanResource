@@ -43,5 +43,6 @@ def test_router_resolve():
     intent = IntentResult(
         intents=[IntentItem(label=IntentLabel.EMPLOYEE_LOOKUP, confidence=0.95)]
     )
-    agents = resolve_route(intent)
+    agents, agent_map = resolve_route(intent)
     assert agents == ["tool_agent"]
+    assert agent_map == [{"agent": "tool_agent", "intent_indices": [0]}]

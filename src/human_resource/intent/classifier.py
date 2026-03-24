@@ -32,33 +32,47 @@ _CLASSIFICATION_SYSTEM_PROMPT = """\
 
 规则：
 1. 一条消息可能包含多个意图，请全部列出。
-2. 为每个意图给出 0.0 到 1.0 之间的置信度。
-3. 如果消息涉及工具操作，在 requires_tools 中列出可能需要的工具名称。
+2. 多意图时，按照解决问题的逻辑顺序排列（先查数据再做分析、先获取信息再回答问题），而非按置信度排序。
+3. 为每个意图给出 0.0 到 1.0 之间的置信度。
+4. 每个意图单独声明所需工具（requires_tools），仅列出该意图自身需要的工具。
    可用工具：lookup_employee, get_leave_balance, list_hr_processes, get_process_steps
-4. 提取消息中的关键实体（人名、部门、日期等）放入 entities。
+5. 提取消息中的关键实体（人名、部门、日期等）放入 entities。
 
 请严格以 JSON 格式输出，不要包含其他文字：
 {
   "intents": [
-    {"label": "意图类别", "confidence": 0.9, "entities": {"name": "张三"}}
-  ],
-  "requires_tools": ["工具名"]
+    {"label": "意图类别", "confidence": 0.9, "entities": {"name": "张三"}, "requires_tools": ["工具名"]}
+  ]
 }
 """
 
 _FEW_SHOT_EXAMPLES = """
 示例：
+
+场景一（单意图 + 单Agent）:
 用户: "年假政策是什么"
-输出: {"intents": [{"label": "policy_qa", "confidence": 0.95, "entities": {"topic": "年假"}}], "requires_tools": []}
+输出: {"intents": [{"label": "policy_qa", "confidence": 0.95, "entities": {"topic": "年假"}, "requires_tools": []}]}
 
 用户: "查询张三的部门"
-输出: {"intents": [{"label": "employee_lookup", "confidence": 0.95, "entities": {"name": "张三"}}], "requires_tools": ["lookup_employee"]}
-
-用户: "查一下我的假期余额，顺便告诉我请假流程"
-输出: {"intents": [{"label": "tool_action", "confidence": 0.9, "entities": {}}, {"label": "process_inquiry", "confidence": 0.85, "entities": {"process": "请假"}}], "requires_tools": ["get_leave_balance"]}
+输出: {"intents": [{"label": "employee_lookup", "confidence": 0.95, "entities": {"name": "张三"}, "requires_tools": ["lookup_employee"]}]}
 
 用户: "你好"
-输出: {"intents": [{"label": "chitchat", "confidence": 0.95, "entities": {}}], "requires_tools": []}
+输出: {"intents": [{"label": "chitchat", "confidence": 0.95, "entities": {}, "requires_tools": []}]}
+
+场景二（单意图 + 多Agent 串行）:
+用户: "入职流程是什么"
+说明: 单一 process_inquiry 意图，需要 RAG 检索流程文档，并可能调用流程工具获取步骤
+输出: {"intents": [{"label": "process_inquiry", "confidence": 0.9, "entities": {"process": "入职"}, "requires_tools": ["list_hr_processes", "get_process_steps"]}]}
+
+场景三（多意图 + 每个意图单Agent）:
+用户: "张三是哪个部门的？他们部门的考勤制度是什么"
+说明: 先查员工信息获取部门（tool_agent），再检索该部门考勤政策（rag_agent），每个意图各需一个Agent
+输出: {"intents": [{"label": "employee_lookup", "confidence": 0.95, "entities": {"name": "张三"}, "requires_tools": ["lookup_employee"]}, {"label": "policy_qa", "confidence": 0.9, "entities": {"topic": "考勤制度"}, "requires_tools": []}]}
+
+场景四（多意图 + 每个意图多Agent）:
+用户: "帮我查一下李四的假期余额，然后告诉我请假流程"
+说明: 先查假期余额（tool_agent），再查请假流程（rag_agent + tool_agent 串行），多个意图且 process_inquiry 涉及多Agent
+输出: {"intents": [{"label": "tool_action", "confidence": 0.9, "entities": {"name": "李四"}, "requires_tools": ["get_leave_balance"]}, {"label": "process_inquiry", "confidence": 0.85, "entities": {"process": "请假"}, "requires_tools": ["get_process_steps"]}]}
 """
 
 
@@ -68,17 +82,29 @@ class IntentClassifier:
     def __init__(self) -> None:
         self._llm = get_llm("intent_classification")
 
-    def classify(self, message: str, session_summary: str = "") -> IntentResult:
+    def classify(
+        self,
+        message: str,
+        session_summary: str = "",
+        long_term_memory: str = "",
+        user_profile: str = "",
+    ) -> IntentResult:
         """对用户消息进行意图分类。
 
         Args:
             message: 用户输入消息。
             session_summary: 当前会话摘要（可选，用于上下文消歧）。
+            long_term_memory: 长期记忆片段（可选，提供用户历史偏好）。
+            user_profile: 用户画像（可选，提供用户背景信息）。
 
         Returns:
             IntentResult，包含一个或多个意图分类结果。
         """
         system_content = _CLASSIFICATION_SYSTEM_PROMPT + _FEW_SHOT_EXAMPLES
+        if user_profile:
+            system_content += f"\n用户画像（用于理解用户背景）：\n{user_profile}"
+        if long_term_memory:
+            system_content += f"\n用户相关记忆（用于辅助消歧）：\n{long_term_memory}"
         if session_summary:
             system_content += f"\n当前会话摘要（用于辅助消歧）：\n{session_summary}"
 
@@ -117,23 +143,11 @@ class IntentClassifier:
                     label=label,
                     confidence=float(item.get("confidence", 0.0)),
                     entities=item.get("entities", {}),
+                    requires_tools=item.get("requires_tools", []),
                 )
             )
 
         if not intents:
             intents = [IntentItem(label=IntentLabel.UNKNOWN, confidence=0.0)]
 
-        # 低置信度回退
-        primary = max(intents, key=lambda x: x.confidence)
-        if primary.confidence < INTENT_CONFIDENCE_THRESHOLD:
-            logger.info(
-                "主意图 %s 置信度 %.2f 低于阈值 %.2f",
-                primary.label.value,
-                primary.confidence,
-                INTENT_CONFIDENCE_THRESHOLD,
-            )
-
-        return IntentResult(
-            intents=intents,
-            requires_tools=data.get("requires_tools", []),
-        )
+        return IntentResult(intents=intents)
