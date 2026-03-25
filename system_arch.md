@@ -139,7 +139,7 @@ AgentState {
    │
 ④ Router 决策(LangGraph conditional_edges)
    │  输入: intent 分类结果
-   │  输出: target_agents[]
+   │  输出: target_agents[], execution_plan[]
    │
 ⑤ Agent 执行 — ReAct 循环（可并行）
    ├─→ RAG Agent (policy_qa / document_search / process_inquiry)
@@ -204,7 +204,7 @@ AgentState {
 - 分类方式：使用 LLM structured output（JSON mode），prompt 中包含意图定义与示例。对于 MVP 不需要训练分类模型，LLM few-shot 足够
 - Prompt Routing：Classifier 输出 intent label → Router 查表映射到 Agent。映射表可配置，便于扩展新意图
 - Tool Routing：当 intent 包含工具需求时，Classifier 同时输出 required_tools[]，Tool Agent 根据此列表选择工具
-- Multi-intent 处理：Classifier prompt 设计为可返回 intent_list[]（多意图数组），并返回意图执行的顺序。Router 按顺序执行，或并行分发到多个 Agent，最后由 Orchestrator 聚合结果
+- Multi-intent 处理：Classifier prompt 设计为可返回 intent_list[]（多意图数组），并返回意图执行的顺序。Router 按顺序执行 Agent，最后由 Orchestrator 聚合结果
 - Fallback 策略：三级回退机制：
   1. confidence < 阈值 → 追问澄清（生成澄清问题返回给用户）
   2. 重试后仍无法识别 → 路由到 RAG Agent 做宽泛检索
@@ -231,7 +231,7 @@ AgentState {
 **Tool Registry 设计**：
 - 每个工具注册为一个 ToolDefinition，包含：name、description、parameters (JSON Schema)、return_schema、category、requires_auth
 - 注册方式：声明式注册（装饰器或配置文件），启动时自动发现并加载
-- 支持按 category 分组（employee_tools, process_tools, document_tools）
+- 支持按 category 分组（employee_tools, process_tools）
 **MVP 内置工具**：
 | 工具名 | 类别 | 功能 |
 |------|------|------|

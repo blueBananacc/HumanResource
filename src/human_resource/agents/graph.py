@@ -60,7 +60,7 @@ def _dispatch_router(state: AgentState) -> str:
 def _check_next_agent(state: AgentState) -> str:
     """Agent 执行完毕后，检查是否还有下一个 Agent 要执行。"""
     target_agents = state.get("target_agents", [])
-    idx = state.get("current_agent_index", 0) + 1
+    idx = state.get("current_agent_index", 0)
 
     if idx < len(target_agents):
         return "dispatch"
@@ -70,6 +70,11 @@ def _check_next_agent(state: AgentState) -> str:
 def _advance_agent_index(state: AgentState) -> dict[str, Any]:
     """推进 agent 索引。"""
     return {"current_agent_index": state.get("current_agent_index", 0) + 1}
+
+
+def _dispatch_pass(state: AgentState) -> dict[str, Any]:
+    """分发中转节点（no-op），仅用于触发 _dispatch_router 条件路由。"""
+    return {}
 
 
 # ── 图构建 ───────────────────────────────────────────────────
@@ -86,6 +91,7 @@ def build_graph() -> StateGraph:
     graph.add_node("memory_retrieval", memory_retrieval_node)
     graph.add_node("classify_intent", classify_intent_node)
     graph.add_node("route_agents", route_agents_node)
+    graph.add_node("dispatch", _dispatch_pass)
     graph.add_node("rag_node", rag_node)
     graph.add_node("tool_node", tool_node)
     graph.add_node("memory_node", memory_node)
@@ -94,15 +100,16 @@ def build_graph() -> StateGraph:
     graph.add_node("post_process", post_process_node)
 
     # ── 添加 Edges ──
-    # 入口 → 加载上下文 → 长期记忆检索 → 意图识别 → 路由决策
+    # 入口 → 加载上下文 → 长期记忆检索 → 意图识别 → 路由决策 → 分发
     graph.add_edge(START, "load_context")
     graph.add_edge("load_context", "memory_retrieval")
     graph.add_edge("memory_retrieval", "classify_intent")
     graph.add_edge("classify_intent", "route_agents")
+    graph.add_edge("route_agents", "dispatch")
 
-    # 路由决策 → 条件分发到具体 Agent
+    # 分发节点 → 条件路由到具体 Agent
     graph.add_conditional_edges(
-        "route_agents",
+        "dispatch",
         _dispatch_router,
         {
             "rag_node": "rag_node",
@@ -122,7 +129,7 @@ def build_graph() -> StateGraph:
         "advance_index",
         _check_next_agent,
         {
-            "dispatch": "route_agents",  # 回到路由分发下一个 Agent
+            "dispatch": "dispatch",  # 回到分发节点执行下一个 Agent
             "generate_response": "generate_response",
         },
     )

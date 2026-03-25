@@ -25,6 +25,7 @@ class AgentState(TypedDict, total=False):
     target_agents: list[str]
     rag_results: RetrievalResult | None
     tool_results: list[ToolResult]
+    session_context: list[str]
     memory_context: list[str]
     user_profile: dict[str, Any] | None
     needs_clarification: bool

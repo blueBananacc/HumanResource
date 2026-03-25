@@ -5,6 +5,8 @@ MVP 使用模拟数据，后续接入实际流程引擎。
 
 from __future__ import annotations
 
+from typing import Any
+
 from langchain_core.tools import tool
 
 # 模拟 HR 流程数据
@@ -71,3 +73,16 @@ def get_process_steps(process_id: str) -> dict:
     if process is None:
         return {"error": f"未找到流程: {process_id}，可用流程: {list(_MOCK_PROCESSES.keys())}"}
     return process
+
+
+# ── 参数映射函数 ─────────────────────────────────────────────
+
+
+def map_list_hr_processes(entities: dict[str, Any]) -> dict[str, Any]:
+    """list_hr_processes 无需参数。"""
+    return {}
+
+
+def map_get_process_steps(entities: dict[str, Any]) -> dict[str, Any]:
+    """将意图 entities 映射为 get_process_steps 工具参数。"""
+    return {"process_id": str(entities.get("process", ""))}

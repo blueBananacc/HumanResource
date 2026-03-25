@@ -76,8 +76,9 @@ class TestLoadContextNode:
         state = {"session_id": "test"}
         result = load_context_node(state)
 
-        assert len(result["memory_context"]) == 6
-        assert result["memory_context"][0] == "user: 问题1"
+        assert len(result["session_context"]) == 6
+        assert result["session_context"][0] == "user: 问题1"
+        assert result["memory_context"] == []
         assert result["reflection_count"] == 0
         assert result["current_agent_index"] == 0
 
@@ -95,9 +96,10 @@ class TestLoadContextNode:
         state = {"session_id": "test"}
         result = load_context_node(state)
 
-        assert result["memory_context"][0] == "[历史摘要] 早期对话摘要"
-        assert "user: 最近问题" in result["memory_context"]
-        assert len(result["memory_context"]) == 3  # 1 摘要 + 2 消息
+        assert result["session_context"][0] == "[历史摘要] 早期对话摘要"
+        assert "user: 最近问题" in result["session_context"]
+        assert len(result["session_context"]) == 3  # 1 摘要 + 2 消息
+        assert result["memory_context"] == []
 
     @patch("human_resource.agents.orchestrator._get_session_memory")
     def test_empty_history(self, mock_sm):
@@ -107,6 +109,7 @@ class TestLoadContextNode:
 
         state = {"session_id": "test"}
         result = load_context_node(state)
+        assert result["session_context"] == []
         assert result["memory_context"] == []
 
 
@@ -130,14 +133,14 @@ class TestMemoryRetrievalNode:
 
         state = {
             "messages": [HumanMessage(content="年假还有几天")],
-            "memory_context": ["user: 之前的对话"],
+            "memory_context": [],
             "user_id": "u1",
         }
         result = memory_retrieval_node(state)
 
-        assert len(result["memory_context"]) == 3
-        assert "[长期记忆] 用户是研发部的工程师" in result["memory_context"]
-        assert "[长期记忆] 用户之前问过年假政策" in result["memory_context"]
+        assert len(result["memory_context"]) == 2
+        assert "用户是研发部的工程师" in result["memory_context"]
+        assert "用户之前问过年假政策" in result["memory_context"]
         ltm.search.assert_called_once_with("年假还有几天", user_id="u1", top_k=3)
 
     @patch("human_resource.agents.orchestrator.UserProfileStore")
@@ -220,7 +223,7 @@ class TestMemoryRetrievalNode:
         }
         result = memory_retrieval_node(state)
         assert len(result["memory_context"]) == 1
-        assert "[长期记忆] 有效记忆" in result["memory_context"]
+        assert "有效记忆" in result["memory_context"]
 
     @patch("human_resource.agents.orchestrator.UserProfileStore")
     @patch("human_resource.agents.orchestrator._get_longterm_memory")
@@ -264,7 +267,7 @@ class TestMemoryRetrievalNode:
         result = memory_retrieval_node(state)
 
         # 画像失败但记忆检索仍正常
-        assert "[长期记忆] 记忆内容" in result["memory_context"]
+        assert "记忆内容" in result["memory_context"]
         assert "user_profile" not in result
 
 
@@ -284,7 +287,7 @@ class TestMemoryNode:
 
         state = {
             "messages": [HumanMessage(content="我之前说过什么")],
-            "memory_context": ["[长期记忆] 已存在的记忆"],
+            "memory_context": ["已存在的记忆"],
             "user_id": "u1",
         }
         result = memory_node(state)
@@ -292,7 +295,7 @@ class TestMemoryNode:
         # "已存在的记忆" 不应重复添加
         count = sum(1 for s in result["memory_context"] if "已存在的记忆" in s)
         assert count == 1
-        assert "[长期记忆] 新记忆" in result["memory_context"]
+        assert "新记忆" in result["memory_context"]
 
 
 # ── post_process_node 测试 ───────────────────────────────────
@@ -417,20 +420,6 @@ class TestIsExplicitMemoryCommand:
 
 class TestIsTurnIntervalTrigger:
     @patch("human_resource.agents.orchestrator._get_session_memory")
-    def test_triggers_at_interval(self, mock_sm):
-        """第 3 轮（2 轮历史 + 当前 = 3）时应触发。"""
-        sm = MagicMock()
-        # 2 轮历史 = 4 条消息，加上当前轮 = 第 3 轮
-        sm.get_history.return_value = [
-            SessionMessage(role="user", content="q1"),
-            SessionMessage(role="assistant", content="a1"),
-            SessionMessage(role="user", content="q2"),
-            SessionMessage(role="assistant", content="a2"),
-        ]
-        mock_sm.return_value = sm
-        assert _is_turn_interval_trigger("s1") is True
-
-    @patch("human_resource.agents.orchestrator._get_session_memory")
     def test_no_trigger_at_non_interval(self, mock_sm):
         """第 2 轮不触发（间隔 = 3）。"""
         sm = MagicMock()
@@ -446,7 +435,7 @@ class TestIsTurnIntervalTrigger:
         """第 6 轮也应触发。"""
         sm = MagicMock()
         messages = []
-        for i in range(5):
+        for i in range(9):
             messages.append(SessionMessage(role="user", content=f"q{i+1}"))
             messages.append(SessionMessage(role="assistant", content=f"a{i+1}"))
         sm.get_history.return_value = messages

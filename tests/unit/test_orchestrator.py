@@ -128,7 +128,9 @@ class TestLoadContextNode:
     def test_returns_default_context(self):
         state = {"session_id": "test123", "messages": []}
         result = load_context_node(state)
+        assert "session_context" in result
         assert "memory_context" in result
+        assert result["memory_context"] == []
         assert result["reflection_count"] == 0
         assert result["current_agent_index"] == 0
 
@@ -166,12 +168,14 @@ class TestClassifyIntentNode:
 
         state = {
             "messages": [HumanMessage(content="年假政策")],
-            "memory_context": [
+            "session_context": [
                 "[历史摘要] 用户之前询问了入职流程",
                 "user: 请假怎么办",
                 "assistant: 请假需要提交申请",
-                "[长期记忆] 用户偏好简洁回答",
-                "[长期记忆] 用户是技术部门员工",
+            ],
+            "memory_context": [
+                "用户偏好简洁回答",
+                "用户是技术部门员工",
             ],
             "user_profile": {"department": "研发部", "role": "工程师"},
         }
@@ -180,9 +184,9 @@ class TestClassifyIntentNode:
         call_kwargs = mock_cls.classify.call_args
         # session_summary 不应包含长期记忆
         session_arg = call_kwargs.kwargs.get("session_summary", "")
-        assert "[长期记忆]" not in session_arg
         assert "[历史摘要]" in session_arg
         assert "user: 请假怎么办" in session_arg
+        assert "用户偏好" not in session_arg
         # long_term_memory 应包含长期记忆内容
         ltm_arg = call_kwargs.kwargs.get("long_term_memory", "")
         assert "用户偏好简洁回答" in ltm_arg
@@ -216,7 +220,7 @@ class TestClassifyIntentNode:
         )
         mock_get_cls.return_value = mock_cls
 
-        state = {"messages": [HumanMessage(content="你好")], "memory_context": []}
+        state = {"messages": [HumanMessage(content="你好")], "session_context": [], "memory_context": []}
         result = classify_intent_node(state)
 
         mock_cls.classify.assert_called_once_with(
@@ -238,8 +242,9 @@ class TestClassifyIntentNode:
 
         state = {
             "messages": [HumanMessage(content="查张三")],
+            "session_context": [],
             "memory_context": [
-                "[长期记忆] 张三是研发部的",
+                "张三是研发部的",
             ],
         }
         classify_intent_node(state)
@@ -259,6 +264,7 @@ class TestClassifyIntentNode:
 
         state = {
             "messages": [HumanMessage(content="年假多少天")],
+            "session_context": [],
             "memory_context": [],
             "user_profile": {"department": "财务部"},
         }
@@ -281,7 +287,7 @@ class TestRouteAgentsNode:
         result = route_agents_node(state)
         assert result["target_agents"] == ["tool_agent"]
         assert result["agent_intent_map"] == [
-            {"agent": "tool_agent", "intent_indices": [0]},
+            {"agent": "tool_agent", "intent_index": 0},
         ]
 
     def test_routes_policy_qa(self):
@@ -294,7 +300,7 @@ class TestRouteAgentsNode:
         result = route_agents_node(state)
         assert result["target_agents"] == ["rag_agent"]
         assert result["agent_intent_map"] == [
-            {"agent": "rag_agent", "intent_indices": [0]},
+            {"agent": "rag_agent", "intent_index": 0},
         ]
 
     def test_routes_chitchat_to_orchestrator(self):
@@ -316,8 +322,8 @@ class TestRouteAgentsNode:
         result = route_agents_node(state)
         assert result["target_agents"] == ["rag_agent", "tool_agent"]
         assert result["agent_intent_map"] == [
-            {"agent": "rag_agent", "intent_indices": [0]},
-            {"agent": "tool_agent", "intent_indices": [0]},
+            {"agent": "rag_agent", "intent_index": 0},
+            {"agent": "tool_agent", "intent_index": 0},
         ]
 
     def test_none_intent_fallback(self):
@@ -325,7 +331,7 @@ class TestRouteAgentsNode:
         result = route_agents_node(state)
         assert result["target_agents"] == ["rag_agent"]
         assert result["agent_intent_map"] == [
-            {"agent": "rag_agent", "intent_indices": [0]},
+            {"agent": "rag_agent", "intent_index": 0},
         ]
 
     def test_low_confidence_fallback_asks_clarification(self):
@@ -366,14 +372,14 @@ class TestRouteAgentsNode:
         result = route_agents_node(state)
         assert result["target_agents"] == ["tool_agent", "rag_agent"]
         assert result["agent_intent_map"] == [
-            {"agent": "tool_agent", "intent_indices": [0]},
-            {"agent": "rag_agent", "intent_indices": [1]},
+            {"agent": "tool_agent", "intent_index": 0},
+            {"agent": "rag_agent", "intent_index": 1},
         ]
 
-    def test_multi_intent_multi_agent_dedup(self):
+    def test_multi_intent_multi_agent_no_dedup(self):
         """场景四: 多意图 + 每个意图多Agent。
         employee_lookup→tool_agent, process_inquiry→rag_agent+tool_agent。
-        tool_agent 被去重，但 intent_indices 合并为 [0, 1]。
+        不去重：tool_agent 出现两次，分别服务意图 0 和意图 1。
         """
         state = {
             "intent": IntentResult(
@@ -384,14 +390,15 @@ class TestRouteAgentsNode:
             ),
         }
         result = route_agents_node(state)
-        assert result["target_agents"] == ["tool_agent", "rag_agent"]
+        assert result["target_agents"] == ["tool_agent", "rag_agent", "tool_agent"]
         assert result["agent_intent_map"] == [
-            {"agent": "tool_agent", "intent_indices": [0, 1]},
-            {"agent": "rag_agent", "intent_indices": [1]},
+            {"agent": "tool_agent", "intent_index": 0},
+            {"agent": "rag_agent", "intent_index": 1},
+            {"agent": "tool_agent", "intent_index": 1},
         ]
 
-    def test_multi_intent_deduplicates_same_agent(self):
-        """多意图涉及完全相同 Agent 时去重（intent_indices 合并）。"""
+    def test_multi_intent_same_agent_no_dedup(self):
+        """多意图涉及相同 Agent 时不去重，各自独立执行步骤。"""
         state = {
             "intent": IntentResult(
                 intents=[
@@ -401,10 +408,11 @@ class TestRouteAgentsNode:
             ),
         }
         result = route_agents_node(state)
-        # 两个意图都路由到 rag_agent，去重后单个 agent 但 intent_indices=[0,1]
-        assert result["target_agents"] == ["rag_agent"]
+        # 两个意图都路由到 rag_agent，不去重，各自一个执行步骤
+        assert result["target_agents"] == ["rag_agent", "rag_agent"]
         assert result["agent_intent_map"] == [
-            {"agent": "rag_agent", "intent_indices": [0, 1]},
+            {"agent": "rag_agent", "intent_index": 0},
+            {"agent": "rag_agent", "intent_index": 1},
         ]
 
     def test_high_confidence_no_fallback(self):
@@ -449,7 +457,7 @@ class TestToolNode:
                 )],
             ),
             "tool_results": [],
-            "agent_intent_map": [{"agent": "tool_agent", "intent_indices": [0]}],
+            "agent_intent_map": [{"agent": "tool_agent", "intent_index": 0}],
             "current_agent_index": 0,
         }
         result = tool_node(state)
@@ -457,10 +465,14 @@ class TestToolNode:
         assert result["tool_results"][0].success is True
         assert result["tool_results"][0].data["name"] == "张三"
 
-    def test_multi_intent_uses_correct_entities(self):
-        """场景三: 多意图各有工具，tool_node 根据 agent_intent_map 使用正确的 entities。"""
+    def test_multi_intent_sequential_tool_execution(self):
+        """场景三: 多意图各有工具，按执行计划分步调用 tool_node。
+        第一步 tool_node(intent_index=0) 执行 lookup_employee，
+        第二步 tool_node(intent_index=1) 执行 get_leave_balance。
+        """
         register_default_tools()
-        state = {
+        # 第一步：tool_agent 服务意图 0
+        state_step1 = {
             "intent": IntentResult(
                 intents=[
                     IntentItem(
@@ -478,17 +490,26 @@ class TestToolNode:
                 ],
             ),
             "tool_results": [],
-            # tool_agent 服务两个意图
-            "agent_intent_map": [{"agent": "tool_agent", "intent_indices": [0, 1]}],
+            "agent_intent_map": [
+                {"agent": "tool_agent", "intent_index": 0},
+                {"agent": "tool_agent", "intent_index": 1},
+            ],
             "current_agent_index": 0,
         }
-        result = tool_node(state)
-        assert len(result["tool_results"]) == 2
-        # 第一个工具使用 intent[0] 的 entities
-        assert result["tool_results"][0].success is True
-        assert result["tool_results"][0].data["name"] == "张三"
-        # 第二个工具使用 intent[1] 的 entities
-        assert result["tool_results"][1].success is True
+        result1 = tool_node(state_step1)
+        assert len(result1["tool_results"]) == 1
+        assert result1["tool_results"][0].success is True
+        assert result1["tool_results"][0].data["name"] == "张三"
+
+        # 第二步：tool_agent 服务意图 1（累积上一步结果）
+        state_step2 = {
+            **state_step1,
+            "tool_results": result1["tool_results"],
+            "current_agent_index": 1,
+        }
+        result2 = tool_node(state_step2)
+        assert len(result2["tool_results"]) == 2
+        assert result2["tool_results"][1].success is True
 
     def test_no_agent_intent_map_fallback(self):
         """无 agent_intent_map 时降级为遍历所有意图的工具。"""
@@ -538,6 +559,7 @@ class TestGenerateResponseNode:
             ),
             "rag_results": None,
             "tool_results": [],
+            "session_context": [],
             "memory_context": [],
         }
         result = generate_response_node(state)
@@ -559,6 +581,7 @@ class TestGenerateResponseNode:
             "tool_results": [
                 ToolResult(success=True, data={"name": "张三", "department": "研发部"}, formatted="{'name': '张三', 'department': '研发部'}")
             ],
+            "session_context": [],
             "memory_context": [],
         }
         result = generate_response_node(state)
@@ -591,6 +614,7 @@ class TestGenerateResponseNode:
             ),
             "rag_results": RetrievalResult(chunks=[]),
             "tool_results": [],
+            "session_context": [],
             "memory_context": [],
         }
         result = generate_response_node(state)

@@ -165,17 +165,18 @@ def _should_write_memory(
 def load_context_node(state: AgentState) -> dict[str, Any]:
     """Node: 加载上下文。
 
-    从 Session Memory 获取会话历史。
-    读取存储的摘要 + 当前消息列表。
+    从 Session Memory 获取会话历史，写入 session_context（短期记忆）。
+    不写入 memory_context（长期记忆由 memory_retrieval_node 负责）。
     """
     session_id = state.get("session_id", "default")
     sm = _get_session_memory()
     history = sm.get_history(session_id)
 
-    memory_snippets: list[str] = []
+    session_snippets: list[str] = []
     if not history:
         return {
-            "memory_context": memory_snippets,
+            "session_context": session_snippets,
+            "memory_context": [],
             "reflection_count": 0,
             "current_agent_index": 0,
         }
@@ -183,19 +184,20 @@ def load_context_node(state: AgentState) -> dict[str, Any]:
     # 读取 write-time trimming 产生的增量摘要
     stored_summary = sm.get_summary(session_id)
     if stored_summary:
-        memory_snippets.append(f"[历史摘要] {stored_summary}")
+        session_snippets.append(f"[历史摘要] {stored_summary}")
 
     # 当前保留的消息（已被 trim 过，数量不会无限增长）
     for msg in history:
-        memory_snippets.append(f"{msg.role}: {msg.content}")
+        session_snippets.append(f"{msg.role}: {msg.content}")
 
     logger.info(
-        "加载上下文: session_id=%s, 原始消息数=%d, 摘要数=%d",
-        session_id, len(history), len(memory_snippets),
+        "加载上下文: session_id=%s, 原始消息数=%d, 会话片段数=%d",
+        session_id, len(history), len(session_snippets),
     )
 
     return {
-        "memory_context": memory_snippets,
+        "session_context": session_snippets,
+        "memory_context": [],
         "reflection_count": 0,
         "current_agent_index": 0,
     }
@@ -227,19 +229,16 @@ def classify_intent_node(state: AgentState) -> dict[str, Any]:
     # 从 memory_context 中分离会话上下文和长期记忆
     session_summary = ""
     long_term_memory = ""
+
+    # session_context: 短期记忆（会话级）
+    session_ctx = state.get("session_context", [])
+    if session_ctx:
+        session_summary = "\n".join(session_ctx)
+
+    # memory_context: 长期记忆（跨会话级）
     memory_ctx = state.get("memory_context", [])
     if memory_ctx:
-        session_parts = []
-        ltm_parts = []
-        for item in memory_ctx:
-            if item.startswith("[长期记忆]"):
-                ltm_parts.append(item.removeprefix("[长期记忆] "))
-            else:
-                session_parts.append(item)
-        if session_parts:
-            session_summary = "\n".join(session_parts)
-        if ltm_parts:
-            long_term_memory = "\n".join(ltm_parts)
+        long_term_memory = "\n".join(memory_ctx)
 
     # 提取用户画像
     user_profile_text = ""
@@ -286,12 +285,6 @@ def route_agents_node(state: AgentState) -> dict[str, Any]:
     3. RAG 也无结果 → generate_response 生成友好的"无法回答"提示
     """
     intent = state.get("intent")
-    if intent is None:
-        return {
-            "target_agents": ["rag_agent"],
-            "current_agent_index": 0,
-            "agent_intent_map": [{"agent": "rag_agent", "intent_indices": [0]}],
-        }
 
     needs_clarification = state.get("needs_clarification", False)
 
@@ -336,14 +329,11 @@ def rag_node(state: AgentState) -> dict[str, Any]:
 def tool_node(state: AgentState) -> dict[str, Any]:
     """Node: Tool Agent 执行。
 
-    执行工具调用。根据 agent_intent_map 确定当前 tool_agent 服务的意图，
-    仅执行这些意图声明的工具，并使用对应意图的 entities 构建参数。
+    执行工具调用。根据 execution_plan 确定当前 tool_agent 服务的意图，
+    仅执行该意图声明的工具，并使用对应意图的 entities 构建参数。
 
-    支持四种场景：
-    - 单意图单工具：直接执行
-    - 单意图多工具：依次执行同一意图的所有工具
-    - 多意图各有工具：按意图映射执行各自的工具
-    - 无映射信息时降级为遍历所有意图的工具（向后兼容）
+    每次 tool_node 调用仅服务一个意图（execution_plan 中的一步），
+    保证存在顺序依赖的意图能分步执行。
     """
     from human_resource.tools.executor import execute_tool
 
@@ -354,25 +344,24 @@ def tool_node(state: AgentState) -> dict[str, Any]:
         logger.info("Tool Agent: 无工具调用需求")
         return {"tool_results": results}
 
-    # 确定当前 tool_agent 服务哪些意图
+    # 确定当前 tool_agent 服务哪个意图
     agent_intent_map = state.get("agent_intent_map", [])
     current_idx = state.get("current_agent_index", 0)
 
-    serving_indices: list[int] | None = None
+    serving_index: int | None = None
     if current_idx < len(agent_intent_map):
         entry = agent_intent_map[current_idx]
         if entry.get("agent") == "tool_agent":
-            serving_indices = entry.get("intent_indices", [])
+            serving_index = entry.get("intent_index")
 
     # 收集需要执行的 (tool_name, entities) 对
     tool_tasks: list[tuple[str, dict[str, Any]]] = []
-    if serving_indices is not None:
-        # 有映射：精确匹配每个意图声明的工具 + 对应 entities
-        for idx in serving_indices:
-            if idx < len(intent.intents):
-                intent_item = intent.intents[idx]
-                for tool_name in intent_item.requires_tools:
-                    tool_tasks.append((tool_name, intent_item.entities))
+    if serving_index is not None:
+        # 有映射：精确匹配该意图声明的工具 + 对应 entities
+        if serving_index < len(intent.intents):
+            intent_item = intent.intents[serving_index]
+            for tool_name in intent_item.requires_tools:
+                tool_tasks.append((tool_name, intent_item.entities))
     else:
         # 无映射降级：遍历所有意图的工具
         for intent_item in intent.intents:
@@ -393,17 +382,13 @@ def tool_node(state: AgentState) -> dict[str, Any]:
 
 
 def _build_tool_params(tool_name: str, entities: dict[str, Any]) -> dict[str, Any]:
-    """根据工具名和意图实体构建工具参数。"""
-    if tool_name == "lookup_employee":
-        query = entities.get("name", entities.get("employee_id", ""))
-        return {"query": str(query)}
-    elif tool_name == "get_leave_balance":
-        return {"employee_id": str(entities.get("employee_id", ""))}
-    elif tool_name == "list_hr_processes":
-        return {}
-    elif tool_name == "get_process_steps":
-        return {"process_id": str(entities.get("process", ""))}
-    return {}
+    """根据工具名和意图实体构建工具参数。
+
+    委托给 ToolRegistry 中注册的参数映射函数。
+    """
+    from human_resource.tools.registry import registry
+
+    return registry.build_params(tool_name, entities)
 
 
 def memory_retrieval_node(state: AgentState) -> dict[str, Any]:
@@ -412,6 +397,8 @@ def memory_retrieval_node(state: AgentState) -> dict[str, Any]:
     在意图识别之前：
     1. 用用户消息检索 mem0 长期记忆（factual + episodic）
     2. 加载用户画像（profile 类型记忆）至 state.user_profile
+
+    仅写入 memory_context（长期记忆），不触碰 session_context。
     """
     user_id = state.get("user_id", "default_user")
     messages = state.get("messages", [])
@@ -443,7 +430,7 @@ def memory_retrieval_node(state: AgentState) -> dict[str, Any]:
         for item in results:
             memory_text = item.get("memory", "")
             if memory_text:
-                memory_ctx.append(f"[长期记忆] {memory_text}")
+                memory_ctx.append(memory_text)
         logger.info("长期记忆检索完成: user=%s, 结果数=%d", user_id, len(results))
     except Exception:
         logger.exception("长期记忆检索失败，跳过")
@@ -456,6 +443,7 @@ def memory_node(state: AgentState) -> dict[str, Any]:
 
     当路由决策将 memory_recall 意图分发至此节点时，
     根据用户 query 从 mem0 检索相关长期记忆。
+    仅写入 memory_context（长期记忆）。
     """
     user_id = state.get("user_id", "default_user")
     messages = state.get("messages", [])
@@ -471,8 +459,8 @@ def memory_node(state: AgentState) -> dict[str, Any]:
         results = ltm.search(user_message, user_id=user_id, top_k=MEMORY_SEARCH_TOP_K)
         for item in results:
             memory_text = item.get("memory", "")
-            if memory_text and f"[长期记忆] {memory_text}" not in memory_ctx:
-                memory_ctx.append(f"[长期记忆] {memory_text}")
+            if memory_text and memory_text not in memory_ctx:
+                memory_ctx.append(memory_text)
         logger.info("Memory Agent 检索完成: 结果数=%d", len(results))
     except Exception:
         logger.exception("Memory Agent 检索失败")
@@ -527,8 +515,12 @@ def generate_response_node(state: AgentState) -> dict[str, Any]:
                 parts.append(f"工具调用失败: {tr.error}")
         tool_text = "\n".join(parts)
 
-    # 记忆上下文
+    # 长期记忆（跨会话）
     memory_text = "\n".join(state.get("memory_context", []))
+
+    # 会话历史（短期记忆）
+    session_ctx = state.get("session_context", [])
+    conversation_history = "\n".join(session_ctx[-6:])  # 最近 3 轮
 
     # 用户画像
     user_profile = state.get("user_profile")
@@ -536,16 +528,7 @@ def generate_response_node(state: AgentState) -> dict[str, Any]:
     if user_profile:
         profile_text = "\n".join(f"{k}: {v}" for k, v in user_profile.items())
 
-    # 对话历史
-    history_parts = []
-    for msg in messages[:-1]:  # 排除当前消息
-        if isinstance(msg, HumanMessage):
-            history_parts.append(f"用户: {msg.content}")
-        elif isinstance(msg, AIMessage):
-            history_parts.append(f"助手: {msg.content}")
-    conversation_history = "\n".join(history_parts[-6:])  # 最近 3 轮
-
-    # ── 三级回退 Level 3：UNKNOWN 意图 + RAG 无结果 → 友好提示 ──
+    # ── 三级回退 Level 3：UNKNOWN 意图 + RAG/Tool 均无结果 → 友好提示 ──
     if (intent and intent.primary_intent
             and intent.primary_intent.label == IntentLabel.UNKNOWN
             and not rag_text and not tool_text):
@@ -674,7 +657,7 @@ def post_process_node(state: AgentState) -> dict[str, Any]:
     tools_used: list[str] = []
     tool_results = state.get("tool_results", [])
     if tool_results:
-        tools_used = [tr.tool_name for tr in tool_results if hasattr(tr, "tool_name")]
+        tools_used = [tr.tool_name for tr in tool_results if tr.success and tr.tool_name]
 
     target_agents = state.get("target_agents", [])
 
@@ -852,18 +835,34 @@ def finalize_session(session_id: str, user_id: str) -> None:
 
 # ── 工具注册初始化 ───────────────────────────────────────────
 def register_default_tools() -> None:
-    """将内置 HR 工具注册到全局 Tool Registry。"""
+    """将内置 HR 工具注册到全局 Tool Registry（含参数映射）。"""
     from human_resource.tools.hr_tools.employee_lookup import (
         get_leave_balance,
         lookup_employee,
+        map_get_leave_balance,
+        map_lookup_employee,
     )
     from human_resource.tools.hr_tools.process_tools import (
         get_process_steps,
         list_hr_processes,
+        map_get_process_steps,
+        map_list_hr_processes,
     )
     from human_resource.tools.registry import registry
 
-    registry.register(lookup_employee, category="employee", source="internal")
-    registry.register(get_leave_balance, category="employee", source="internal")
-    registry.register(list_hr_processes, category="process", source="internal")
-    registry.register(get_process_steps, category="process", source="internal")
+    registry.register(
+        lookup_employee, category="employee", source="internal",
+        param_mapper=map_lookup_employee,
+    )
+    registry.register(
+        get_leave_balance, category="employee", source="internal",
+        param_mapper=map_get_leave_balance,
+    )
+    registry.register(
+        list_hr_processes, category="process", source="internal",
+        param_mapper=map_list_hr_processes,
+    )
+    registry.register(
+        get_process_steps, category="process", source="internal",
+        param_mapper=map_get_process_steps,
+    )

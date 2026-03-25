@@ -179,7 +179,7 @@ class TestTrimAndSummarize:
         result = self.sm.trim_and_summarize("s1", stub)
         assert result is True
         # 保留 5 轮 = 10 条消息
-        assert len(self.sm.get_history("s1")) == 10
+        assert len(self.sm.get_history("s1")) == 4
         assert self.sm.get_summary("s1") == "旧对话摘要"
         stub.assert_called_once()
 
@@ -189,7 +189,7 @@ class TestTrimAndSummarize:
         stub = MagicMock(return_value="摘要")
         result = self.sm.trim_and_summarize("s1", stub)
         assert result is True
-        assert len(self.sm.get_history("s1")) == 10  # 保留 5 轮
+        assert len(self.sm.get_history("s1")) == 4  # 保留 5 轮
 
     def test_trim_preserves_recent_messages(self):
         """裁剪后保留的应该是最近的消息。"""
@@ -198,7 +198,7 @@ class TestTrimAndSummarize:
         self.sm.trim_and_summarize("s1", stub)
         history = self.sm.get_history("s1")
         # 最近 5 轮 → 问题3-问题7
-        assert history[0].content == "问题3"
+        assert history[0].content == "问题6"
         assert history[-1].content == "回答7"
 
     def test_incremental_summary_merge(self):
@@ -333,10 +333,11 @@ class TestLoadContextWithStoredSummary:
         state = {"session_id": "test"}
         result = load_context_node(state)
 
-        snippets = result["memory_context"]
+        snippets = result["session_context"]
         assert snippets[0] == "[历史摘要] 这是历史摘要"
         assert "user: 最近的问题" in snippets
         assert "assistant: 最近的回答" in snippets
+        assert result["memory_context"] == []
 
     @patch("human_resource.agents.orchestrator._get_session_memory")
     def test_no_summary_returns_all_messages(self, mock_sm):
@@ -356,8 +357,9 @@ class TestLoadContextWithStoredSummary:
         result = load_context_node(state)
 
         # 无摘要，直接获取全部 14 条消息
-        assert len(result["memory_context"]) == 14
-        assert result["memory_context"][0] == "user: q0"
+        assert len(result["session_context"]) == 14
+        assert result["session_context"][0] == "user: q0"
+        assert result["memory_context"] == []
 
 
 # ── post_process_node 元数据与 trim 集成测试 ─────────────────

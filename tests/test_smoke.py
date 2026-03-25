@@ -45,4 +45,4 @@ def test_router_resolve():
     )
     agents, agent_map = resolve_route(intent)
     assert agents == ["tool_agent"]
-    assert agent_map == [{"agent": "tool_agent", "intent_indices": [0]}]
+    assert agent_map == [{"agent": "tool_agent", "intent_index": 0}]

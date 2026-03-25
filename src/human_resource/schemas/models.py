@@ -75,6 +75,7 @@ class ToolResult:
     """工具执行结果。"""
 
     success: bool
+    tool_name: str = ""
     data: Any = None
     error: str | None = None
     formatted: str = ""

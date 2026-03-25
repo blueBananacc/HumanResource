@@ -151,7 +151,7 @@ class SessionMemory:
         if turn_count <= SESSION_COMPRESS_THRESHOLD:
             return False
 
-        keep_count = SESSION_COMPRESS_THRESHOLD * 2  # 保留的消息数
+        keep_count = (SESSION_COMPRESS_THRESHOLD - 3) * 2  # 保留的消息数
         split_idx = len(session.messages) - keep_count
 
         old_messages = session.messages[:split_idx]

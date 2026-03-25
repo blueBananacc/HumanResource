@@ -5,6 +5,8 @@ MVP 使用模拟数据，后续接入实际 HR 系统。
 
 from __future__ import annotations
 
+from typing import Any
+
 from langchain_core.tools import tool
 
 # MVP 模拟员工数据
@@ -79,3 +81,17 @@ def get_leave_balance(employee_id: str) -> dict:
     if balance is None:
         return {"error": f"未找到员工假期信息: {employee_id}"}
     return {"employee_id": employee_id, **balance}
+
+
+# ── 参数映射函数 ─────────────────────────────────────────────
+
+
+def map_lookup_employee(entities: dict[str, Any]) -> dict[str, Any]:
+    """将意图 entities 映射为 lookup_employee 工具参数。"""
+    query = entities.get("name", entities.get("employee_id", ""))
+    return {"query": str(query)}
+
+
+def map_get_leave_balance(entities: dict[str, Any]) -> dict[str, Any]:
+    """将意图 entities 映射为 get_leave_balance 工具参数。"""
+    return {"employee_id": str(entities.get("employee_id", ""))}
