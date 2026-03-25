@@ -2,10 +2,12 @@
 
 统一管理内置工具和 MCP 工具的注册、发现和查找。
 支持参数映射：将意图实体（Intent entities）转换为工具参数。
+提供工具描述和 Schema 获取方法，用于 LLM prompt 注入（意图分类粗筛 + 工具选择精选）。
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Callable
 
@@ -102,6 +104,71 @@ class ToolRegistry:
         if mapper is not None:
             return mapper(entities)
         return dict(entities)
+
+    # ── 工具描述方法（供 LLM prompt 注入） ──────────────────────
+
+    def _get_target_tools(
+        self, names: list[str] | None = None,
+    ) -> list[BaseTool]:
+        """按名称列表获取工具，为空时返回全部。"""
+        if names is None:
+            return list(self._tools.values())
+        return [self._tools[n] for n in names if n in self._tools]
+
+    def get_tools_summary(
+        self, names: list[str] | None = None,
+    ) -> str:
+        """获取工具名称和描述的摘要列表（用于意图分类粗筛）。
+
+        格式：每行 "- 工具名: 描述首行"
+
+        Args:
+            names: 指定工具名列表，为 None 时返回全部。
+        """
+        tools = self._get_target_tools(names)
+        if not tools:
+            return "无可用工具"
+        lines = []
+        for t in tools:
+            desc = (t.description or "").split("\n")[0].strip()
+            lines.append(f"- {t.name}: {desc}")
+        return "\n".join(lines)
+
+    def get_tools_with_schemas(
+        self, names: list[str] | None = None,
+    ) -> str:
+        """获取工具名称、描述和参数 Schema（用于 LLM 工具选择精选）。
+
+        Args:
+            names: 指定工具名列表，为 None 时返回全部。
+        """
+        tools = self._get_target_tools(names)
+        if not tools:
+            return "无可用工具"
+        parts = []
+        for t in tools:
+            desc = (t.description or "").split("\n")[0].strip()
+            schema = self.get_schema(t.name)
+            params_desc = self._format_params(schema)
+            parts.append(f"### {t.name}\n描述: {desc}\n参数:\n{params_desc}")
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _format_params(schema: dict[str, Any] | None) -> str:
+        """将 JSON Schema 格式化为可读的参数描述。"""
+        if not schema:
+            return "  无参数"
+        props = schema.get("properties", {})
+        required = set(schema.get("required", []))
+        if not props:
+            return "  无参数"
+        lines = []
+        for pname, pinfo in props.items():
+            ptype = pinfo.get("type", "any")
+            pdesc = pinfo.get("description", "")
+            req = "必填" if pname in required else "可选"
+            lines.append(f"  - {pname} ({ptype}, {req}): {pdesc}")
+        return "\n".join(lines)
 
 
 # 全局注册表单例

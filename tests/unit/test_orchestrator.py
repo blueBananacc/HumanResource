@@ -15,7 +15,6 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from human_resource.agents.orchestrator import (
-    _build_tool_params,
     classify_intent_node,
     generate_response_node,
     load_context_node,
@@ -33,6 +32,7 @@ from human_resource.schemas.models import (
     RetrievalResult,
     ToolResult,
 )
+from human_resource.tools.selector import ToolCallRequest
 
 
 # ── IntentClassifier 解析测试 ────────────────────────────────
@@ -444,15 +444,22 @@ class TestToolNode:
         result = tool_node(state)
         assert result["tool_results"] == []
 
-    def test_executes_lookup_employee(self):
-        """场景一: 单意图单工具，使用该意图的 entities。"""
+    @patch("human_resource.agents.orchestrator._get_tool_selector")
+    def test_executes_lookup_employee(self, mock_get_selector):
+        """场景一: 单意图单工具，ToolSelector 选择工具并生成参数。"""
         register_default_tools()
+        mock_selector = MagicMock()
+        mock_selector.select.return_value = [
+            ToolCallRequest(tool_name="lookup_employee", parameters={"query": "张三"}),
+        ]
+        mock_get_selector.return_value = mock_selector
+
         state = {
+            "messages": [HumanMessage(content="查询张三的部门")],
             "intent": IntentResult(
                 intents=[IntentItem(
                     label=IntentLabel.EMPLOYEE_LOOKUP,
                     confidence=0.95,
-                    entities={"name": "张三"},
                     requires_tools=["lookup_employee"],
                 )],
             ),
@@ -464,27 +471,38 @@ class TestToolNode:
         assert len(result["tool_results"]) == 1
         assert result["tool_results"][0].success is True
         assert result["tool_results"][0].data["name"] == "张三"
+        # 验证 ToolSelector 接收了正确的候选工具
+        call_args = mock_selector.select.call_args
+        assert call_args[0][1] == ["lookup_employee"]
 
-    def test_multi_intent_sequential_tool_execution(self):
+    @patch("human_resource.agents.orchestrator._get_tool_selector")
+    def test_multi_intent_sequential_tool_execution(self, mock_get_selector):
         """场景三: 多意图各有工具，按执行计划分步调用 tool_node。
         第一步 tool_node(intent_index=0) 执行 lookup_employee，
         第二步 tool_node(intent_index=1) 执行 get_leave_balance。
+        ToolSelector 在第二步接收到第一步的工具结果作为上下文。
         """
         register_default_tools()
+        mock_selector = MagicMock()
+
         # 第一步：tool_agent 服务意图 0
+        mock_selector.select.return_value = [
+            ToolCallRequest(tool_name="lookup_employee", parameters={"query": "张三"}),
+        ]
+        mock_get_selector.return_value = mock_selector
+
         state_step1 = {
+            "messages": [HumanMessage(content="查张三信息和假期余额")],
             "intent": IntentResult(
                 intents=[
                     IntentItem(
                         label=IntentLabel.EMPLOYEE_LOOKUP,
                         confidence=0.95,
-                        entities={"name": "张三"},
                         requires_tools=["lookup_employee"],
                     ),
                     IntentItem(
                         label=IntentLabel.TOOL_ACTION,
                         confidence=0.9,
-                        entities={"employee_id": "E001"},
                         requires_tools=["get_leave_balance"],
                     ),
                 ],
@@ -501,7 +519,10 @@ class TestToolNode:
         assert result1["tool_results"][0].success is True
         assert result1["tool_results"][0].data["name"] == "张三"
 
-        # 第二步：tool_agent 服务意图 1（累积上一步结果）
+        # 第二步：tool_agent 服务意图 1
+        mock_selector.select.return_value = [
+            ToolCallRequest(tool_name="get_leave_balance", parameters={"employee_id": "E001"}),
+        ]
         state_step2 = {
             **state_step1,
             "tool_results": result1["tool_results"],
@@ -510,16 +531,27 @@ class TestToolNode:
         result2 = tool_node(state_step2)
         assert len(result2["tool_results"]) == 2
         assert result2["tool_results"][1].success is True
+        # 验证第二步 ToolSelector 接收了上下文（含第一步结果）
+        call_args = mock_selector.select.call_args
+        context_arg = call_args[0][2] if len(call_args[0]) > 2 else call_args[1].get("context", "")
+        assert "张三" in context_arg
 
-    def test_no_agent_intent_map_fallback(self):
-        """无 agent_intent_map 时降级为遍历所有意图的工具。"""
+    @patch("human_resource.agents.orchestrator._get_tool_selector")
+    def test_no_agent_intent_map_fallback(self, mock_get_selector):
+        """无 agent_intent_map 时降级：使用所有意图声明的工具作为候选。"""
         register_default_tools()
+        mock_selector = MagicMock()
+        mock_selector.select.return_value = [
+            ToolCallRequest(tool_name="lookup_employee", parameters={"query": "张三"}),
+        ]
+        mock_get_selector.return_value = mock_selector
+
         state = {
+            "messages": [HumanMessage(content="查张三")],
             "intent": IntentResult(
                 intents=[IntentItem(
                     label=IntentLabel.EMPLOYEE_LOOKUP,
                     confidence=0.95,
-                    entities={"name": "张三"},
                     requires_tools=["lookup_employee"],
                 )],
             ),
@@ -529,20 +561,32 @@ class TestToolNode:
         result = tool_node(state)
         assert len(result["tool_results"]) == 1
         assert result["tool_results"][0].success is True
+        # 验证候选工具来自所有意图的并集
+        call_args = mock_selector.select.call_args
+        assert "lookup_employee" in call_args[0][1]
 
+    @patch("human_resource.agents.orchestrator._get_tool_selector")
+    def test_selector_returns_empty(self, mock_get_selector):
+        """ToolSelector 返回空列表时，不执行任何工具。"""
+        mock_selector = MagicMock()
+        mock_selector.select.return_value = []
+        mock_get_selector.return_value = mock_selector
 
-class TestBuildToolParams:
-    def test_lookup_employee_params(self):
-        params = _build_tool_params("lookup_employee", {"name": "张三"})
-        assert params == {"query": "张三"}
-
-    def test_get_leave_balance_params(self):
-        params = _build_tool_params("get_leave_balance", {"employee_id": "E001"})
-        assert params == {"employee_id": "E001"}
-
-    def test_unknown_tool_returns_empty(self):
-        params = _build_tool_params("unknown_tool", {})
-        assert params == {}
+        state = {
+            "messages": [HumanMessage(content="你好")],
+            "intent": IntentResult(
+                intents=[IntentItem(
+                    label=IntentLabel.TOOL_ACTION,
+                    confidence=0.9,
+                    requires_tools=["lookup_employee"],
+                )],
+            ),
+            "tool_results": [],
+            "agent_intent_map": [{"agent": "tool_agent", "intent_index": 0}],
+            "current_agent_index": 0,
+        }
+        result = tool_node(state)
+        assert result["tool_results"] == []
 
 
 class TestGenerateResponseNode:

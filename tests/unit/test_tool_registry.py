@@ -323,3 +323,104 @@ class TestToolResultToolName:
     def test_tool_name_set(self):
         r = ToolResult(success=True, tool_name="lookup_employee", data={})
         assert r.tool_name == "lookup_employee"
+
+
+# ── Registry 描述方法测试 ────────────────────────────────────
+
+
+class TestToolsDescription:
+    def setup_method(self):
+        self.reg = ToolRegistry()
+
+    def _make_tool(self, name: str, desc: str = "Dummy tool.") -> BaseTool:
+        @tool
+        def dummy(x: str) -> str:
+            """Dummy tool."""
+            return x
+
+        dummy.name = name
+        dummy.description = desc
+        return dummy
+
+    def test_get_tools_summary_all(self):
+        t1 = self._make_tool("tool_a", "描述A")
+        t2 = self._make_tool("tool_b", "描述B")
+        self.reg.register(t1)
+        self.reg.register(t2)
+
+        summary = self.reg.get_tools_summary()
+        assert "- tool_a: 描述A" in summary
+        assert "- tool_b: 描述B" in summary
+
+    def test_get_tools_summary_by_names(self):
+        t1 = self._make_tool("tool_a", "描述A")
+        t2 = self._make_tool("tool_b", "描述B")
+        self.reg.register(t1)
+        self.reg.register(t2)
+
+        summary = self.reg.get_tools_summary(names=["tool_a"])
+        assert "tool_a" in summary
+        assert "tool_b" not in summary
+
+    def test_get_tools_summary_empty(self):
+        summary = self.reg.get_tools_summary()
+        assert summary == "无可用工具"
+
+    def test_get_tools_with_schemas(self):
+        @tool
+        def typed_tool(name: str, count: int) -> str:
+            """有参数的工具。"""
+            return ""
+
+        self.reg.register(typed_tool)
+        result = self.reg.get_tools_with_schemas()
+
+        assert "### typed_tool" in result
+        assert "name" in result
+        assert "count" in result
+        assert "描述:" in result
+
+    def test_get_tools_with_schemas_by_names(self):
+        t1 = self._make_tool("tool_a", "描述A")
+        t2 = self._make_tool("tool_b", "描述B")
+        self.reg.register(t1)
+        self.reg.register(t2)
+
+        result = self.reg.get_tools_with_schemas(names=["tool_b"])
+        assert "tool_b" in result
+        assert "tool_a" not in result
+
+    def test_get_tools_with_schemas_empty(self):
+        result = self.reg.get_tools_with_schemas()
+        assert result == "无可用工具"
+
+    def test_format_params_no_schema(self):
+        result = ToolRegistry._format_params(None)
+        assert result == "  无参数"
+
+    def test_format_params_empty_properties(self):
+        result = ToolRegistry._format_params({"properties": {}, "required": []})
+        assert result == "  无参数"
+
+    def test_format_params_with_required(self):
+        schema = {
+            "properties": {
+                "query": {"type": "string", "description": "搜索词"},
+            },
+            "required": ["query"],
+        }
+        result = ToolRegistry._format_params(schema)
+        assert "query" in result
+        assert "string" in result
+        assert "必填" in result
+        assert "搜索词" in result
+
+    def test_format_params_optional(self):
+        schema = {
+            "properties": {
+                "limit": {"type": "integer", "description": "限制数量"},
+            },
+            "required": [],
+        }
+        result = ToolRegistry._format_params(schema)
+        assert "可选" in result

@@ -34,16 +34,18 @@ _CLASSIFICATION_SYSTEM_PROMPT = """\
 1. 一条消息可能包含多个意图，请全部列出。
 2. 多意图时，按照解决问题的逻辑顺序排列（先查数据再做分析、先获取信息再回答问题），而非按置信度排序。
 3. 为每个意图给出 0.0 到 1.0 之间的置信度。
-4. 每个意图单独声明所需工具（requires_tools），仅列出该意图自身需要的工具。
-   可用工具：lookup_employee, get_leave_balance, list_hr_processes, get_process_steps
-5. 提取消息中的关键实体（人名、部门、日期等）放入 entities。
+4. 每个意图单独声明所需工具（requires_tools），仅做粗略筛选，列出该意图可能需要的工具名称。
+   具体的工具参数不需要在此指定，由 Tool Agent 根据工具 schema 自动确定。
+   可用工具：
+{available_tools}
+5. 提取消息中的关键实体（人名、部门、日期、主题等）放入 entities，用于辅助理解用户意图上下文。
 
 请严格以 JSON 格式输出，不要包含其他文字：
-{
+{{
   "intents": [
-    {"label": "意图类别", "confidence": 0.9, "entities": {"name": "张三"}, "requires_tools": ["工具名"]}
+    {{"label": "意图类别", "confidence": 0.9, "entities": {{"topic": "主题"}}, "requires_tools": ["工具名"]}}
   ]
-}
+}}
 """
 
 _FEW_SHOT_EXAMPLES = """
@@ -100,7 +102,14 @@ class IntentClassifier:
         Returns:
             IntentResult，包含一个或多个意图分类结果。
         """
-        system_content = _CLASSIFICATION_SYSTEM_PROMPT + _FEW_SHOT_EXAMPLES
+        # 从 ToolRegistry 动态获取可用工具列表
+        from human_resource.tools.registry import registry
+
+        available_tools = registry.get_tools_summary()
+
+        system_content = _CLASSIFICATION_SYSTEM_PROMPT.format(
+            available_tools=available_tools,
+        ) + _FEW_SHOT_EXAMPLES
         if user_profile:
             system_content += f"\n用户画像（用于理解用户背景）：\n{user_profile}"
         if long_term_memory:

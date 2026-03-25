@@ -28,7 +28,7 @@ DEEPSEEK_API_BASE = "https://api.deepseek.com"
 # 各场景使用的模型名称
 MODEL_CONFIG: dict[str, str] = {
     "intent_classification": "deepseek-reasoner",
-    "tool_selection": "deepseek-reasoner",
+    "tool_selection": "deepseek-chat",
     "rag_retrieval": "deepseek-chat",
     "context_compression": "deepseek-chat",
     "response_simple": "deepseek-chat",

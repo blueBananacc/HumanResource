@@ -38,6 +38,7 @@ from human_resource.schemas.models import (
     ToolResult,
 )
 from human_resource.schemas.state import AgentState
+from human_resource.tools.selector import ToolSelector
 from human_resource.utils.llm_client import get_llm
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ _session_memory: SessionMemory | None = None
 _prompt_builder: PromptBuilder | None = None
 _compressor: ContextCompressor | None = None
 _longterm_memory: LongTermMemory | None = None
+_tool_selector: ToolSelector | None = None
 
 
 def _get_classifier() -> IntentClassifier:
@@ -83,6 +85,13 @@ def _get_longterm_memory() -> LongTermMemory:
     if _longterm_memory is None:
         _longterm_memory = LongTermMemory()
     return _longterm_memory
+
+
+def _get_tool_selector() -> ToolSelector:
+    global _tool_selector
+    if _tool_selector is None:
+        _tool_selector = ToolSelector()
+    return _tool_selector
 
 
 def _extract_user_message(messages: list) -> str:
@@ -329,66 +338,77 @@ def rag_node(state: AgentState) -> dict[str, Any]:
 def tool_node(state: AgentState) -> dict[str, Any]:
     """Node: Tool Agent 执行。
 
-    执行工具调用。根据 execution_plan 确定当前 tool_agent 服务的意图，
-    仅执行该意图声明的工具，并使用对应意图的 entities 构建参数。
+    两阶段工具选择中的第二阶段：
+    1. 根据 execution_plan 确定当前服务的意图及其候选工具（requires_tools 粗筛）
+    2. 使用 ToolSelector（LLM + JSON Output）精细选择工具并生成参数
+    3. 通过 executor 执行工具调用
 
     每次 tool_node 调用仅服务一个意图（execution_plan 中的一步），
-    保证存在顺序依赖的意图能分步执行。
+    保证存在顺序依赖的意图能分步执行。ToolSelector 接收已有工具结果
+    作为上下文，支持多步推理（如先查员工信息再查假期余额）。
     """
     from human_resource.tools.executor import execute_tool
 
     intent = state.get("intent")
     results: list[ToolResult] = list(state.get("tool_results", []))
+    messages = state.get("messages", [])
 
     if not intent or not intent.requires_tools:
         logger.info("Tool Agent: 无工具调用需求")
         return {"tool_results": results}
 
-    # 确定当前 tool_agent 服务哪个意图
+    user_message = _extract_user_message(messages)
+
+    # 确定当前 tool_agent 服务哪个意图及其候选工具
     agent_intent_map = state.get("agent_intent_map", [])
     current_idx = state.get("current_agent_index", 0)
 
-    serving_index: int | None = None
+    candidate_tools: list[str] = []
     if current_idx < len(agent_intent_map):
         entry = agent_intent_map[current_idx]
         if entry.get("agent") == "tool_agent":
             serving_index = entry.get("intent_index")
+            if serving_index is not None and serving_index < len(intent.intents):
+                candidate_tools = list(intent.intents[serving_index].requires_tools)
 
-    # 收集需要执行的 (tool_name, entities) 对
-    tool_tasks: list[tuple[str, dict[str, Any]]] = []
-    if serving_index is not None:
-        # 有映射：精确匹配该意图声明的工具 + 对应 entities
-        if serving_index < len(intent.intents):
-            intent_item = intent.intents[serving_index]
-            for tool_name in intent_item.requires_tools:
-                tool_tasks.append((tool_name, intent_item.entities))
-    else:
-        # 无映射降级：遍历所有意图的工具
-        for intent_item in intent.intents:
-            for tool_name in intent_item.requires_tools:
-                tool_tasks.append((tool_name, intent_item.entities))
+    if not candidate_tools:
+        # 无映射降级：使用所有意图声明的工具作为候选
+        candidate_tools = list(intent.requires_tools)
 
-    for tool_name, entities in tool_tasks:
-        params = _build_tool_params(tool_name, entities)
-        logger.info("执行工具: %s, 参数: %s", tool_name, params)
+    if not candidate_tools:
+        logger.info("Tool Agent: 当前意图无候选工具")
+        return {"tool_results": results}
 
-        result = execute_tool(tool_name, params)
+    # 构建上下文：已有工具结果 + 会话上下文
+    context_parts: list[str] = []
+    for tr in results:
+        if tr.success and tr.formatted:
+            context_parts.append(tr.formatted)
+    session_ctx = state.get("session_context", [])
+    if session_ctx:
+        context_parts.extend(session_ctx[-4:])
+    context = "\n".join(context_parts)
+
+    # 使用 ToolSelector（LLM）精细选择工具并生成参数
+    selector = _get_tool_selector()
+    tool_calls = selector.select(user_message, candidate_tools, context)
+
+    if not tool_calls:
+        logger.info("Tool Agent: LLM 未选择任何工具")
+        return {"tool_results": results}
+
+    for tc in tool_calls:
+        logger.info(
+            "执行工具: %s, 参数: %s, 理由: %s",
+            tc.tool_name, tc.parameters, tc.reason,
+        )
+        result = execute_tool(tc.tool_name, tc.parameters)
         results.append(result)
 
         if not result.success:
-            logger.warning("工具 %s 执行失败: %s", tool_name, result.error)
+            logger.warning("工具 %s 执行失败: %s", tc.tool_name, result.error)
 
     return {"tool_results": results}
-
-
-def _build_tool_params(tool_name: str, entities: dict[str, Any]) -> dict[str, Any]:
-    """根据工具名和意图实体构建工具参数。
-
-    委托给 ToolRegistry 中注册的参数映射函数。
-    """
-    from human_resource.tools.registry import registry
-
-    return registry.build_params(tool_name, entities)
 
 
 def memory_retrieval_node(state: AgentState) -> dict[str, Any]:
