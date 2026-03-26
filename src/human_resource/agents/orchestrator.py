@@ -340,7 +340,7 @@ def tool_node(state: AgentState) -> dict[str, Any]:
 
     两阶段工具选择中的第二阶段：
     1. 根据 execution_plan 确定当前服务的意图及其候选工具（requires_tools 粗筛）
-    2. 使用 ToolSelector（LLM + JSON Output）精细选择工具并生成参数
+    2. 使用 ToolSelector（bind_tools + Native Function Calling）精细选择工具并生成参数
     3. 通过 executor 执行工具调用
 
     每次 tool_node 调用仅服务一个意图（execution_plan 中的一步），
@@ -386,7 +386,7 @@ def tool_node(state: AgentState) -> dict[str, Any]:
             context_parts.append(tr.formatted)
     session_ctx = state.get("session_context", [])
     if session_ctx:
-        context_parts.extend(session_ctx[-4:])
+        context_parts.extend(session_ctx)
     context = "\n".join(context_parts)
 
     # 使用 ToolSelector（LLM）精细选择工具并生成参数
@@ -855,34 +855,18 @@ def finalize_session(session_id: str, user_id: str) -> None:
 
 # ── 工具注册初始化 ───────────────────────────────────────────
 def register_default_tools() -> None:
-    """将内置 HR 工具注册到全局 Tool Registry（含参数映射）。"""
+    """将内置 HR 工具注册到全局 Tool Registry。"""
     from human_resource.tools.hr_tools.employee_lookup import (
         get_leave_balance,
         lookup_employee,
-        map_get_leave_balance,
-        map_lookup_employee,
     )
     from human_resource.tools.hr_tools.process_tools import (
         get_process_steps,
         list_hr_processes,
-        map_get_process_steps,
-        map_list_hr_processes,
     )
     from human_resource.tools.registry import registry
 
-    registry.register(
-        lookup_employee, category="employee", source="internal",
-        param_mapper=map_lookup_employee,
-    )
-    registry.register(
-        get_leave_balance, category="employee", source="internal",
-        param_mapper=map_get_leave_balance,
-    )
-    registry.register(
-        list_hr_processes, category="process", source="internal",
-        param_mapper=map_list_hr_processes,
-    )
-    registry.register(
-        get_process_steps, category="process", source="internal",
-        param_mapper=map_get_process_steps,
-    )
+    registry.register(lookup_employee, category="employee", source="internal")
+    registry.register(get_leave_balance, category="employee", source="internal")
+    registry.register(list_hr_processes, category="process", source="internal")
+    registry.register(get_process_steps, category="process", source="internal")

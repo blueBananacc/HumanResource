@@ -1,9 +1,8 @@
 """Tool Calling 模块单元测试。
 
 覆盖：
-- ToolRegistry 注册/查找/列举/schema/参数映射
+- ToolRegistry 注册/查找/列举/schema
 - Tool Executor 参数校验/执行/超时/格式化
-- HR 内置工具的参数映射函数
 - ToolResult.tool_name 字段
 """
 
@@ -117,74 +116,7 @@ class TestToolRegistry:
         assert self.reg.get_metadata("nope") is None
 
 
-# ── 参数映射测试 ─────────────────────────────────────────────
 
-
-class TestParamMapping:
-    def setup_method(self):
-        self.reg = ToolRegistry()
-
-    def test_build_params_with_mapper(self):
-        t = MagicMock(spec=BaseTool)
-        t.name = "my_tool"
-        mapper = lambda e: {"query": e.get("name", "")}
-        self.reg.register(t, param_mapper=mapper)
-
-        result = self.reg.build_params("my_tool", {"name": "张三", "extra": "ignored"})
-        assert result == {"query": "张三"}
-
-    def test_build_params_without_mapper_passthrough(self):
-        """无映射函数时直接透传 entities。"""
-        t = MagicMock(spec=BaseTool)
-        t.name = "raw_tool"
-        self.reg.register(t)
-
-        result = self.reg.build_params("raw_tool", {"a": 1, "b": 2})
-        assert result == {"a": 1, "b": 2}
-
-    def test_build_params_unregistered_tool(self):
-        result = self.reg.build_params("nope", {"key": "val"})
-        assert result == {"key": "val"}
-
-
-class TestHRToolParamMappers:
-    """测试 HR 内置工具的参数映射函数。"""
-
-    def test_map_lookup_employee_by_name(self):
-        from human_resource.tools.hr_tools.employee_lookup import map_lookup_employee
-
-        result = map_lookup_employee({"name": "张三"})
-        assert result == {"query": "张三"}
-
-    def test_map_lookup_employee_by_id(self):
-        from human_resource.tools.hr_tools.employee_lookup import map_lookup_employee
-
-        result = map_lookup_employee({"employee_id": "E001"})
-        assert result == {"query": "E001"}
-
-    def test_map_lookup_employee_empty(self):
-        from human_resource.tools.hr_tools.employee_lookup import map_lookup_employee
-
-        result = map_lookup_employee({})
-        assert result == {"query": ""}
-
-    def test_map_get_leave_balance(self):
-        from human_resource.tools.hr_tools.employee_lookup import map_get_leave_balance
-
-        result = map_get_leave_balance({"employee_id": "E001"})
-        assert result == {"employee_id": "E001"}
-
-    def test_map_list_hr_processes(self):
-        from human_resource.tools.hr_tools.process_tools import map_list_hr_processes
-
-        result = map_list_hr_processes({"anything": "ignored"})
-        assert result == {}
-
-    def test_map_get_process_steps(self):
-        from human_resource.tools.hr_tools.process_tools import map_get_process_steps
-
-        result = map_get_process_steps({"process": "leave_request"})
-        assert result == {"process_id": "leave_request"}
 
 
 # ── Executor 参数校验测试 ────────────────────────────────────

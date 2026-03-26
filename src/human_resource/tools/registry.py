@@ -1,7 +1,6 @@
 """工具注册表。
 
 统一管理内置工具和 MCP 工具的注册、发现和查找。
-支持参数映射：将意图实体（Intent entities）转换为工具参数。
 提供工具描述和 Schema 获取方法，用于 LLM prompt 注入（意图分类粗筛 + 工具选择精选）。
 """
 
@@ -9,14 +8,11 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Callable
+from typing import Any
 
 from langchain_core.tools import BaseTool
 
 logger = logging.getLogger(__name__)
-
-# 参数映射函数类型：接收 entities dict，返回 tool params dict
-ParamMapper = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 class ToolRegistry:
@@ -25,14 +21,12 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, BaseTool] = {}
         self._metadata: dict[str, dict[str, Any]] = {}
-        self._param_mappers: dict[str, ParamMapper] = {}
 
     def register(
         self,
         tool: BaseTool,
         category: str = "general",
         source: str = "internal",
-        param_mapper: ParamMapper | None = None,
     ) -> None:
         """注册一个工具。
 
@@ -40,15 +34,12 @@ class ToolRegistry:
             tool: LangChain BaseTool 实例。
             category: 工具类别（employee, process 等）。
             source: 来源标记（"internal" | "mcp"）。
-            param_mapper: 可选，将意图 entities 映射为工具参数的函数。
         """
         self._tools[tool.name] = tool
         self._metadata[tool.name] = {
             "category": category,
             "source": source,
         }
-        if param_mapper is not None:
-            self._param_mappers[tool.name] = param_mapper
 
     def get(self, name: str) -> BaseTool | None:
         """根据名称获取工具。"""
@@ -92,18 +83,6 @@ class ToolRegistry:
     def get_metadata(self, name: str) -> dict[str, Any] | None:
         """获取工具的元信息（category, source）。"""
         return self._metadata.get(name)
-
-    def build_params(
-        self, tool_name: str, entities: dict[str, Any],
-    ) -> dict[str, Any]:
-        """使用注册的映射函数将意图实体转换为工具参数。
-
-        如果工具未注册映射函数，则直接透传 entities。
-        """
-        mapper = self._param_mappers.get(tool_name)
-        if mapper is not None:
-            return mapper(entities)
-        return dict(entities)
 
     # ── 工具描述方法（供 LLM prompt 注入） ──────────────────────
 

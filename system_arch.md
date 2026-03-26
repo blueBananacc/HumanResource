@@ -242,6 +242,7 @@ AgentState {
 
 **关键技术考虑**：
 - Tool Schema：每个工具以 JSON Schema 定义输入参数，LLM 根据 schema 生成调用参数。Schema 同时用于参数校验
+- 优先使用模型 Native Function Calling 。通过 API tools 参数注入 Schema，利用模型后训练（Post-training）的工具选择能力，而非纯文本 Prompt 引导。
 - Tool Selection：两阶段选择 —— ① Intent Classifier 输出 requires_tools[] 做粗筛 ② 将候选工具 schema 注入 prompt，由 Tool Agent 做精细选择（native function calling）
 - Tool Error Handling：
   参数校验失败 → 返回参数错误信息，LLM 可修正后重试（最多 2 次）
