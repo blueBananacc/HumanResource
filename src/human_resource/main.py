@@ -27,6 +27,16 @@ def _on_exit(session_id: str, user_id: str) -> None:
     except Exception:
         logger.exception("会话结束处理失败")
 
+    # 停止 MCP Client（关闭本地 MCP Server 进程）
+    try:
+        import asyncio
+
+        from human_resource.mcp.client import stop_mcp_client
+
+        asyncio.run(stop_mcp_client())
+    except Exception:
+        logger.exception("MCP Client 停止失败")
+
 
 def run() -> None:
     """CLI 交互循环入口。"""

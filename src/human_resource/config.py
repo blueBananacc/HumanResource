@@ -78,6 +78,21 @@ SESSION_COMPRESS_THRESHOLD = 5  # 超过此轮次数触发历史压缩
 MEMORY_SEARCH_TOP_K = 3  # mem0 检索返回结果数量
 MEMORY_WRITE_INTERVAL = 5  # 固定轮次触发写入间隔
 MEMORY_IMPORTANCE_THRESHOLD = 0.5  # 记忆重要性阈值，仅 > 此值才写入
+
+# ── MCP 配置 ──────────────────────────────────────────────
+# MCP Server 连接信息，格式兼容 langchain-mcp-adapters MultiServerMCPClient
+MCP_SERVERS: dict[str, dict] = {
+    "universal-email": {
+        "command": "node",
+        "args": ["D:\\humanResource\\src\\human_resource\\mcp\\email-mcp\\index.js"],
+        "transport": "stdio",
+        "env": {
+            "EMAIL_USER": "897287969@qq.com",
+            "EMAIL_PASSWORD": "unbdvrreonqhbfef",
+            "EMAIL_TYPE": "qq",
+        },
+    },
+}
 MEMORY_WRITE_KEYWORDS: list[str] = [
     "记住这个", "记住", "请记住", "帮我记一下", "记下来",
     "remember this", "remember", "请记下",

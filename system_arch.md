@@ -261,52 +261,47 @@ AgentState {
 **依赖**：LLM Client（用于 tool selection）
 **被调用方**：Tool Agent
 
+
 ## 3.3 MCP Tool Integration
-**目标**：通过 **MCP (Model Context Protocol)** 接入外部 MCP Provider 提供的工具，实现工具的动态发现与调用，而无需自行实现 MCP Server。
-系统仅作为 **MCP Client**，从外部 MCP 服务发现并调用工具。
+**目标**：通过 **MCP (Model Context Protocol)** 接入在**本地运行**的 MCP Server 提供的工具，实现工具的动态发现与调用。  
+系统仅作为 **MCP Client**，从本地 MCP 服务发现并调用工具。
 
 **子模块**：
-
-子模块 | 职责
---- | ---
-MCP Client | 连接外部 MCP Server，发现并调用工具
-MCP Tool Adapter | 将 MCP 工具适配为系统内部 Tool Registry 统一格式
-
+| 子模块 | 职责 |
+|---|---|
+| MCP Client | 连接本地运行的 MCP Server，发现并调用工具 |
+| MCP Tool Adapter | 将 MCP 工具适配为系统内部 Tool Registry 的统一格式 |
 
 **关键技术考虑**：
-
-- MCP Client
-  - 系统作为 MCP Client 与外部 MCP Provider 连接：
-  - 支持 MCP 标准 transport：stdio、SSE
+- **MCP Client**
+  - 使用 langchain-mcp-adapters 与本地运行的 MCP Server 连接：
+  - 支持 MCP 标准 transport：**stdio、SSE**
   - MCP Client 负责：建立连接、调用 MCP API、工具发现、工具执行
 
-- MCP Tool Discovery：
-  - MCP Client 启动时调用 tools/list 获取所有可用工具
+- **MCP Tool Discovery**
+  - MCP Client 启动时先从本地 MCP Server 获取所有可用工具
   - 将 MCP 工具自动注册到 Tool Registry（与内置工具统一管理）
-  - 工具元数据包含：name, description, inputSchema
-- Tool Metadata：
-  - 每个 MCP Tool 携带完整的 JSON Schema 描述
-  - 支持 tool annotations（readOnlyHint, destructiveHint 等安全标记）
-  - Metadata 用于 LLM 工具选择和参数生成  
+  - MCP 工具元数据应展示：`name`、`description`、`JSON Schema`
 
 **Tool Invocation Flow**：
-Tool Agent 选择 MCP 工具
-  → MCP Client 构造 tools/call 请求
-  → MCP Server 接收并路由到具体 handler
-  → Handler 执行业务逻辑
-  → 返回结构化结果
-  → MCP Client 解析并传回 Tool Agent
+Tool Agent 选择 MCP 工具  
+→ MCP Client 构造 `tools/call` 请求  
+→ 本地 MCP Server 接收并路由到具体 handler  
+→ Handler 执行业务逻辑  
+→ 返回结构化结果  
+→ MCP Client 解析结果并传回 Tool Agent
 
-- **与内置工具的统一**：MCP 工具和内置工具在 Tool Registry 中统一注册，Tool Agent 无需区分来源。Registry 中标记 source: "internal" | "mcp"，执行时根据 source 走不同调用路径
+- **与内置工具的统一**
+  - MCP 工具和内置工具在 Tool Registry 中统一注册，Tool Agent 无需区分来源，但 Registry 中标记 `source: "internal" | "mcp"`
 
 **技术选型映射**：
-- MCP 适配：使用 langchain-mcp-adapters 库将 MCP 工具转换为 LangChain Tool 对象，无缝接入 LangGraph ReAct Agent
-- MCP Server：后续再提供/构建。架构中预留 MCP Client 接入点，当 MCP Server 就绪后，只需配置连接信息即可接入
-- 配置方式：MCP Server 连接信息通过 config 文件管理（server_url, transport_type, auth 等）
+- **MCP 适配**：使用 `langchain-mcp-adapters` 库将 MCP 工具转换为 LangChain Tool 对象，无缝接入 LangGraph ReAct Agent
+- **MCP Server**：不自行开发云端服务，而是**下载 MCP Server 到本地并在本地运行**
+- **配置方式**：MCP Server 连接信息通过 config 文件管理（如 `server_path`、`transport_type`、`auth` 等）
 
-**输入**：MCP tool name + parameters
-**输出**：MCP tool result（与内置工具统一的 ToolResult 格式）
-**依赖**：Tool Registry
+**输入**：MCP tool name + parameters  
+**输出**：MCP tool result（与内置工具统一的 `ToolResult` 格式）  
+**依赖**：Tool Registry  
 **被调用方**：Tool Agent（通过 Tool Registry 间接调用）
 
 ## 3.4 RAG System
@@ -783,4 +778,3 @@ main.py (CLI loop)
 | 异步 Agent 通信 | 大规模部署时改为消息队列驱动 | AgentMessage 协议已统一，替换传输层即可 |
 | 对话评估 | 自动评估回答质量 | 引入 LLM-as-judge 打分机制 |
 | 多语言支持 | 支持中英文混合查询 | Embedding 模型选择支持多语言的版本，prompt 增加语言检测 |
-

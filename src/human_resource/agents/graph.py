@@ -143,8 +143,18 @@ def build_graph() -> StateGraph:
 
 def compile_graph():
     """构建并编译图，返回可执行的 CompiledGraph。"""
-    # 注册默认工具
+    # 注册默认内置工具
     register_default_tools()
+
+    # 注册 MCP 工具（启动本地 MCP Server 并发现工具）
+    try:
+        from human_resource.mcp.client import register_mcp_tools_sync
+
+        mcp_count = register_mcp_tools_sync()
+        if mcp_count > 0:
+            logger.info("MCP 工具注册完成: %d 个", mcp_count)
+    except Exception:
+        logger.exception("MCP 工具注册失败，仅使用内置工具")
 
     graph = build_graph()
     return graph.compile()
