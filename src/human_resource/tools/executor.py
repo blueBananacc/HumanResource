@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import logging
 from typing import Any
@@ -29,6 +30,10 @@ def validate_params(tool_name: str, params: dict[str, Any]) -> tuple[bool, str |
 
     schema_cls = getattr(tool, "args_schema", None)
     if schema_cls is None:
+        return True, None
+
+    # MCP 工具的 args_schema 可能是 dict（JSON Schema），跳过校验
+    if isinstance(schema_cls, dict):
         return True, None
 
     try:
@@ -94,10 +99,24 @@ def execute_tool(tool_name: str, parameters: dict[str, Any]) -> ToolResult:
         )
 
     # ── 超时保护执行 ──
+    # MCP 工具仅支持 async 调用，通过 registry 元信息判断来源
+    metadata = registry.get_metadata(tool_name)
+    is_mcp = metadata is not None and metadata.get("source") == "mcp"
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(tool.invoke, parameters)
-            result = future.result(timeout=TOOL_TIMEOUT_SECONDS)
+        if is_mcp:
+            # 异步分支：必须使用 asyncio.wait_for 来实现超时控制
+            async def run_with_timeout():
+                return await asyncio.wait_for(
+                    tool.ainvoke(parameters), 
+                    timeout=TOOL_TIMEOUT_SECONDS
+                )
+            
+            # 注意：如果当前已经在事件循环中，这里可能需要 nest_asyncio
+            result = asyncio.run(run_with_timeout())
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(tool.invoke, parameters)
+                result = future.result(timeout=TOOL_TIMEOUT_SECONDS)
     except concurrent.futures.TimeoutError:
         logger.warning("工具 %s 执行超时（%d秒）", tool_name, TOOL_TIMEOUT_SECONDS)
         return ToolResult(

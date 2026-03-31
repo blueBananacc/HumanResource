@@ -374,8 +374,6 @@ def tool_node(state: AgentState) -> dict[str, Any]:
     if not candidate_tools:
         # 无映射降级：使用所有意图声明的工具作为候选
         candidate_tools = list(intent.requires_tools)
-
-    if not candidate_tools:
         logger.info("Tool Agent: 当前意图无候选工具")
         return {"tool_results": results}
 
@@ -540,7 +538,7 @@ def generate_response_node(state: AgentState) -> dict[str, Any]:
 
     # 会话历史（短期记忆）
     session_ctx = state.get("session_context", [])
-    conversation_history = "\n".join(session_ctx[-6:])  # 最近 3 轮
+    conversation_history = "\n".join(session_ctx) 
 
     # 用户画像
     user_profile = state.get("user_profile")

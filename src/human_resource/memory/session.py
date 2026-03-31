@@ -228,3 +228,39 @@ class SessionMemory:
                 )
             )
         return session
+
+    def list_sessions(self) -> list[dict[str, str]]:
+        """列出所有持久化的会话摘要信息。
+
+        Returns:
+            按 updated_at 降序排列的会话摘要列表，每项包含：
+            session_id, created_at, updated_at, turn_count, summary(截取前50字)。
+        """
+        results: list[dict[str, str]] = []
+        if not self._persist_dir.exists():
+            return results
+
+        for file_path in self._persist_dir.glob("*.json"):
+            try:
+                data = json.loads(file_path.read_text(encoding="utf-8"))
+                messages = data.get("messages", [])
+                turn_count = len(messages) // 2
+                summary = data.get("summary", "")
+                # 取最后一条用户消息作为预览
+                last_user_msg = ""
+                for msg in reversed(messages):
+                    if msg.get("role") == "user":
+                        last_user_msg = msg.get("content", "")[:50]
+                        break
+                results.append({
+                    "session_id": data.get("session_id", file_path.stem),
+                    "created_at": data.get("created_at", ""),
+                    "updated_at": data.get("updated_at", ""),
+                    "turn_count": str(turn_count),
+                    "last_message": last_user_msg,
+                })
+            except Exception:
+                continue
+
+        results.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+        return results

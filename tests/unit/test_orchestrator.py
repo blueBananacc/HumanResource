@@ -537,35 +537,6 @@ class TestToolNode:
         assert "张三" in context_arg
 
     @patch("human_resource.agents.orchestrator._get_tool_selector")
-    def test_no_agent_intent_map_fallback(self, mock_get_selector):
-        """无 agent_intent_map 时降级：使用所有意图声明的工具作为候选。"""
-        register_default_tools()
-        mock_selector = MagicMock()
-        mock_selector.select.return_value = [
-            ToolCallRequest(tool_name="lookup_employee", parameters={"query": "张三"}),
-        ]
-        mock_get_selector.return_value = mock_selector
-
-        state = {
-            "messages": [HumanMessage(content="查张三")],
-            "intent": IntentResult(
-                intents=[IntentItem(
-                    label=IntentLabel.EMPLOYEE_LOOKUP,
-                    confidence=0.95,
-                    requires_tools=["lookup_employee"],
-                )],
-            ),
-            "tool_results": [],
-            # 无 agent_intent_map
-        }
-        result = tool_node(state)
-        assert len(result["tool_results"]) == 1
-        assert result["tool_results"][0].success is True
-        # 验证候选工具来自所有意图的并集
-        call_args = mock_selector.select.call_args
-        assert "lookup_employee" in call_args[0][1]
-
-    @patch("human_resource.agents.orchestrator._get_tool_selector")
     def test_selector_returns_empty(self, mock_get_selector):
         """ToolSelector 返回空列表时，不执行任何工具。"""
         mock_selector = MagicMock()

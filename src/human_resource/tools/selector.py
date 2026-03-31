@@ -96,6 +96,12 @@ class ToolSelector:
             logger.exception("工具选择 LLM 调用失败")
             return []
 
+    @staticmethod
+    def _extract_reason(response: Any) -> str:
+        """从 AIMessage.content 中提取工具调用理由。"""
+        content = getattr(response, "content", "")
+        return content if isinstance(content, str) else ""
+
     def _parse_tool_calls(self, response: Any) -> list[ToolCallRequest]:
         """从 AIMessage.tool_calls 解析工具调用请求。
 
@@ -105,6 +111,8 @@ class ToolSelector:
         tool_calls = getattr(response, "tool_calls", None) or []
         if not tool_calls:
             return []
+
+        reason = self._extract_reason(response)
 
         results: list[ToolCallRequest] = []
         for tc in tool_calls:
@@ -117,6 +125,6 @@ class ToolSelector:
             args = tc.get("args", {})
             if not isinstance(args, dict):
                 args = {}
-            results.append(ToolCallRequest(tool_name=name, parameters=args))
+            results.append(ToolCallRequest(tool_name=name, parameters=args, reason=reason))
 
         return results

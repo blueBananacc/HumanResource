@@ -89,22 +89,6 @@ class TestToolRegistry:
         self.reg.register(t2)
         assert len(self.reg.get_all_tools()) == 2
 
-    def test_get_schema(self):
-        @tool
-        def typed_tool(name: str, count: int) -> str:
-            """有类型参数的工具。"""
-            return f"{name}-{count}"
-
-        self.reg.register(typed_tool)
-        schema = self.reg.get_schema("typed_tool")
-        assert schema is not None
-        assert "properties" in schema
-        assert "name" in schema["properties"]
-        assert "count" in schema["properties"]
-
-    def test_get_schema_nonexistent(self):
-        assert self.reg.get_schema("nope") is None
-
     def test_get_metadata(self):
         t = self._make_tool("m")
         self.reg.register(t, category="employee", source="mcp")
@@ -298,33 +282,6 @@ class TestToolsDescription:
         summary = self.reg.get_tools_summary()
         assert summary == "无可用工具"
 
-    def test_get_tools_with_schemas(self):
-        @tool
-        def typed_tool(name: str, count: int) -> str:
-            """有参数的工具。"""
-            return ""
-
-        self.reg.register(typed_tool)
-        result = self.reg.get_tools_with_schemas()
-
-        assert "### typed_tool" in result
-        assert "name" in result
-        assert "count" in result
-        assert "描述:" in result
-
-    def test_get_tools_with_schemas_by_names(self):
-        t1 = self._make_tool("tool_a", "描述A")
-        t2 = self._make_tool("tool_b", "描述B")
-        self.reg.register(t1)
-        self.reg.register(t2)
-
-        result = self.reg.get_tools_with_schemas(names=["tool_b"])
-        assert "tool_b" in result
-        assert "tool_a" not in result
-
-    def test_get_tools_with_schemas_empty(self):
-        result = self.reg.get_tools_with_schemas()
-        assert result == "无可用工具"
 
     def test_format_params_no_schema(self):
         result = ToolRegistry._format_params(None)

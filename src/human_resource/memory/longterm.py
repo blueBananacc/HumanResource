@@ -60,9 +60,18 @@ class LongTermMemory:
         Returns:
             相关记忆列表。
         """
-        results = self._client.search(query, user_id=user_id, limit=top_k)
+        results = self._client.search(query, 
+                                        filters={"user_id": user_id}, 
+                                        limit=top_k)
+        # mem0 API 返回 {"results": [...]}，需要解包
+        if isinstance(results, dict):
+            results = results.get("results", [])
         return results
 
     def get_all(self, user_id: str) -> list[dict[str, Any]]:
         """获取某用户的所有记忆。"""
-        return self._client.get_all(user_id=user_id)
+        results = self._client.get_all(filters={"user_id": user_id})
+        # mem0 API 返回 {"results": [...]}，需要解包
+        if isinstance(results, dict):
+            results = results.get("results", [])
+        return results

@@ -114,16 +114,24 @@ pytest
 
 **LangGraph State 定义**：
 AgentState {
-  messages: list[BaseMessage]        // LangGraph 消息列表（对话历史）
-  intent: IntentResult | None        // 意图识别结果
-  target_agents: list[str]           // 路由目标
-  rag_results: RetrievalResult | None
-  tool_results: list[ToolResult]
-  memory_context: list[str]          // 检索到的长期记忆
-  user_profile: dict | None
-  final_response: str | None
-  reflection_count: int              // Reflexion 重试计数
+  messages: Annotated[list[BaseMessage], add_messages] // LangGraph 消息列表（对话历史）
+  intent: IntentResult | None                         // 意图识别结果
+  target_agents: list[str]                            // 路由目标（目标 Agent 列表）
+  rag_results: RetrievalResult | None                 // RAG 检索结果
+  tool_results: list[ToolResult]                      // 工具执行结果
+  session_context: list[str]                          // 当前会话上下文/短期记忆
+  memory_context: list[str]                           // 检索到的长期记忆
+  user_profile: dict[str, Any] | None                 // 用户画像/偏好信息
+  needs_clarification: bool                           // 是否需要用户进一步澄清
+  final_response: str | None                          // 最终生成的响应内容
+  reflection_count: int                               // Reflexion 循环重试计数
+  session_id: str                                     // 会话唯一标识
+  user_id: str                                        // 用户 ID
+  current_agent_index: int                            // 执行到第几个agent了
+  agent_intent_map: list[dict[str, Any]]              // Agent 与意图的映射详情
 }
+
+
 
 ## 2.3 Data Flow（端到端）
 **完整的请求处理流程（每步标注数据形态）**：
@@ -186,7 +194,7 @@ AgentState {
 **子模块**：
 | 子模块 | 职责 |
 |------|------|
-| Intent Classifier | LLM-based 分类，输出 intent label + confidence + entities |
+| Intent Classifier | LLM-based 分类，输出 intent label + confidence |
 | Intent Router | 根据分类结果映射到目标 Agent 和执行计划 |
 **意图分类体系（MVP）**：
 | Intent Label | 描述 | 路由目标 |
@@ -612,7 +620,7 @@ Session {
 | 场景                                      | 模型                 | 理由                                           |
 |-------------------------------------------|----------------------|------------------------------------------------|
 | Intent Classification                     | deepseek-reasoner        | 分类任务复杂，包含分级意图,多轮意图        |
-| Tool Selection & Calling                  | deepseek-reasoner        | function calling 场景，需要准确选择和工具调用参数准确度            |
+| Tool Selection & Calling                  | deepseek-chat        | 只有chat模式支持native function calling             |
 | RAG Answer 检索推理                    | deepseek-chat        | 查询改写和检索策略选择，标准能力足够                        |
 | Context Compression & Summarization       | deepseek-chat        | 摘要任务，不需要深度推理                      |
 | Final Response Generation（简单问题）     | deepseek-chat        | 日常 HR 问答                                   |
@@ -778,3 +786,43 @@ main.py (CLI loop)
 | 异步 Agent 通信 | 大规模部署时改为消息队列驱动 | AgentMessage 协议已统一，替换传输层即可 |
 | 对话评估 | 自动评估回答质量 | 引入 LLM-as-judge 打分机制 |
 | 多语言支持 | 支持中英文混合查询 | Embedding 模型选择支持多语言的版本，prompt 增加语言检测 |
+
+我在调试时发现了以下bug，修复bug，若修复bug时有多个方案，一定要告知我，不用动bug以外的代码。
+1. mem0返回格式为{'result':[[
+  {
+    "id": "<string>",
+    "memory": "<string>",
+    "created_at": "2023-11-07T05:31:56Z",
+    "updated_at": "2023-11-07T05:31:56Z",
+    "owner": "<string>",
+    "organization": "<string>",
+    "immutable": false,
+    "expiration_date": null,
+    "metadata": {}
+  }
+]]}，
+2. 没有把调用工具的reson给存进去，理由在response中的content中
+3. validate_params参数校验报错：发生异常: TypeError
+'dict' object is not callable
+  File "D:\humanResource\src\human_resource\tools\executor.py", line 35, in validate_params
+    schema_cls(**params)
+  File "D:\humanResource\src\human_resource\tools\executor.py", line 88, in execute_tool
+    valid, err_msg = validate_params(tool_name, parameters)
+  File "D:\humanResource\src\human_resource\agents\orchestrator.py", line 403, in tool_node
+    result = execute_tool(tc.tool_name, tc.parameters)
+  File "D:\humanResource\src\human_resource\main.py", line 79, in run
+    result = app.invoke({
+  File "D:\humanResource\test.py", line 11, in <module>
+    run()
+TypeError: 'dict' object is not callable
+4.工具执行时报错：发生异常: NotImplementedError
+StructuredTool does not support sync invocation.
+  File "D:\humanResource\src\human_resource\tools\executor.py", line 100, in execute_tool
+    result = future.result(timeout=TOOL_TIMEOUT_SECONDS)
+  File "D:\humanResource\src\human_resource\agents\orchestrator.py", line 403, in tool_node
+    result = execute_tool(tc.tool_name, tc.parameters)
+  File "D:\humanResource\src\human_resource\main.py", line 79, in run
+    result = app.invoke({
+  File "D:\humanResource\test.py", line 11, in <module>
+    run()
+NotImplementedError: StructuredTool does not support sync invocation.

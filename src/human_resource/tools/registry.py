@@ -67,19 +67,6 @@ class ToolRegistry:
         """获取所有已注册工具列表（用于绑定到 LLM）。"""
         return list(self._tools.values())
 
-    def get_schema(self, name: str) -> dict[str, Any] | None:
-        """获取工具的输入参数 JSON Schema。
-
-        LangChain @tool 装饰器自动从函数签名生成 args_schema。
-        """
-        tool = self._tools.get(name)
-        if tool is None:
-            return None
-        schema = getattr(tool, "args_schema", None)
-        if schema is None:
-            return None
-        return schema.model_json_schema()
-
     def get_metadata(self, name: str) -> dict[str, Any] | None:
         """获取工具的元信息（category, source）。"""
         return self._metadata.get(name)
@@ -112,25 +99,6 @@ class ToolRegistry:
             desc = (t.description or "").split("\n")[0].strip()
             lines.append(f"- {t.name}: {desc}")
         return "\n".join(lines)
-
-    def get_tools_with_schemas(
-        self, names: list[str] | None = None,
-    ) -> str:
-        """获取工具名称、描述和参数 Schema（用于 LLM 工具选择精选）。
-
-        Args:
-            names: 指定工具名列表，为 None 时返回全部。
-        """
-        tools = self._get_target_tools(names)
-        if not tools:
-            return "无可用工具"
-        parts = []
-        for t in tools:
-            desc = (t.description or "").split("\n")[0].strip()
-            schema = self.get_schema(t.name)
-            params_desc = self._format_params(schema)
-            parts.append(f"### {t.name}\n描述: {desc}\n参数:\n{params_desc}")
-        return "\n\n".join(parts)
 
     @staticmethod
     def _format_params(schema: dict[str, Any] | None) -> str:
