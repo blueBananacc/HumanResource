@@ -428,7 +428,9 @@ class TestRouteAgentsNode:
 
 
 class TestRagNode:
-    def test_returns_empty_results(self):
+    @patch("human_resource.rag.retriever.hybrid_search")
+    def test_returns_empty_results(self, mock_hs):
+        mock_hs.return_value = RetrievalResult(chunks=[])
         state = {"messages": [HumanMessage(content="年假政策")]}
         result = rag_node(state)
         assert isinstance(result["rag_results"], RetrievalResult)

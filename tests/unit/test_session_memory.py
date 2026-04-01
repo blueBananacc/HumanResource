@@ -397,7 +397,7 @@ class TestPostProcessMetadata:
             c for c in sm.append.call_args_list if c[0][1] == "user"
         ]
         assert len(user_calls) == 1
-        kwargs = user_calls[0][1]  # keyword args
+        kwargs = user_calls[0].kwargs  # keyword args
         assert kwargs["metadata"]["intent_label"] == "policy_qa"
 
     @patch("human_resource.agents.orchestrator._get_compressor")

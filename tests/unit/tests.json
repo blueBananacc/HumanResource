@@ -69,5 +69,145 @@
       {"class": "TestGraphWithMemoryRetrieval", "name": "test_graph_flow_order", "status": "passed"},
       {"class": "TestGraphWithMemoryRetrieval", "name": "test_full_graph_with_mem0", "status": "passed"}
     ]
+  },
+  {
+    "module": "rag.chunker",
+    "test_file": "tests/unit/test_rag.py",
+    "test_class": "TestChunker",
+    "tests": [
+      {"name": "test_chunk_documents_splits", "status": "passed"},
+      {"name": "test_chunk_documents_preserves_metadata", "status": "passed"},
+      {"name": "test_chunk_index_increments_per_source", "status": "passed"},
+      {"name": "test_chunk_documents_empty_input", "status": "passed"},
+      {"name": "test_create_chunker_config", "status": "passed"}
+    ]
+  },
+  {
+    "module": "rag.loader",
+    "test_file": "tests/unit/test_rag.py",
+    "test_class": "TestLoader",
+    "tests": [
+      {"name": "test_load_md_document", "status": "passed"},
+      {"name": "test_load_txt_document", "status": "passed"},
+      {"name": "test_unsupported_format_raises", "status": "passed"},
+      {"name": "test_load_directory", "status": "passed"},
+      {"name": "test_supported_extensions_constant", "status": "passed"}
+    ]
+  },
+  {
+    "module": "rag.retriever",
+    "test_file": "tests/unit/test_rag.py",
+    "tests": [
+      {"class": "TestBM25Search", "name": "test_basic_keyword_match", "status": "passed"},
+      {"class": "TestBM25Search", "name": "test_empty_corpus_returns_empty", "status": "passed"},
+      {"class": "TestBM25Search", "name": "test_top_k_limits_results", "status": "passed"},
+      {"class": "TestReciprocalRankFusion", "name": "test_merge_two_lists", "status": "passed"},
+      {"class": "TestReciprocalRankFusion", "name": "test_single_list", "status": "passed"},
+      {"class": "TestReciprocalRankFusion", "name": "test_empty_lists", "status": "passed"},
+      {"class": "TestReciprocalRankFusion", "name": "test_dedup_by_source_and_chunk_index", "status": "passed"},
+      {"class": "TestReciprocalRankFusion", "name": "test_scores_are_positive", "status": "passed"},
+      {"class": "TestVectorSearch", "name": "test_calls_similarity_search", "status": "passed"},
+      {"class": "TestVectorSearch", "name": "test_with_metadata_filter", "status": "passed"},
+      {"class": "TestHybridSearch", "name": "test_full_pipeline", "status": "passed"},
+      {"class": "TestHybridSearch", "name": "test_empty_query", "status": "passed"},
+      {"class": "TestHybridSearch", "name": "test_vector_search_failure_returns_empty", "status": "passed"},
+      {"class": "TestHybridSearch", "name": "test_reranker_failure_falls_back_to_rrf", "status": "passed"},
+      {"class": "TestHybridSearch", "name": "test_threshold_filters_low_scores", "status": "passed"},
+      {"class": "TestHybridSearch", "name": "test_parallel_execution", "status": "passed"}
+    ]
+  },
+  {
+    "module": "rag.reranker",
+    "test_file": "tests/unit/test_rag.py",
+    "test_class": "TestReranker",
+    "tests": [
+      {"name": "test_float_scores_format", "status": "passed"},
+      {"name": "test_dict_scores_format", "status": "passed"},
+      {"name": "test_nested_list_format", "status": "passed"},
+      {"name": "test_empty_documents", "status": "passed"},
+      {"name": "test_score_count_mismatch_pads", "status": "passed"},
+      {"name": "test_api_error_propagates", "status": "passed"},
+      {"name": "test_top_n_limits_output", "status": "passed"}
+    ]
+  },
+  {
+    "module": "rag.indexer",
+    "test_file": "tests/unit/test_rag.py",
+    "test_class": "TestIndexer",
+    "tests": [
+      {"name": "test_index_file_new", "status": "passed"},
+      {"name": "test_index_file_skip_unchanged", "status": "passed"},
+      {"name": "test_index_file_force_reindex", "status": "passed"},
+      {"name": "test_index_directory", "status": "passed"},
+      {"name": "test_index_directory_auto_mapping", "status": "passed"},
+      {"name": "test_index_directory_nonexistent", "status": "passed"},
+      {"name": "test_file_hash_deterministic", "status": "passed"},
+      {"name": "test_file_hash_changes_on_content_change", "status": "passed"},
+      {"name": "test_load_save_index_record", "status": "passed"}
+    ]
+  },
+  {
+    "module": "rag.vectorstore",
+    "test_file": "tests/unit/test_rag.py",
+    "test_class": "TestVectorstore",
+    "tests": [
+      {"name": "test_get_vectorstore_default", "status": "passed"},
+      {"name": "test_get_vectorstore_custom_collection", "status": "passed"},
+      {"name": "test_add_documents", "status": "passed"},
+      {"name": "test_get_all_documents", "status": "passed"},
+      {"name": "test_get_all_documents_empty", "status": "passed"}
+    ]
+  },
+  {
+    "module": "rag.embedder",
+    "test_file": "tests/unit/test_rag.py",
+    "test_class": "TestEmbedder",
+    "tests": [
+      {"name": "test_get_embeddings_returns_instance", "status": "passed"},
+      {"name": "test_get_embeddings_singleton", "status": "passed"}
+    ]
+  },
+  {
+    "module": "rag.rag_node",
+    "test_file": "tests/unit/test_rag.py",
+    "test_class": "TestRagNodeIntegration",
+    "tests": [
+      {"name": "test_rag_node_with_results", "status": "passed"},
+      {"name": "test_rag_node_empty_messages", "status": "passed"},
+      {"name": "test_rag_node_exception_returns_empty", "status": "passed"},
+      {"name": "test_rag_node_routes_policy_qa", "status": "passed"},
+      {"name": "test_rag_node_routes_process_inquiry", "status": "passed"},
+      {"name": "test_rag_node_default_collection_without_intent", "status": "passed"}
+    ]
+  },
+  {
+    "module": "schemas.models.rag",
+    "test_file": "tests/unit/test_rag.py",
+    "test_class": "TestRAGModels",
+    "tests": [
+      {"name": "test_retrieved_chunk_defaults", "status": "passed"},
+      {"name": "test_retrieved_chunk_with_metadata", "status": "passed"},
+      {"name": "test_retrieval_result_defaults", "status": "passed"},
+      {"name": "test_retrieval_result_with_chunks", "status": "passed"}
+    ]
+  },
+  {
+    "module": "rag.config",
+    "test_file": "tests/unit/test_rag.py",
+    "test_class": "TestRAGConfig",
+    "tests": [
+      {"name": "test_collection_constants", "status": "passed"}
+    ]
+  },
+  {
+    "module": "rag.main",
+    "test_file": "tests/unit/test_rag.py",
+    "test_class": "TestRAGMain",
+    "tests": [
+      {"name": "test_main_default", "status": "passed"},
+      {"name": "test_main_with_collection", "status": "passed"},
+      {"name": "test_main_force", "status": "passed"},
+      {"name": "test_main_custom_dir", "status": "passed"}
+    ]
   }
 ]

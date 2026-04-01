@@ -15,11 +15,6 @@ ROUTING_TABLE: dict[IntentLabel, dict] = {
         "secondary": [],
         "mode": "single",
     },
-    IntentLabel.DOCUMENT_SEARCH: {
-        "primary": "rag_agent",
-        "secondary": [],
-        "mode": "single",
-    },
     IntentLabel.EMPLOYEE_LOOKUP: {
         "primary": "tool_agent",
         "secondary": [],

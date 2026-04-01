@@ -49,12 +49,29 @@ EMBEDDING_DIMENSION = 1024
 RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 
 # ── RAG 配置 ──────────────────────────────────────────────
-CHUNK_SIZE = 512
-CHUNK_OVERLAP = 64
-VECTOR_SEARCH_TOP_K = 20
-BM25_TOP_K = 20
+CHUNK_SIZE = 256
+CHUNK_OVERLAP = 32
+VECTOR_SEARCH_TOP_K = 8
+BM25_TOP_K = 8
 RERANK_TOP_N = 3
 RELEVANCE_SCORE_THRESHOLD = 0.3
+
+# Collection 配置
+POLICY_COLLECTION = "policy_collection"
+SOP_COLLECTION = "sop_collection"
+DEFAULT_COLLECTION = POLICY_COLLECTION
+
+# 意图 → Collection 映射
+INTENT_COLLECTION_MAP: dict[str, str] = {
+    "policy_qa": POLICY_COLLECTION,
+    "process_inquiry": SOP_COLLECTION,
+}
+
+# 子目录 → Collection 映射（索引用）
+DIR_COLLECTION_MAP: dict[str, str] = {
+    "policy": POLICY_COLLECTION,
+    "sop": SOP_COLLECTION,
+}
 
 # ── Context Engineering 配置 ──────────────────────────────
 CONTEXT_WINDOW_TOKENS = 64000
@@ -88,7 +105,7 @@ MCP_SERVERS: dict[str, dict] = {
         "transport": "stdio",
         "env": {
             "EMAIL_USER": "897287969@qq.com",
-            "EMAIL_PASSWORD": "unbdvrreonqhbfef",
+            "EMAIL_PASSWORD": "",
             "EMAIL_TYPE": "qq",
         },
     },

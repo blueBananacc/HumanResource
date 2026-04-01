@@ -53,8 +53,10 @@ def _select_session() -> str:
         for i, s in enumerate(sessions, 1):
             updated = s["updated_at"][:19].replace("T", " ") if s["updated_at"] else "未知"
             last_msg = s["last_message"] or "(无消息)"
+            summary = s["msg_summary"] or "(暂无)"
             print(f"  [{i}] {s['session_id']}  |  {s['turn_count']}轮  |  {updated}")
             print(f"       最近: {last_msg}")
+            print(f"       摘要: {summary}")
     else:
         print("  (无历史会话)")
 

@@ -21,10 +21,9 @@ _CLASSIFICATION_SYSTEM_PROMPT = """\
 你是一个意图分类器。请根据用户消息判断其意图类别。
 
 可选的意图类别：
-- policy_qa: HR 政策问答（如年假政策、薪资规定、福利制度等）
+- policy_qa: HR 政策问答（如年假政策、薪资规定、福利制度、规章制度文档等）
 - process_inquiry: HR 流程咨询（如请假流程、入职流程、离职流程等）
 - employee_lookup: 员工信息查询（如查询某人的部门、职位、联系方式等）
-- document_search: HR 文档检索（如查找员工手册、规章制度文档等）
 - tool_action: HR 工具操作（如查询假期余额、提交申请等）
 - memory_recall: 回忆之前的对话内容（如"我们之前聊了什么"）
 - chitchat: 闲聊/问候（如"你好"、"谢谢"）

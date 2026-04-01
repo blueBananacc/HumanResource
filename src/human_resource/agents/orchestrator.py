@@ -323,16 +323,37 @@ def rag_node(state: AgentState) -> dict[str, Any]:
     """Node: RAG Agent 执行。
 
     从 HR 文档库检索相关信息。
-    MVP 阶段返回空结果占位，待 RAG Pipeline 完整实现后接入。
+    根据意图自动路由到对应的 collection：
+    - policy_qa → policy_collection
+    - process_inquiry → sop_collection
+    使用 Hybrid Search（Vector + BM25 并行 + RRF）+ Reranker 完整管线。
     """
+    from human_resource.config import DEFAULT_COLLECTION, INTENT_COLLECTION_MAP
+    from human_resource.rag.retriever import hybrid_search
+
     messages = state.get("messages", [])
     user_message = _extract_user_message(messages)
 
     logger.info("RAG Agent 执行查询: %s", user_message[:50])
 
-    # TODO: 接入完整 RAG Pipeline (retriever → reranker)
-    # 当前返回空结果，Orchestrator 会在 response 中说明未找到文档
-    return {"rag_results": RetrievalResult(chunks=[])}
+    if not user_message:
+        return {"rag_results": RetrievalResult(chunks=[])}
+
+    # 根据意图确定目标 collection
+    collection_name = DEFAULT_COLLECTION
+    intent = state.get("intent")
+    if intent and intent.intents:
+        label = intent.intents[0].label.value
+        collection_name = INTENT_COLLECTION_MAP.get(label, DEFAULT_COLLECTION)
+    logger.info("RAG 目标 collection: %s", collection_name)
+
+    try:
+        result = hybrid_search(user_message, collection_name=collection_name)
+        logger.info("RAG Agent 检索完成: %d chunks", len(result.chunks))
+        return {"rag_results": result}
+    except Exception:
+        logger.exception("RAG Agent 检索失败")
+        return {"rag_results": RetrievalResult(chunks=[])}
 
 
 def tool_node(state: AgentState) -> dict[str, Any]:
@@ -669,8 +690,8 @@ def post_process_node(state: AgentState) -> dict[str, Any]:
     # ── 收集元数据 ──
     intent = state.get("intent")
     intent_label = ""
-    if intent and intent.primary_intent:
-        intent_label = intent.primary_intent.label.value
+    if intent and getattr(intent, "intents", None):
+        intent_label = intent.intents[0].label.value
 
     tools_used: list[str] = []
     tool_results = state.get("tool_results", [])

@@ -202,7 +202,6 @@ AgentState {
 | policy_qa | HR 政策问答 | RAG Agent |
 | process_inquiry | HR 流程咨询 | RAG Agent + Tool Agent |
 | employee_lookup | 员工信息查询 | Tool Agent |
-| document_search | HR 文档检索 | RAG Agent |
 | tool_action | HR 工具操作 | Tool Agent |
 | memory_recall | 回忆之前的对话内容 | Memory Agent |
 | chitchat | 闲聊/问候 | Orchestrator 直接响应 |
@@ -344,31 +343,30 @@ Tool Agent 选择 MCP 工具
 
 **关键技术考虑**：
 - **文档加载**：
-  - MVP 支持格式：PDF (pypdf)、DOCX (python-docx)、Markdown、纯文本
-  - 提取文档元数据：文件名、标题、创建日期、文档类别（policy/handbook/SOP）
+  - MVP 支持格式：PDF、DOCX、Markdown、纯文本
+  - 提取文档元数据：文件名、标题、创建日期、文档类别（policy/SOP）
   - 增量加载：记录已索引文档的 hash，仅处理变更文档
 
 - **文档切片（Chunking）**：
   - 策略：Recursive Character Splitting（按段落 → 句子 → 字符递归切分）
-  - chunk_size: 512 tokens（MVP），chunk_overlap: 64 tokens
+  - chunk_size: 256 tokens（MVP），chunk_overlap: 32 tokens
   - 保留 chunk 级元数据：所属文档、章节标题、页码、chunk 序号
   - 考虑：HR 文档通常有清晰的章节结构，优先按标题/章节边界切分
 
 - **Embedding**：
   - 模型：BAAI/bge-m3, 向量维度：1024 维
   - 调用方式：通过 HuggingFace Inference API
-  - 批量嵌入以降低 API 调用次数
   - embedding 维度与 ChromaDB 配置一致
 
 - **向量数据库**：
   - MVP 选择：ChromaDB
   - 存储内容：chunk text + embedding vector + metadata dict
-  - Collection 按文档类别分组（policy_collection, handbook_collection）或统一 collection + metadata 过滤
+  - Collection 按文档类别分组（policy_collection, sop_collection）
 
 - **Metadata 设计**：
 {
   "source": "employee_handbook.pdf",
-  "category": "policy",        // policy | handbook | sop | faq
+  "category": "policy",        // policy | sop 
   "section": "Leave Policy",
   "page": 12,
   "chunk_index": 3,
@@ -379,7 +377,12 @@ Tool Agent 选择 MCP 工具
 - **Hybrid Search**：
   - 向量搜索：语义相似度，捕获同义/近义表述
   - 关键词搜索：BM25（使用 rank_bm25 库），捕获精确术语匹配
-  - 融合策略：Reciprocal Rank Fusion (RRF)，结合两路结果 
+  - 两者并行检索后，利用融合策略：Reciprocal Rank Fusion (RRF)，结合两路结果 
+
+- **Retrieval 策略**：
+  - 默认：hybrid search + reranking
+  - 当用户查询包含明确文档名/类别时：先 metadata pre-filter，再向量检索
+  - 当检索结果 relevance score 均低于阈值时：返回"未找到相关信息"
 
 - **Reranking**：
   - 模型：BAAI/bge-reranker-v2-m3（cross-encoder，多语言支持）
@@ -391,10 +394,6 @@ Tool Agent 选择 MCP 工具
   - Reranking 后，根据 token 预算（分配给 RAG 上下文的 token 数）截取 top-N chunks
   - 相邻 chunk 合并（若来自同一文档同一节）以保持语义连贯
 
-- **Retrieval 策略**：
-  - 默认：hybrid search + reranking
-  - 当用户查询包含明确文档名/类别时：先 metadata pre-filter，再向量检索
-  - 当检索结果 relevance score 均低于阈值时：返回"未找到相关信息"
 
 **技术选型映射**：
 - Document Loader：使用 langchain_community.document_loaders 的 PyPDFLoader、Docx2txtLoader、TextLoader、UnstructuredMarkdownLoader
@@ -485,6 +484,7 @@ Session {
 
 **关键技术考虑**：
 - **Conversation History**：
+  - 可以在CLI界面选择相应的 session_id 继续对话
   - 每轮对话追加 user message + assistant response
   - 同时记录 intent label 和调用的工具/Agent(用于后续分析)
 

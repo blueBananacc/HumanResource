@@ -258,6 +258,7 @@ class SessionMemory:
                     "updated_at": data.get("updated_at", ""),
                     "turn_count": str(turn_count),
                     "last_message": last_user_msg,
+                    "msg_summary": summary,
                 })
             except Exception:
                 continue
