@@ -5,15 +5,38 @@
 
 from __future__ import annotations
 
+import logging
+
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
 from human_resource.config import CHROMA_DB_DIR, DEFAULT_COLLECTION
 from human_resource.rag.embedder import get_embeddings
 
+logger = logging.getLogger(__name__)
+
+_LOCK_SUFFIXES = ("-wal", "-shm", "-journal")
+
+
+def _cleanup_sqlite_locks() -> None:
+    """清理 SQLite 残留的 WAL / SHM / journal 锁文件。
+
+    debug 中断时这些文件可能处于不一致状态，导致 ChromaDB 无法连接。
+    删除它们后 SQLite 会从主 .sqlite3 文件自动恢复，数据不会丢失。
+    """
+    if not CHROMA_DB_DIR.exists():
+        return
+    for f in CHROMA_DB_DIR.rglob("*.sqlite3*"):
+        if any(f.name.endswith(s) for s in _LOCK_SUFFIXES):
+            logger.info("清理残留锁文件: %s", f)
+            f.unlink(missing_ok=True)
+
 
 def get_vectorstore(collection_name: str = DEFAULT_COLLECTION) -> Chroma:
     """获取 ChromaDB 向量存储实例。
+
+    当 debug 中断导致 SQLite 锁文件损坏时，自动清理锁文件并重试，
+    主数据库文件不会被删除，已索引的数据得以保留。
 
     Args:
         collection_name: Collection 名称。
@@ -21,11 +44,22 @@ def get_vectorstore(collection_name: str = DEFAULT_COLLECTION) -> Chroma:
     Returns:
         Chroma 实例。
     """
-    return Chroma(
-        collection_name=collection_name,
-        embedding_function=get_embeddings(),
-        persist_directory=str(CHROMA_DB_DIR),
-    )
+    try:
+        return Chroma(
+            collection_name=collection_name,
+            embedding_function=get_embeddings(),
+            persist_directory=str(CHROMA_DB_DIR),
+        )
+    except (ValueError, AttributeError) as exc:
+        logger.warning(
+            "ChromaDB 连接失败，尝试清理 SQLite 锁文件后重试: %s", exc,
+        )
+        _cleanup_sqlite_locks()
+        return Chroma(
+            collection_name=collection_name,
+            embedding_function=get_embeddings(),
+            persist_directory=str(CHROMA_DB_DIR),
+        )
 
 
 def add_documents(

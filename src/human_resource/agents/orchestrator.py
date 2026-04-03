@@ -349,7 +349,6 @@ def rag_node(state: AgentState) -> dict[str, Any]:
 
     try:
         result = hybrid_search(user_message, collection_name=collection_name)
-        logger.info("RAG Agent 检索完成: %d chunks", len(result.chunks))
         return {"rag_results": result}
     except Exception:
         logger.exception("RAG Agent 检索失败")
@@ -691,7 +690,7 @@ def post_process_node(state: AgentState) -> dict[str, Any]:
     intent = state.get("intent")
     intent_label = ""
     if intent and getattr(intent, "intents", None):
-        intent_label = intent.intents[0].label.value
+        intent_label = ",".join([item.label.value for item in intent.intents])
 
     tools_used: list[str] = []
     tool_results = state.get("tool_results", [])

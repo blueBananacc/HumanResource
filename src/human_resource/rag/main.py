@@ -7,13 +7,13 @@
 
 用法：
     # 索引全部（自动按子目录映射 collection）
-    python -m human_resource.rag.main
+    conda activate HR; python -m human_resource.rag.main
 
     # 指定目录和 collection
-    python -m human_resource.rag.main --dir data/documents/policy --collection policy_collection
+    conda activate HR; python -m human_resource.rag.main --dir data/documents/policy --collection policy_collection
 
     # 强制重新索引（忽略 hash 缓存）
-    python -m human_resource.rag.main --force
+    conda activate HR; python -m human_resource.rag.main --force
 """
 
 from __future__ import annotations

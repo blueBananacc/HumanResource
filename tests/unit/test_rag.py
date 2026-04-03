@@ -257,7 +257,7 @@ class TestVectorSearch:
 class TestHybridSearch:
     @patch("human_resource.rag.retriever.get_all_documents")
     @patch("human_resource.rag.retriever.get_vectorstore")
-    @patch("human_resource.rag.reranker.requests.post")
+    @patch("human_resource.rag.reranker._session.post")
     def test_full_pipeline(self, mock_post, mock_get_vs, mock_get_all):
         from human_resource.rag.retriever import hybrid_search
 
@@ -311,7 +311,7 @@ class TestHybridSearch:
 
     @patch("human_resource.rag.retriever.get_all_documents")
     @patch("human_resource.rag.retriever.get_vectorstore")
-    @patch("human_resource.rag.reranker.requests.post")
+    @patch("human_resource.rag.reranker._session.post")
     def test_reranker_failure_falls_back_to_rrf(self, mock_post, mock_get_vs, mock_get_all):
         from human_resource.rag.retriever import hybrid_search
 
@@ -328,7 +328,7 @@ class TestHybridSearch:
 
     @patch("human_resource.rag.retriever.get_all_documents")
     @patch("human_resource.rag.retriever.get_vectorstore")
-    @patch("human_resource.rag.reranker.requests.post")
+    @patch("human_resource.rag.reranker._session.post")
     def test_threshold_filters_low_scores(self, mock_post, mock_get_vs, mock_get_all):
         from human_resource.rag.retriever import hybrid_search
 
@@ -339,7 +339,7 @@ class TestHybridSearch:
         mock_get_all.return_value = [doc]
 
         mock_resp = MagicMock()
-        mock_resp.json.return_value = [0.1]  # 低于阈值 0.3
+        mock_resp.json.return_value = [[{"label": "LABEL_0", "score": 0.01}]]  # 低于 RELEVANCE_SCORE_THRESHOLD
         mock_resp.raise_for_status = MagicMock()
         mock_post.return_value = mock_resp
 
@@ -348,7 +348,7 @@ class TestHybridSearch:
 
     @patch("human_resource.rag.retriever.get_all_documents")
     @patch("human_resource.rag.retriever.get_vectorstore")
-    @patch("human_resource.rag.reranker.requests.post")
+    @patch("human_resource.rag.reranker._session.post")
     def test_parallel_execution(self, mock_post, mock_get_vs, mock_get_all):
         """验证 vector 和 BM25 并行执行且结果正确融合。"""
         from human_resource.rag.retriever import hybrid_search
@@ -383,7 +383,7 @@ class TestReranker:
             for i in range(n)
         ]
 
-    @patch("human_resource.rag.reranker.requests.post")
+    @patch("human_resource.rag.reranker._session.post")
     def test_float_scores_format(self, mock_post):
         from human_resource.rag.reranker import rerank
 
@@ -398,7 +398,7 @@ class TestReranker:
         # 最高分应排第一
         assert result[0][1] == 0.9
 
-    @patch("human_resource.rag.reranker.requests.post")
+    @patch("human_resource.rag.reranker._session.post")
     def test_dict_scores_format(self, mock_post):
         from human_resource.rag.reranker import rerank
 
@@ -414,7 +414,7 @@ class TestReranker:
         result = rerank("查询", docs, top_n=2)
         assert result[0][1] == 0.8
 
-    @patch("human_resource.rag.reranker.requests.post")
+    @patch("human_resource.rag.reranker._session.post")
     def test_nested_list_format(self, mock_post):
         from human_resource.rag.reranker import rerank
 
@@ -431,7 +431,7 @@ class TestReranker:
         assert len(result) == 1
         assert result[0][1] == 0.6
 
-    @patch("human_resource.rag.reranker.requests.post")
+    @patch("human_resource.rag.reranker._session.post")
     def test_empty_documents(self, mock_post):
         from human_resource.rag.reranker import rerank
 
@@ -439,7 +439,7 @@ class TestReranker:
         assert result == []
         mock_post.assert_not_called()
 
-    @patch("human_resource.rag.reranker.requests.post")
+    @patch("human_resource.rag.reranker._session.post")
     def test_score_count_mismatch_pads(self, mock_post):
         from human_resource.rag.reranker import rerank
 
@@ -456,7 +456,7 @@ class TestReranker:
         assert scores[0] == 0.9
         assert scores[1] == 0.0
 
-    @patch("human_resource.rag.reranker.requests.post")
+    @patch("human_resource.rag.reranker._session.post")
     def test_api_error_propagates(self, mock_post):
         from human_resource.rag.reranker import rerank
         import requests as req
@@ -469,7 +469,7 @@ class TestReranker:
         with pytest.raises(req.HTTPError):
             rerank("查询", docs)
 
-    @patch("human_resource.rag.reranker.requests.post")
+    @patch("human_resource.rag.reranker._session.post")
     def test_top_n_limits_output(self, mock_post):
         from human_resource.rag.reranker import rerank
 
@@ -640,6 +640,27 @@ class TestVectorstore:
         get_vectorstore("custom_collection")
         call_kwargs = mock_chroma_cls.call_args[1]
         assert call_kwargs["collection_name"] == "custom_collection"
+
+    @patch("human_resource.rag.vectorstore._cleanup_sqlite_locks")
+    @patch("human_resource.rag.vectorstore.get_embeddings")
+    @patch("human_resource.rag.vectorstore.Chroma")
+    def test_get_vectorstore_auto_recover_on_corruption(
+        self, mock_chroma_cls, mock_emb, mock_cleanup,
+    ):
+        """debug 中断导致连接失败时，清理锁文件后重试。"""
+        from human_resource.rag.vectorstore import get_vectorstore
+
+        mock_emb.return_value = MagicMock()
+        mock_store = MagicMock()
+        mock_chroma_cls.side_effect = [
+            ValueError("Could not connect to tenant default_tenant"),
+            mock_store,
+        ]
+
+        result = get_vectorstore()
+        assert result is mock_store
+        mock_cleanup.assert_called_once()
+        assert mock_chroma_cls.call_count == 2
 
     @patch("human_resource.rag.vectorstore.get_vectorstore")
     def test_add_documents(self, mock_get_vs):

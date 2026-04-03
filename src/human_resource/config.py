@@ -15,9 +15,9 @@ CHROMA_DB_DIR = DATA_DIR / "chroma_db"
 SESSIONS_DIR = DATA_DIR / "sessions"
 
 # ── API Keys（从环境变量读取） ──────────────────────────────
-os.environ["DEEPSEEK_API_KEY"] = "sk-63a90502d84e400c9087ad9b5cba1dd5"  
-os.environ["HF_API_TOKEN"] = "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"
-os.environ["MEM0_API_KEY"] = "m0-bLm02GrczS646CUbIxhscinRLzm5OEjAdW2CS8AU"
+os.environ["DEEPSEEK_API_KEY"] = ""  
+os.environ["HF_API_TOKEN"] = ""
+os.environ["MEM0_API_KEY"] = ""
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 HF_API_TOKEN = os.environ.get("HF_API_TOKEN", "")
 MEM0_API_KEY = os.environ.get("MEM0_API_KEY", "")
@@ -50,11 +50,11 @@ RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 
 # ── RAG 配置 ──────────────────────────────────────────────
 CHUNK_SIZE = 256
-CHUNK_OVERLAP = 32
+CHUNK_OVERLAP = 64
 VECTOR_SEARCH_TOP_K = 8
 BM25_TOP_K = 8
 RERANK_TOP_N = 3
-RELEVANCE_SCORE_THRESHOLD = 0.3
+RELEVANCE_SCORE_THRESHOLD = 0.1
 
 # Collection 配置
 POLICY_COLLECTION = "policy_collection"

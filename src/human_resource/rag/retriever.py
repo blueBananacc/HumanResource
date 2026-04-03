@@ -24,30 +24,6 @@ from human_resource.schemas.models import RetrievalResult, RetrievedChunk
 logger = logging.getLogger(__name__)
 
 
-def vector_search(
-    query: str,
-    top_k: int = VECTOR_SEARCH_TOP_K,
-    collection_name: str = DEFAULT_COLLECTION,
-    metadata_filter: dict | None = None,
-) -> list[tuple[Document, float]]:
-    """向量语义检索。
-
-    Args:
-        query: 查询文本。
-        top_k: 返回结果数量。
-        collection_name: 目标 collection。
-        metadata_filter: 元数据过滤条件。
-
-    Returns:
-        (Document, score) 元组列表。
-    """
-    store = get_vectorstore(collection_name)
-    kwargs = {"k": top_k}
-    if metadata_filter:
-        kwargs["filter"] = metadata_filter
-    return store.similarity_search_with_relevance_scores(query, **kwargs)
-
-
 def bm25_search(
     query: str,
     corpus_docs: list[Document],
@@ -138,15 +114,17 @@ def hybrid_search(
     vector_results: list[tuple[Document, float]] = []
     bm25_results: list[tuple[Document, float]] = []
 
+    # 在主线程中预先构建 ChromaDB 资源，避免并行初始化导致 bindings 竞争
+    store = get_vectorstore(collection_name)
+    corpus = get_all_documents(collection_name)
+
     def _do_vector() -> list[tuple[Document, float]]:
-        return vector_search(
-            query, top_k=VECTOR_SEARCH_TOP_K,
-            collection_name=collection_name,
-            metadata_filter=metadata_filter,
-        )
+        kwargs = {"k": VECTOR_SEARCH_TOP_K}
+        if metadata_filter:
+            kwargs["filter"] = metadata_filter
+        return store.similarity_search_with_relevance_scores(query, **kwargs)
 
     def _do_bm25() -> list[tuple[Document, float]]:
-        corpus = get_all_documents(collection_name)
         return bm25_search(query, corpus, top_k=BM25_TOP_K)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -201,4 +179,9 @@ def hybrid_search(
         "RAG 检索完成: query='%s', 最终 %d chunks (阈值 %.2f)",
         query[:30], len(chunks), RELEVANCE_SCORE_THRESHOLD,
     )
+    for i, chunk in enumerate(chunks):
+        logger.info(
+            "  chunk[%d] score=%.4f source=%s: %s",
+            i, chunk.score, chunk.metadata.get("source", "?"), chunk.text,
+        )
     return RetrievalResult(chunks=chunks)

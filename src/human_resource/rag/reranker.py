@@ -9,14 +9,26 @@ from __future__ import annotations
 import logging
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from langchain_core.documents import Document
 
 from human_resource.config import HF_API_TOKEN, RERANKER_MODEL, RERANK_TOP_N
 
 logger = logging.getLogger(__name__)
 
-_API_URL = f"https://api-inference.huggingface.co/models/{RERANKER_MODEL}"
+_API_URL = f"https://router.huggingface.co/hf-inference/models/{RERANKER_MODEL}"
 _HEADERS = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+
+# 构建带重试 & SSL 容错的 Session
+_session = requests.Session()
+_retries = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
+_session.mount("https://", HTTPAdapter(max_retries=_retries))
+_session.verify = False  # 跳过 SSL 验证（解决国内网络 / 代理导致的证书问题）
+
+# 抑制 InsecureRequestWarning
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def rerank(
@@ -40,29 +52,33 @@ def rerank(
     if not documents:
         return []
 
-    # 构建 HuggingFace Inference API 请求
-    pairs = [[query, doc.page_content] for doc, _ in documents]
+    # 构建 HuggingFace Inference API 请求（text / text_pair dict 格式）
+    pairs = [
+        {"text": query, "text_pair": doc.page_content}
+        for doc, _ in documents
+    ]
 
-    payload = {"inputs": pairs}
+    payload = {
+        "inputs": pairs,
+        "parameters": {"function_to_apply": "sigmoid"},
+    }
 
-    response = requests.post(
-        _API_URL, headers=_HEADERS, json=payload, timeout=30,
+    response = _session.post(
+        _API_URL, headers=_HEADERS, json=payload, timeout=60,
     )
     response.raise_for_status()
-    raw_scores = response.json()
+    raw = response.json()
 
-    # HuggingFace reranker 返回格式可能是:
-    # - 直接 [score1, score2, ...] (float 列表)
-    # - [{"score": ..., "label": ...}, ...] (dict 列表)
-    # - [[{"score": ..., "label": ...}], ...] (嵌套列表)
+    # HuggingFace 响应格式：[[{"label": "LABEL_0", "score": 0.69}, ...]]
+    # raw[0] 是一个 list，每个元素对应一个输入 pair 的分类结果
     scores: list[float] = []
-    for item in raw_scores:
+    items = raw[0] if isinstance(raw, list) and raw and isinstance(raw[0], list) else raw
+    for item in items:
         if isinstance(item, (int, float)):
             scores.append(float(item))
         elif isinstance(item, dict):
             scores.append(float(item.get("score", 0.0)))
         elif isinstance(item, list) and item:
-            # 嵌套列表，取第一个元素
             inner = item[0]
             if isinstance(inner, dict):
                 scores.append(float(inner.get("score", 0.0)))
@@ -76,7 +92,6 @@ def rerank(
             "Reranker 返回分数数量 (%d) 与文档数量 (%d) 不匹配",
             len(scores), len(documents),
         )
-        # 截取或补齐
         scores = scores[:len(documents)]
         while len(scores) < len(documents):
             scores.append(0.0)

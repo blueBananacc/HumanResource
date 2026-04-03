@@ -41,10 +41,10 @@ def load_document(file_path: str | Path) -> list[Document]:
         from langchain_community.document_loaders import Docx2txtLoader
 
         loader = Docx2txtLoader(str(path))
-    elif suffix == ".md":
-        from langchain_community.document_loaders import UnstructuredMarkdownLoader
+    # elif suffix == ".md":
+    #     from langchain_community.document_loaders import UnstructuredMarkdownLoader
 
-        loader = UnstructuredMarkdownLoader(str(path))
+    #     loader = UnstructuredMarkdownLoader(str(path))
     else:  # .txt
         from langchain_community.document_loaders import TextLoader
 
