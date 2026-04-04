@@ -1,0 +1,78 @@
+flowchart TD
+
+%% ========== 用户入口 ==========
+A["User Input (CLI)"] --> B[Orchestrator Agent]
+
+%% ========== 上下文加载 ==========
+subgraph Initialization ["初始化与加载"]
+    B --> C1[Load Session Memory]
+    B --> C2["Retrieve Long-term Memory (mem0)"]
+    C1 --> D[Context Aggregation]
+    C2 --> D
+end
+
+%% ========== 意图识别与路由 ==========
+D --> E["Intent Recognition (DeepSeek-reasoner)"]
+E --> F{Intent Router}
+
+F -->|policy_qa / document_search| G[RAG Agent]
+F -->|employee_lookup / tool_action| H[Tool Agent]
+F -->|memory_recall| I[Memory Agent]
+F -->|chitchat| J[Direct Response]
+F -->|"unknown (Fallback)"| K[Fallback / Clarification]
+F -->|multi-intent| L[Multi-Agent Execution]
+
+%% ========== 各 Agent 内部逻辑 ==========
+subgraph RAG_Proc ["RAG 流程"]
+    G --> G1[Query Embedding]
+    G1 --> G2[Vector Search]
+    G1 --> G3[BM25 Search]
+    G2 --> G4[Merge + RRF]
+    G3 --> G4
+    G4 --> G5[BGE Reranker]
+    G5 --> G6[Context Filter]
+    G6 --> M["State: rag_results"]
+end
+
+subgraph Tool_Proc ["工具调用流程"]
+    H --> H1[Tool Selection]
+    H1 --> H2[Tool Execution]
+    H2 --> H3[Format Result]
+    H3 --> N["State: tool_results"]
+end
+
+subgraph Mem_Proc ["记忆处理"]
+    I --> I1[Search mem0]
+    I1 --> O["State: memory_context"]
+    
+    L --> G
+    L --> H
+    L --> I
+end
+
+%% ========== 决策反馈 ==========
+K --> K1[Ask Clarification]
+K --> K2[Fallback to RAG]
+
+%% ========== 汇总与生成 ==========
+M --> P[Context Manager]
+N --> P
+O --> P
+C1 --> P
+
+P --> Q[Prompt Builder]
+Q --> R[Final Prompt]
+R --> S["LLM Response (DeepSeek-chat/reasoner)"]
+
+%% ========== 后处理与反思 ==========
+S --> W{"Reflexion Check?"}
+W -->|Fail| G
+W -->|Pass| T_Logic
+
+subgraph Persistence ["持久化更新"]
+    T_Logic[Process Final State] --> T1[Update Session Memory]
+    T_Logic --> T2["Write Long-term Memory (mem0)"]
+end
+
+T1 --> V["CLI Output"]
+T2 --> V

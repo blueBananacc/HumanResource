@@ -20,14 +20,6 @@ def _ensure_data_dirs() -> None:
 
 
 def _on_exit(session_id: str, user_id: str) -> None:
-    """会话结束时执行清理和 episodic 记忆写入。"""
-    try:
-        from human_resource.agents.orchestrator import finalize_session
-
-        finalize_session(session_id, user_id)
-    except Exception:
-        logger.exception("会话结束处理失败")
-
     # 停止 MCP Client（关闭本地 MCP Server 进程）
     try:
         import asyncio

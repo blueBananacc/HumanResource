@@ -112,7 +112,7 @@ class IntentClassifier:
         if user_profile:
             system_content += f"\n用户画像（用于理解用户背景）：\n{user_profile}"
         if long_term_memory:
-            system_content += f"\n用户相关记忆（用于辅助消歧）：\n{long_term_memory}"
+            system_content += f"\n用户先前相关操作（用于辅助消歧）：\n{long_term_memory}"
         if session_summary:
             system_content += f"\n当前会话摘要（用于辅助消歧）：\n{session_summary}"
 

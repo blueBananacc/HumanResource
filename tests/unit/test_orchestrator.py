@@ -15,6 +15,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from human_resource.agents.orchestrator import (
+    _decompose_query,
     classify_intent_node,
     generate_response_node,
     load_context_node,
@@ -701,3 +702,349 @@ class TestGraphCompilation:
 
         assert result.get("final_response") is not None
         assert len(result.get("final_response", "")) > 0
+
+
+# ── 多意图 Query 拆解测试 ────────────────────────────────────
+
+
+class TestDecomposeQuery:
+    """测试 _decompose_query 多意图查询拆解逻辑。"""
+
+    @patch("human_resource.agents.orchestrator.get_llm")
+    def test_decompose_produces_sub_queries(self, mock_get_llm):
+        """多意图拆解应为每个步骤生成 sub_query。"""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(
+            content='["公司年假政策是什么", "将公司年假政策发送到test@example.com"]'
+        )
+        mock_get_llm.return_value = mock_llm
+
+        intent_result = IntentResult(
+            intents=[
+                IntentItem(label=IntentLabel.POLICY_QA, confidence=0.9),
+                IntentItem(
+                    label=IntentLabel.TOOL_ACTION,
+                    confidence=0.85,
+                    requires_tools=["send_email"],
+                ),
+            ]
+        )
+        agent_intent_map = [
+            {"agent": "rag_agent", "intent_index": 0},
+            {"agent": "tool_agent", "intent_index": 1},
+        ]
+
+        result = _decompose_query(
+            "查询公司年假并发送到test@example.com",
+            intent_result,
+            agent_intent_map,
+            session_context=["user: 帮我发邮件到test@example.com"],
+        )
+
+        assert result[0]["sub_query"] == "公司年假政策是什么"
+        assert result[1]["sub_query"] == "将公司年假政策发送到test@example.com"
+        # 原有字段保留
+        assert result[0]["agent"] == "rag_agent"
+        assert result[1]["agent"] == "tool_agent"
+
+    @patch("human_resource.agents.orchestrator.get_llm")
+    def test_decompose_handles_markdown_wrapped_json(self, mock_get_llm):
+        """拆解结果被 markdown 代码块包裹时正常解析。"""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(
+            content='```json\n["查年假", "发邮件"]\n```'
+        )
+        mock_get_llm.return_value = mock_llm
+
+        intent_result = IntentResult(
+            intents=[
+                IntentItem(label=IntentLabel.POLICY_QA, confidence=0.9),
+                IntentItem(label=IntentLabel.TOOL_ACTION, confidence=0.85),
+            ]
+        )
+        agent_intent_map = [
+            {"agent": "rag_agent", "intent_index": 0},
+            {"agent": "tool_agent", "intent_index": 1},
+        ]
+
+        result = _decompose_query("查年假并发邮件", intent_result, agent_intent_map)
+        assert result[0]["sub_query"] == "查年假"
+        assert result[1]["sub_query"] == "发邮件"
+
+    @patch("human_resource.agents.orchestrator.get_llm")
+    def test_decompose_llm_failure_returns_original(self, mock_get_llm):
+        """LLM 调用失败时不崩溃，返回原始 agent_intent_map（无 sub_query）。"""
+        mock_llm = MagicMock()
+        mock_llm.invoke.side_effect = Exception("LLM error")
+        mock_get_llm.return_value = mock_llm
+
+        intent_result = IntentResult(
+            intents=[
+                IntentItem(label=IntentLabel.POLICY_QA, confidence=0.9),
+                IntentItem(label=IntentLabel.TOOL_ACTION, confidence=0.85),
+            ]
+        )
+        agent_intent_map = [
+            {"agent": "rag_agent", "intent_index": 0},
+            {"agent": "tool_agent", "intent_index": 1},
+        ]
+
+        result = _decompose_query("查年假并发邮件", intent_result, agent_intent_map)
+        # 不应有 sub_query 字段（因为 LLM 失败了）
+        assert "sub_query" not in result[0]
+        assert "sub_query" not in result[1]
+
+    @patch("human_resource.agents.orchestrator.get_llm")
+    def test_decompose_invalid_json_returns_original(self, mock_get_llm):
+        """LLM 返回无效 JSON 时不崩溃。"""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(content="这不是JSON")
+        mock_get_llm.return_value = mock_llm
+
+        intent_result = IntentResult(
+            intents=[
+                IntentItem(label=IntentLabel.POLICY_QA, confidence=0.9),
+                IntentItem(label=IntentLabel.TOOL_ACTION, confidence=0.85),
+            ]
+        )
+        agent_intent_map = [
+            {"agent": "rag_agent", "intent_index": 0},
+            {"agent": "tool_agent", "intent_index": 1},
+        ]
+
+        result = _decompose_query("query", intent_result, agent_intent_map)
+        assert "sub_query" not in result[0]
+
+    @patch("human_resource.agents.orchestrator.get_llm")
+    def test_decompose_non_array_returns_original(self, mock_get_llm):
+        """LLM 返回非数组 JSON 时不崩溃。"""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(content='{"key": "value"}')
+        mock_get_llm.return_value = mock_llm
+
+        intent_result = IntentResult(
+            intents=[
+                IntentItem(label=IntentLabel.POLICY_QA, confidence=0.9),
+                IntentItem(label=IntentLabel.TOOL_ACTION, confidence=0.85),
+            ]
+        )
+        agent_intent_map = [
+            {"agent": "rag_agent", "intent_index": 0},
+            {"agent": "tool_agent", "intent_index": 1},
+        ]
+
+        result = _decompose_query("query", intent_result, agent_intent_map)
+        assert "sub_query" not in result[0]
+
+    @patch("human_resource.agents.orchestrator.get_llm")
+    def test_decompose_with_session_context_resolves_reference(self, mock_get_llm):
+        """会话上下文中的指代应传递给 LLM 以便还原。"""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(
+            content='["公司年假政策", "将年假政策发送到ganyizhi520@163.com"]'
+        )
+        mock_get_llm.return_value = mock_llm
+
+        intent_result = IntentResult(
+            intents=[
+                IntentItem(label=IntentLabel.POLICY_QA, confidence=0.9),
+                IntentItem(
+                    label=IntentLabel.TOOL_ACTION,
+                    confidence=0.85,
+                    requires_tools=["send_email"],
+                ),
+            ]
+        )
+        agent_intent_map = [
+            {"agent": "rag_agent", "intent_index": 0},
+            {"agent": "tool_agent", "intent_index": 1},
+        ]
+
+        result = _decompose_query(
+            "查询公司年假并作为内容发送到这个邮箱中",
+            intent_result,
+            agent_intent_map,
+            session_context=[
+                "user: 帮我发送一份邮件到ganyizhi520@163.com",
+                "assistant: 邮件已发送成功",
+            ],
+        )
+
+        # 验证 LLM 收到了会话上下文（prompt 中包含邮箱地址）
+        call_args = mock_llm.invoke.call_args[0][0]
+        assert "ganyizhi520@163.com" in call_args
+        assert "这个邮箱" in call_args
+        # 验证结果
+        assert result[0]["sub_query"] == "公司年假政策"
+        assert "ganyizhi520@163.com" in result[1]["sub_query"]
+
+
+class TestRouteAgentsNodeWithDecompose:
+    """测试 route_agents_node 在多意图时自动触发 query 拆解。"""
+
+    @patch("human_resource.agents.orchestrator._decompose_query")
+    def test_single_intent_no_decompose(self, mock_decompose):
+        """单意图不触发 query 拆解。"""
+        state = {
+            "intent": IntentResult(
+                intents=[IntentItem(label=IntentLabel.POLICY_QA, confidence=0.9)]
+            ),
+            "messages": [HumanMessage(content="年假政策")],
+        }
+        route_agents_node(state)
+        mock_decompose.assert_not_called()
+
+    @patch("human_resource.agents.orchestrator._decompose_query")
+    def test_multi_intent_triggers_decompose(self, mock_decompose):
+        """多意图时自动调用 _decompose_query。"""
+        mock_decompose.return_value = [
+            {"agent": "rag_agent", "intent_index": 0, "sub_query": "年假政策"},
+            {"agent": "tool_agent", "intent_index": 1, "sub_query": "发邮件"},
+        ]
+
+        state = {
+            "intent": IntentResult(
+                intents=[
+                    IntentItem(label=IntentLabel.POLICY_QA, confidence=0.9),
+                    IntentItem(label=IntentLabel.TOOL_ACTION, confidence=0.85),
+                ]
+            ),
+            "messages": [HumanMessage(content="查年假并发邮件")],
+            "session_context": ["user: 之前的消息"],
+        }
+        result = route_agents_node(state)
+
+        mock_decompose.assert_called_once()
+        assert result["agent_intent_map"][0]["sub_query"] == "年假政策"
+        assert result["agent_intent_map"][1]["sub_query"] == "发邮件"
+
+    @patch("human_resource.agents.orchestrator._decompose_query")
+    def test_needs_clarification_skips_decompose(self, mock_decompose):
+        """低置信度追问澄清时不触发拆解。"""
+        state = {
+            "intent": IntentResult(
+                intents=[
+                    IntentItem(label=IntentLabel.UNKNOWN, confidence=0.3),
+                    IntentItem(label=IntentLabel.POLICY_QA, confidence=0.2),
+                ]
+            ),
+            "needs_clarification": True,
+            "messages": [HumanMessage(content="那个啥")],
+        }
+        result = route_agents_node(state)
+        mock_decompose.assert_not_called()
+        assert result["target_agents"] == []
+
+
+class TestRagNodeWithSubQuery:
+    """测试 rag_node 使用 sub_query 进行检索。"""
+
+    @patch("human_resource.rag.retriever.hybrid_search")
+    def test_uses_sub_query_when_available(self, mock_hs):
+        """agent_intent_map 中有 sub_query 时使用它进行 RAG 检索。"""
+        mock_hs.return_value = RetrievalResult(chunks=[])
+
+        state = {
+            "messages": [HumanMessage(content="查年假并发邮件")],
+            "intent": IntentResult(
+                intents=[
+                    IntentItem(label=IntentLabel.POLICY_QA, confidence=0.9),
+                    IntentItem(label=IntentLabel.TOOL_ACTION, confidence=0.85),
+                ]
+            ),
+            "agent_intent_map": [
+                {"agent": "rag_agent", "intent_index": 0, "sub_query": "公司年假政策是什么"},
+                {"agent": "tool_agent", "intent_index": 1, "sub_query": "发送邮件到test@example.com"},
+            ],
+            "current_agent_index": 0,
+        }
+        rag_node(state)
+
+        # 验证 hybrid_search 使用了 sub_query 而非原始 query
+        mock_hs.assert_called_once()
+        call_args = mock_hs.call_args
+        assert call_args[0][0] == "公司年假政策是什么"
+
+    @patch("human_resource.rag.retriever.hybrid_search")
+    def test_falls_back_to_original_without_sub_query(self, mock_hs):
+        """没有 sub_query 时回退到原始用户消息。"""
+        mock_hs.return_value = RetrievalResult(chunks=[])
+
+        state = {
+            "messages": [HumanMessage(content="年假政策")],
+            "intent": IntentResult(
+                intents=[IntentItem(label=IntentLabel.POLICY_QA, confidence=0.9)]
+            ),
+            "agent_intent_map": [
+                {"agent": "rag_agent", "intent_index": 0},
+            ],
+            "current_agent_index": 0,
+        }
+        rag_node(state)
+
+        call_args = mock_hs.call_args
+        assert call_args[0][0] == "年假政策"
+
+    @patch("human_resource.rag.retriever.hybrid_search")
+    def test_uses_correct_collection_for_current_intent(self, mock_hs):
+        """多意图时 rag_node 根据当前步骤的意图选择 collection。"""
+        mock_hs.return_value = RetrievalResult(chunks=[])
+
+        state = {
+            "messages": [HumanMessage(content="查年假并查入职流程")],
+            "intent": IntentResult(
+                intents=[
+                    IntentItem(label=IntentLabel.POLICY_QA, confidence=0.9),
+                    IntentItem(label=IntentLabel.PROCESS_INQUIRY, confidence=0.85),
+                ]
+            ),
+            "agent_intent_map": [
+                {"agent": "rag_agent", "intent_index": 0, "sub_query": "年假政策"},
+                {"agent": "rag_agent", "intent_index": 1, "sub_query": "入职流程"},
+            ],
+            "current_agent_index": 1,
+        }
+        rag_node(state)
+
+        # 第二步服务 process_inquiry → 应使用 sop_collection
+        from human_resource.config import INTENT_COLLECTION_MAP
+        expected_collection = INTENT_COLLECTION_MAP.get("process_inquiry")
+        call_kwargs = mock_hs.call_args
+        assert call_kwargs[1]["collection_name"] == expected_collection
+
+
+class TestToolNodeWithSubQuery:
+    """测试 tool_node 使用 sub_query 进行工具选择。"""
+
+    @patch("human_resource.agents.orchestrator._get_tool_selector")
+    def test_uses_sub_query_for_tool_selection(self, mock_get_selector):
+        """tool_node 存在 sub_query 时使用它调用 ToolSelector。"""
+        register_default_tools()
+        mock_selector = MagicMock()
+        mock_selector.select.return_value = []
+        mock_get_selector.return_value = mock_selector
+
+        state = {
+            "messages": [HumanMessage(content="查年假并发送到test@example.com")],
+            "intent": IntentResult(
+                intents=[
+                    IntentItem(label=IntentLabel.POLICY_QA, confidence=0.9),
+                    IntentItem(
+                        label=IntentLabel.TOOL_ACTION,
+                        confidence=0.85,
+                        requires_tools=["send_email"],
+                    ),
+                ]
+            ),
+            "tool_results": [],
+            "agent_intent_map": [
+                {"agent": "rag_agent", "intent_index": 0, "sub_query": "年假政策"},
+                {"agent": "tool_agent", "intent_index": 1, "sub_query": "将年假政策发送到test@example.com"},
+            ],
+            "current_agent_index": 1,
+        }
+        tool_node(state)
+
+        # 验证 ToolSelector.select 接收的是 sub_query
+        call_args = mock_selector.select.call_args[0]
+        assert call_args[0] == "将年假政策发送到test@example.com"

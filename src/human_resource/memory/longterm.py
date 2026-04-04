@@ -49,6 +49,7 @@ class LongTermMemory:
         query: str,
         user_id: str,
         top_k: int = 5,
+        threshold: float | None = None,
     ) -> list[dict[str, Any]]:
         """检索相关长期记忆。
 
@@ -56,13 +57,18 @@ class LongTermMemory:
             query: 查询文本。
             user_id: 用户 ID。
             top_k: 返回结果数量。
+            threshold: 最低相似度阈值，低于此分数的记忆将被过滤。
 
         Returns:
             相关记忆列表。
         """
-        results = self._client.search(query, 
-                                        filters={"user_id": user_id}, 
-                                        limit=top_k)
+        kwargs: dict[str, Any] = {
+            "filters": {"user_id": user_id},
+            "limit": top_k,
+        }
+        if threshold is not None:
+            kwargs["threshold"] = threshold
+        results = self._client.search(query, **kwargs)
         # mem0 API 返回 {"results": [...]}，需要解包
         if isinstance(results, dict):
             results = results.get("results", [])

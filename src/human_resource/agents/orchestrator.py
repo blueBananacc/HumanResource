@@ -19,6 +19,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from human_resource.config import (
     INTENT_CONFIDENCE_THRESHOLD,
     MEMORY_IMPORTANCE_THRESHOLD,
+    MEMORY_SEARCH_THRESHOLD,
     MEMORY_SEARCH_TOP_K,
     MEMORY_WRITE_INTERVAL,
     MEMORY_WRITE_KEYWORDS,
@@ -101,6 +102,162 @@ def _extract_user_message(messages: list) -> str:
             content = msg.content
             return content if isinstance(content, str) else str(content)
     return ""
+
+
+def _collect_prior_context(state: AgentState) -> str:
+    """收集先前 Node 执行结果，聚合为上下文字符串。
+
+    将已有的工具结果、RAG 检索结果、长期记忆、会话上下文统一收集，
+    供各 Node 在执行时作为参考上下文使用。
+    """
+    parts: list[str] = []
+
+    # 已有工具执行结果
+    tool_results = state.get("tool_results", [])
+    for tr in tool_results:
+        if tr.success and tr.formatted:
+            parts.append(f"[工具结果] {tr.formatted}")
+
+    # 已有 RAG 检索结果
+    rag_results = state.get("rag_results")
+    if rag_results and rag_results.chunks:
+        for c in rag_results.chunks:
+            source = c.metadata.get("source", "未知")
+            parts.append(f"[检索结果-{source}] {c.text}")
+
+    # 长期记忆
+    memory_ctx = state.get("memory_context", [])
+    for m in memory_ctx:
+        parts.append(f"[先前相关操作] {m}")
+
+    # 会话上下文
+    session_ctx = state.get("session_context", [])
+    if session_ctx:
+        parts.append(f"[历史会话] {session_ctx}")
+
+    return "\n".join(parts)
+
+
+def _decompose_query(
+    user_message: str,
+    intent_result: IntentResult,
+    agent_intent_map: list[dict[str, Any]],
+    session_context: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """多意图时使用 LLM 将原始 query 拆解为每个执行步骤的子 query。
+
+    仅在存在多个意图时调用。为 agent_intent_map 中的每个步骤
+    生成针对性的 sub_query，提升 RAG 检索和工具选择的准确率。
+
+    Args:
+        user_message: 原始用户消息。
+        intent_result: 意图识别结果。
+        agent_intent_map: 执行计划列表。
+        session_context: 会话上下文（用于解析指代）。
+
+    Returns:
+        更新后的 agent_intent_map（每项增加 sub_query 字段）。
+    """
+    import json as _json
+
+    # 构建执行步骤描述
+    steps_desc: list[str] = []
+    for idx, entry in enumerate(agent_intent_map):
+        intent_idx = entry.get("intent_index", 0)
+        agent = entry.get("agent", "")
+        label = ""
+        if intent_idx < len(intent_result.intents):
+            label = intent_result.intents[intent_idx].label.value
+        steps_desc.append(
+            f"  步骤{idx}: agent={agent}, 意图={label}"
+        )
+
+    context_text = ""
+    if session_context:
+        context_text = "\n".join(session_context)
+
+    prompt = (
+        "你是一个查询拆解助手。用户发送了一条包含多个意图的消息，"
+        "系统已将其拆解为多个执行步骤。请为每个步骤生成一个独立的、"
+        "针对性的子查询（sub_query），使得：\n"
+        "- RAG 检索步骤的子查询适合文档检索（简洁、聚焦核心问题）\n"
+        "- 工具调用步骤的子查询包含完整的操作指令和必要参数\n"
+        "- 如果原始消息中有指代（如'这个邮箱'、'他的'），请结合会话上下文还原为具体内容\n\n"
+        f"原始用户消息: {user_message}\n\n"
+        f"会话上下文:\n{context_text or '(无)'}\n\n"
+        f"执行步骤:\n" + "\n".join(steps_desc) + "\n\n"
+        "请严格以 JSON 数组格式输出，数组长度与执行步骤数一致，每项为一个字符串（子查询）：\n"
+        f'[\"步骤0的子查询\", \"步骤1的子查询\", ...]\n'
+        "不要包含其他文字。"
+    )
+
+    try:
+        llm = get_llm("response_simple")
+        response = llm.invoke(prompt)
+        text = str(response.content).strip()
+
+        # 处理 markdown 代码块包裹
+        if text.startswith("```"):
+            lines = text.split("\n")
+            text = "\n".join(lines[1:-1]).strip()
+
+        sub_queries = _json.loads(text)
+        if not isinstance(sub_queries, list):
+            logger.warning("Query 拆解结果格式错误，返回非数组: %s", text)
+            return agent_intent_map
+
+        # 将 sub_query 附加到 agent_intent_map
+        for idx, entry in enumerate(agent_intent_map):
+            if idx < len(sub_queries) and isinstance(sub_queries[idx], str):
+                entry["sub_query"] = sub_queries[idx]
+            else:
+                entry["sub_query"] = user_message
+
+        logger.info("多意图 Query 拆解完成: %s", sub_queries)
+        return agent_intent_map
+
+    except Exception:
+        logger.exception("Query 拆解失败，使用原始 query")
+        return agent_intent_map
+
+
+def _rewrite_query_for_rag(query: str, prior_context: str) -> str:
+    """结合先前 Node 上下文重写 RAG 检索 query，使其更精准。
+
+    当存在先前上下文（如工具结果、会话历史）时，利用 LLM 将原始 query
+    改写为更适合文档检索的形式（消除指代、补充关键词）。
+
+    Args:
+        query: 原始查询（或 sub_query）。
+        prior_context: 先前 Node 聚合的上下文。
+
+    Returns:
+        改写后的查询字符串；失败时返回原始 query。
+    """
+    prompt = (
+        "你是一个查询改写助手。请根据上下文信息，将用户的检索查询改写为"
+        "更适合文档检索的形式。\n\n"
+        "改写规则：\n"
+        "- 消除指代词（如'这个'、'那个'），用具体内容替换\n"
+        "- 提取核心检索关键词，去除无关的操作指令（如'发送到邮箱'）\n"
+        "- 保持简洁，适合向量检索和关键词匹配\n"
+        "- 如果原始查询已经足够清晰，直接返回原始查询\n\n"
+        f"上下文信息:\n{prior_context}\n\n"
+        f"原始查询: {query}\n\n"
+        "请直接输出改写后的查询，不要包含任何解释或引号。"
+    )
+
+    try:
+        llm = get_llm("response_simple")
+        response = llm.invoke(prompt)
+        rewritten = str(response.content).strip()
+        if rewritten:
+            logger.info("RAG Query 改写: '%s' → '%s'", query, rewritten)
+            return rewritten
+    except Exception:
+        logger.exception("RAG Query 改写失败，使用原始 query")
+
+    return query
 
 
 def _is_explicit_memory_command(user_message: str) -> bool:
@@ -265,7 +422,10 @@ def classify_intent_node(state: AgentState) -> dict[str, Any]:
 
     logger.info(
         "意图识别完成: %s",
-        [(i.label.value, i.confidence) for i in intent_result.intents],
+        [
+            (i.label.value, i.confidence, list(i.requires_tools))
+            for i in intent_result.intents
+        ],
     )
 
     # 低置信度回退：当所有意图的置信度都低于阈值时标记需要澄清
@@ -310,6 +470,18 @@ def route_agents_node(state: AgentState) -> dict[str, Any]:
 
     target_agents, agent_intent_map = resolve_route(intent)
 
+    # ── 多意图 Query 拆解 ──
+    # 当存在多个意图时，将原始 query 拆解为每个执行步骤的子 query，
+    # 提升 RAG 检索及工具选择的准确率。
+    if intent and len(intent.intents) > 1:
+        messages = state.get("messages", [])
+        user_message = _extract_user_message(messages)
+        session_ctx = state.get("session_context", [])
+        if user_message:
+            agent_intent_map = _decompose_query(
+                user_message, intent, agent_intent_map, session_ctx,
+            )
+
     logger.info("路由目标: %s", target_agents)
     logger.info("意图映射: %s", agent_intent_map)
     return {
@@ -334,21 +506,45 @@ def rag_node(state: AgentState) -> dict[str, Any]:
     messages = state.get("messages", [])
     user_message = _extract_user_message(messages)
 
-    logger.info("RAG Agent 执行查询: %s", user_message[:50])
+    # ── 优先使用 agent_intent_map 中的 sub_query（多意图拆解结果） ──
+    agent_intent_map = state.get("agent_intent_map", [])
+    current_idx = state.get("current_agent_index", 0)
+    query = user_message
+    if current_idx < len(agent_intent_map):
+        sub_query = agent_intent_map[current_idx].get("sub_query")
+        if sub_query:
+            query = sub_query
+            logger.info("RAG Agent 使用拆解后的子查询: %s", query)
 
-    if not user_message:
+    logger.info("RAG Agent 执行查询: %s", query[:50])
+
+    if not query:
         return {"rag_results": RetrievalResult(chunks=[])}
+
+    # 聚合先前 Node 上下文（工具结果、长期记忆等）
+    prior_context = _collect_prior_context(state)
+
+    # 结合先前上下文改写 query，提升检索精准度
+    if prior_context:
+        query = _rewrite_query_for_rag(query, prior_context)
 
     # 根据意图确定目标 collection
     collection_name = DEFAULT_COLLECTION
     intent = state.get("intent")
     if intent and intent.intents:
-        label = intent.intents[0].label.value
+        # 使用当前步骤服务的意图来确定 collection
+        intent_idx = 0
+        if current_idx < len(agent_intent_map):
+            intent_idx = agent_intent_map[current_idx].get("intent_index", 0)
+        if intent_idx < len(intent.intents):
+            label = intent.intents[intent_idx].label.value
+        else:
+            label = intent.intents[0].label.value
         collection_name = INTENT_COLLECTION_MAP.get(label, DEFAULT_COLLECTION)
     logger.info("RAG 目标 collection: %s", collection_name)
 
     try:
-        result = hybrid_search(user_message, collection_name=collection_name)
+        result = hybrid_search(query, collection_name=collection_name)
         return {"rag_results": result}
     except Exception:
         logger.exception("RAG Agent 检索失败")
@@ -383,6 +579,14 @@ def tool_node(state: AgentState) -> dict[str, Any]:
     agent_intent_map = state.get("agent_intent_map", [])
     current_idx = state.get("current_agent_index", 0)
 
+    # ── 优先使用 agent_intent_map 中的 sub_query（多意图拆解结果） ──
+    query = user_message
+    if current_idx < len(agent_intent_map):
+        sub_query = agent_intent_map[current_idx].get("sub_query")
+        if sub_query:
+            query = sub_query
+            logger.info("Tool Agent 使用拆解后的子查询: %s", query)
+
     candidate_tools: list[str] = []
     if current_idx < len(agent_intent_map):
         entry = agent_intent_map[current_idx]
@@ -397,19 +601,12 @@ def tool_node(state: AgentState) -> dict[str, Any]:
         logger.info("Tool Agent: 当前意图无候选工具")
         return {"tool_results": results}
 
-    # 构建上下文：已有工具结果 + 会话上下文
-    context_parts: list[str] = []
-    for tr in results:
-        if tr.success and tr.formatted:
-            context_parts.append(tr.formatted)
-    session_ctx = state.get("session_context", [])
-    if session_ctx:
-        context_parts.extend(session_ctx)
-    context = "\n".join(context_parts)
+    # 构建上下文：聚合所有先前 Node 结果（工具 + RAG + 记忆 + 会话）
+    context = _collect_prior_context(state)
 
     # 使用 ToolSelector（LLM）精细选择工具并生成参数
     selector = _get_tool_selector()
-    tool_calls = selector.select(user_message, candidate_tools, context)
+    tool_calls = selector.select(query, candidate_tools, context)
 
     if not tool_calls:
         logger.info("Tool Agent: LLM 未选择任何工具")
@@ -464,7 +661,10 @@ def memory_retrieval_node(state: AgentState) -> dict[str, Any]:
     # ── 语义检索相关长期记忆 ──
     try:
         ltm = _get_longterm_memory()
-        results = ltm.search(user_message, user_id=user_id, top_k=MEMORY_SEARCH_TOP_K)
+        results = ltm.search(
+            user_message, user_id=user_id,
+            top_k=MEMORY_SEARCH_TOP_K, threshold=MEMORY_SEARCH_THRESHOLD,
+        )
         for item in results:
             memory_text = item.get("memory", "")
             if memory_text:
@@ -492,9 +692,17 @@ def memory_node(state: AgentState) -> dict[str, Any]:
     if not user_message:
         return {"memory_context": memory_ctx}
 
+    # 聚合先前 Node 上下文（工具结果、RAG 结果等）
+    prior_context = _collect_prior_context(state)
+    if prior_context:
+        logger.info("Memory Agent 先前上下文可用 (%d 字符)", len(prior_context))
+
     try:
         ltm = _get_longterm_memory()
-        results = ltm.search(user_message, user_id=user_id, top_k=MEMORY_SEARCH_TOP_K)
+        results = ltm.search(
+            user_message, user_id=user_id,
+            top_k=MEMORY_SEARCH_TOP_K, threshold=MEMORY_SEARCH_THRESHOLD,
+        )
         for item in results:
             memory_text = item.get("memory", "")
             if memory_text and memory_text not in memory_ctx:
@@ -825,51 +1033,6 @@ def _extract_memorable_info(
     except Exception:
         logger.exception("LLM 记忆提取失败")
         return []
-
-
-def finalize_session(session_id: str, user_id: str) -> None:
-    """会话结束时生成 episodic memory 并写入长期记忆。
-
-    将整个会话历史摘要为 episodic 记忆，包含关键问题和决策。
-    """
-    sm = _get_session_memory()
-    session = sm.get_or_create(session_id)
-
-    # 构建完整对话文本（存储摘要 + 当前消息）
-    parts: list[str] = []
-    if session.summary:
-        parts.append(f"早期对话摘要: {session.summary}")
-    for msg in session.messages:
-        parts.append(f"{msg.role}: {msg.content}")
-
-    full_text = "\n".join(parts)
-    if not full_text.strip():
-        logger.info("会话为空，跳过 episodic 记忆写入: session=%s", session_id)
-        return
-
-    # 生成会话级 episodic 摘要
-    compressor = _get_compressor()
-    episodic_summary = compressor.summarize_text(full_text)
-
-    if not episodic_summary:
-        return
-
-    # 写入 mem0 作为 episodic memory
-    try:
-        ltm = _get_longterm_memory()
-        ltm.add(
-            [{"role": "user", "content": episodic_summary}],
-            user_id=user_id,
-            memory_type="episodic",
-            metadata={"session_id": session_id, "type": "session_summary"},
-        )
-        logger.info(
-            "会话结束 episodic 记忆已写入: session=%s, user=%s",
-            session_id, user_id,
-        )
-    except Exception:
-        logger.exception("会话结束 episodic 记忆写入失败")
-
 
 # ── 工具注册初始化 ───────────────────────────────────────────
 def register_default_tools() -> None:

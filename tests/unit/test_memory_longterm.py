@@ -141,7 +141,9 @@ class TestMemoryRetrievalNode:
         assert len(result["memory_context"]) == 2
         assert "用户是研发部的工程师" in result["memory_context"]
         assert "用户之前问过年假政策" in result["memory_context"]
-        ltm.search.assert_called_once_with("年假还有几天", user_id="u1", top_k=3)
+        ltm.search.assert_called_once_with(
+            "年假还有几天", user_id="u1", top_k=3, threshold=0.6,
+        )
 
     @patch("human_resource.agents.orchestrator.UserProfileStore")
     @patch("human_resource.agents.orchestrator._get_longterm_memory")

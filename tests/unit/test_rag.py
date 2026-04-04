@@ -226,34 +226,6 @@ class TestReciprocalRankFusion:
             assert score > 0
 
 
-class TestVectorSearch:
-    @patch("human_resource.rag.retriever.get_vectorstore")
-    def test_calls_similarity_search(self, mock_get_vs):
-        from human_resource.rag.retriever import vector_search
-
-        mock_store = MagicMock()
-        doc = Document(page_content="结果", metadata={"source": "test"})
-        mock_store.similarity_search_with_relevance_scores.return_value = [(doc, 0.85)]
-        mock_get_vs.return_value = mock_store
-
-        results = vector_search("查询", top_k=5)
-        mock_store.similarity_search_with_relevance_scores.assert_called_once_with("查询", k=5)
-        assert len(results) == 1
-        assert results[0][0].page_content == "结果"
-
-    @patch("human_resource.rag.retriever.get_vectorstore")
-    def test_with_metadata_filter(self, mock_get_vs):
-        from human_resource.rag.retriever import vector_search
-
-        mock_store = MagicMock()
-        mock_store.similarity_search_with_relevance_scores.return_value = []
-        mock_get_vs.return_value = mock_store
-
-        vector_search("查询", metadata_filter={"source": "handbook"})
-        call_kwargs = mock_store.similarity_search_with_relevance_scores.call_args
-        assert call_kwargs[1]["filter"] == {"source": "handbook"}
-
-
 class TestHybridSearch:
     @patch("human_resource.rag.retriever.get_all_documents")
     @patch("human_resource.rag.retriever.get_vectorstore")

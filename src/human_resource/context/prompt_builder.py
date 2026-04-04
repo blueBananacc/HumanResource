@@ -64,7 +64,7 @@ class PromptBuilder:
             memories = self._ctx.truncate_to_budget(
                 "relevant_memories", relevant_memories
             )
-            sections.append(f"[相关记忆]\n{memories}")
+            sections.append(f"[先前相关操作]\n{memories}")
 
         if retrieved_context:
             context = self._ctx.truncate_to_budget(

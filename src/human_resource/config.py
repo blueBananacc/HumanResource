@@ -15,9 +15,9 @@ CHROMA_DB_DIR = DATA_DIR / "chroma_db"
 SESSIONS_DIR = DATA_DIR / "sessions"
 
 # ── API Keys（从环境变量读取） ──────────────────────────────
-os.environ["DEEPSEEK_API_KEY"] = ""  
+os.environ["DEEPSEEK_API_KEY"] = "sk-"  
 os.environ["HF_API_TOKEN"] = ""
-os.environ["MEM0_API_KEY"] = ""
+os.environ["MEM0_API_KEY"] = "m0-"
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 HF_API_TOKEN = os.environ.get("HF_API_TOKEN", "")
 MEM0_API_KEY = os.environ.get("MEM0_API_KEY", "")
@@ -93,6 +93,7 @@ SESSION_COMPRESS_THRESHOLD = 5  # 超过此轮次数触发历史压缩
 
 # ── Long-term Memory 配置 ─────────────────────────────────
 MEMORY_SEARCH_TOP_K = 3  # mem0 检索返回结果数量
+MEMORY_SEARCH_THRESHOLD = 0.6  # mem0 检索最低相似度阈值（API 默认 0.3）
 MEMORY_WRITE_INTERVAL = 5  # 固定轮次触发写入间隔
 MEMORY_IMPORTANCE_THRESHOLD = 0.5  # 记忆重要性阈值，仅 > 此值才写入
 

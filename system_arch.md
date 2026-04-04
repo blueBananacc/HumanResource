@@ -211,7 +211,7 @@ AgentState {
 - 分类方式：使用 LLM structured output（JSON mode），prompt 中包含意图定义与示例。对于 MVP 不需要训练分类模型，LLM few-shot 足够
 - Prompt Routing：Classifier 输出 intent label → Router 查表映射到 Agent。映射表可配置，便于扩展新意图
 - Tool Routing：当 intent 包含工具需求时，Classifier 同时输出 required_tools[]，Tool Agent 根据此列表选择工具
-- Multi-intent 处理：Classifier prompt 设计为可返回 intent_list[]（多意图数组），并返回意图执行的顺序。Router 按顺序执行 Agent，最后由 Orchestrator 聚合结果
+- Multi-intent 处理：Classifier prompt 设计为可返回 intent_list[]（多意图数组），并返回意图执行的顺序。Router 按顺序拆解 Agent，并根据子意图进行query重写。最后由 Orchestrator 聚合结果
 - Fallback 策略：三级回退机制：
   1. confidence < 阈值 → 追问澄清（生成澄清问题返回给用户）
   2. 重试后仍无法识别 → 路由到 RAG Agent 做宽泛检索
@@ -786,4 +786,3 @@ main.py (CLI loop)
 | 异步 Agent 通信 | 大规模部署时改为消息队列驱动 | AgentMessage 协议已统一，替换传输层即可 |
 | 对话评估 | 自动评估回答质量 | 引入 LLM-as-judge 打分机制 |
 | 多语言支持 | 支持中英文混合查询 | Embedding 模型选择支持多语言的版本，prompt 增加语言检测 |
-
