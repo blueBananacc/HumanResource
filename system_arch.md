@@ -202,7 +202,6 @@ AgentState {
 | policy_qa | HR 政策问答 | RAG Agent |
 | process_inquiry | HR 流程咨询 | RAG Agent + Tool Agent |
 | employee_lookup | 员工信息查询 | Tool Agent |
-| tool_action | HR 工具操作 | Tool Agent |
 | memory_recall | 回忆之前的对话内容 | Memory Agent |
 | chitchat | 闲聊/问候 | Orchestrator 直接响应 |
 | unknown | 无法识别 | Fallback 流程 |
@@ -786,3 +785,12 @@ main.py (CLI loop)
 | 异步 Agent 通信 | 大规模部署时改为消息队列驱动 | AgentMessage 协议已统一，替换传输层即可 |
 | 对话评估 | 自动评估回答质量 | 引入 LLM-as-judge 打分机制 |
 | 多语言支持 | 支持中英文混合查询 | Embedding 模型选择支持多语言的版本，prompt 增加语言检测 |
+
+
+- 意图识别：Intent Accuracy（主指标）；Multi-intent 覆盖率（是否识别出多个意图）
+    - Routing Layer（路由正确性）：Routing Accuracy
+    - RAG Layer（检索质量）：Retrieval Hit Rate（是否命中正确文档）；Top-K Recall（Top3  是否包含正确 chunk）
+    - Tool Layer（工具调用）：Tool Call Success Rate；Parameter Accuracy（参数是否正确） 
+    - Memory Layer：Memory Write Precision（是否写入关键事实）；Memory Recall Accuracy
+
+- 我希望重构现有的outline结构，流程如.mmd所示

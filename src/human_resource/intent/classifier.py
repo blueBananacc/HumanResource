@@ -24,10 +24,9 @@ _CLASSIFICATION_SYSTEM_PROMPT = """\
 - policy_qa: HR 政策问答（如年假政策、薪资规定、福利制度、规章制度文档等）
 - process_inquiry: HR 流程咨询（如请假流程、入职流程、离职流程等）
 - employee_lookup: 员工信息查询（如查询某人的部门、职位、联系方式等）
-- tool_action: HR 工具操作（如查询假期余额、提交申请等）
 - memory_recall: 回忆之前的对话内容（如"我们之前聊了什么"）
 - chitchat: 闲聊/问候（如"你好"、"谢谢"）
-- unknown: 无法识别为上述任何类别
+- unknown: 无法识别为上述任何类别，或者用户提出了与公司 HR 业务完全无关、虚构、或荒诞的要求（如：火星政策、修仙流程等）。
 
 规则：
 1. 一条消息可能包含多个意图，请全部列出。
@@ -73,7 +72,7 @@ _FEW_SHOT_EXAMPLES = """
 场景四（多意图 + 每个意图多Agent）:
 用户: "帮我查一下李四的假期余额，然后告诉我请假流程"
 说明: 先查假期余额（tool_agent），再查请假流程（rag_agent + tool_agent 串行），多个意图且 process_inquiry 涉及多Agent
-输出: {"intents": [{"label": "tool_action", "confidence": 0.9, "entities": {"name": "李四"}, "requires_tools": ["get_leave_balance"]}, {"label": "process_inquiry", "confidence": 0.85, "entities": {"process": "请假"}, "requires_tools": ["get_process_steps"]}]}
+输出: {"intents": [{"label": "employee_lookup", "confidence": 0.9, "entities": {"name": "李四"}, "requires_tools": ["get_leave_balance"]}, {"label": "process_inquiry", "confidence": 0.85, "entities": {"process": "请假"}, "requires_tools": ["get_process_steps"]}]}
 """
 
 

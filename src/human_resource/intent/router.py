@@ -20,11 +20,6 @@ ROUTING_TABLE: dict[IntentLabel, dict] = {
         "secondary": [],
         "mode": "single",
     },
-    IntentLabel.TOOL_ACTION: {
-        "primary": "tool_agent",
-        "secondary": [],
-        "mode": "single",
-    },
     IntentLabel.PROCESS_INQUIRY: {
         "primary": "rag_agent",
         "secondary": ["tool_agent"],
