@@ -49,39 +49,42 @@ pytest
                        │ user message
                        ▼
 ┌─────────────────────────────────────────────────────────┐
-│    Orchestrator Agent (LangGraph StateGraph)            │
-│  ┌──────────┐  ┌──────────┐  ┌────────────────────┐    │
-│  │ Intent   │  │ Context  │  │ Response Generator  │    │
-│  │ Recogn.  │  │ Manager  │  │                     │    │
-│  └────┬─────┘  └────┬─────┘  └─────────┬──────────┘    │
-│       │              │                  │                │
-│       ▼              ▼                  ▼                │
-│  ┌─────────────────────────────────────────────────┐    │
-│  │              Agent Router (Conditional Edges)   │    │
-│  └──┬──────────────┬──────────────┬────────────────┘    │
-└─────┼──────────────┼──────────────┼─────────────────────┘
-      │              │              │
-      ▼              ▼              ▼
-┌──────────┐  ┌──────────┐  ┌──────────┐
-│ RAG Agent│  │Tool Agent│  │ Memory   │
-│ (ReAct)  │  │  (ReAct) │  │ Agent    │
-│          │  │          │  │          │
-│ Retrieval│  │ Internal │  │ Session  │
-│ Ranking  │  │ MCP Tools│  │ Longterm │
-│ Synthesis│  │ Execute  │  │ Profile  │
-└──────────┘  └──────────┘  └──────────┘
-      │              │              │
-      ▼              ▼              ▼
-┌──────────┐  ┌──────────┐  ┌──────────┐
-│VectorDB  │  │ Tool     │  │ mem0     │
-│(ChromaDB)│  │ Registry │  │ Cloud    │
-│          │  │ MCP Svr  │  │          │
-└──────────┘  └──────────┘  └──────────┘
+│           Load Context (Session + Long-term Memory)      │
+│                 + Intent Hints 生成                      │
+└──────────────────────┬──────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────┐
+│       决策中心 Orchestrator (DeepSeek-Reasoner)          │
+│                                                         │
+│  LLM 自主推理：分析已有信息是否足够回答用户问题          │
+│  ├─ 需要工具 → 调用 Tool Agent → 观察结果 → 回到决策中心│
+│  ├─ 需要信息 → 调用 RAG Agent  → 观察结果 → 回到决策中心│
+│  ├─ 需要记忆 → 调用 Memory Agent→ 观察结果 → 回到决策中心│
+│  ├─ 信息足够 → 生成最终答案                              │
+│  └─ 需要澄清 → 追问用户                                 │
+└──┬──────────────┬──────────────┬─────────────┬──────────┘
+   │              │              │             │
+   ▼              ▼              ▼             ▼
+┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────┐
+│ RAG Agent│ │Tool Agent│ │ Memory   │ │  Response   │
+│          │ │          │ │ Agent    │ │  Generator  │
+│ Retrieval│ │ Internal │ │ Session  │ │  / Clarify  │
+│ Ranking  │ │ MCP Tools│ │ Longterm │ │             │
+└────┬─────┘ └────┬─────┘ └────┬─────┘ └──────┬─────┘
+     │            │            │              │
+     ▼            ▼            ▼              ▼
+┌──────────┐ ┌──────────┐ ┌──────────┐  Post-process
+│VectorDB  │ │ Tool     │ │ mem0     │  (Session +
+│(ChromaDB)│ │ Registry │ │ Cloud    │   LTM 写入)
+└──────────┘ │ MCP Svr  │ └──────────┘
+             └──────────┘
 
 - **框架映射**：
   - Orchestrator = LangGraph StateGraph，定义全局执行流程图
-  - 每个 Specialist Agent = Graph 中的一个 Node 函数
-  - Agent Router = conditional_edges，根据 Intent 分类结果路由到不同 Node
+  - 决策中心 = Orchestrator Node（DeepSeek-Reasoner），自主决定下一步动作
+  - Specialist Agent = Graph 中的执行 Node，被决策中心按需调用
+  - 循环机制 = conditional_edge 从 Specialist Agent 执行完毕后回到决策中心，由 Reasoner 判断是否继续
   - 状态管理 = LangGraph State（TypedDict），在 Node 之间传递和更新
 
 
@@ -89,7 +92,7 @@ pytest
 ## 2.2 Agent Architecture
 | Agent | 职责 | 输入 | 输出 | 依赖模块 |
 |------|------|------|------|------|
-| Orchestrator | 接收用户输入、意图识别、路由分发、聚合结果、生成最终回复 | 用户消息 + 会话上下文 | 最终回复 | Intent、Context、Router、LLM Client |
+| Orchestrator（决策中心） | 接收用户输入、加载上下文、**自主推理决定下一步动作**（调用工具/RAG/记忆/生成回答/追问）、聚合结果、生成最终回复 | 用户消息 + 会话上下文 + 意图提示 + 已收集的中间结果 | 下一步动作指令 或 最终回复 | Context、LLM Client（Reasoner） |
 | RAG Agent | 基于 HR 文档库执行检索增强生成 | 查询文本 + 检索过滤条件 | 检索结果 + 上下文片段（结构化中间数据） | RAG Pipeline、Context |
 | Tool Agent | 执行内部工具调用和 MCP 工具调用 | 工具名称 + 参数 | 工具执行结果（结构化） | Tool Registry、MCP Client |
 | Memory Agent | 管理会话记忆写入/读取、长期记忆提取/检索 | 对话历史 / 检索查询 | 相关记忆上下文 | Session Memory、Long-term Memory |
@@ -97,38 +100,37 @@ pytest
 **子 Agent 输出原则**：
 - 所有 Specialist Agent（RAG / Tool / Memory）**只返回结构化中间结果**，写入 LangGraph State 对应字段
 - **不生成用户可见的最终回答**
-- 最终用户回复**仅由 Orchestrator 的 Response Generator 节点**生成，基于所有中间结果统一组装 prompt 后调用 LLM
-- 好处：保证回复风格一致、便于多意图结果聚合、Context Engineering 集中管理
+- 最终用户回复**仅由 Orchestrator 决策中心**在判定信息充足后生成，基于所有中间结果统一组装 prompt 后调用 LLM
+- 好处：保证回复风格一致、便于多步推理结果聚合、Context Engineering 集中管理
 
-- **Agent 执行模式**：
-  - ReAct 模式（所有 Specialist Agent 默认使用）：
-  - 使用 LangGraph 的 create_react_agent() 构建
-  - 循环流程：LLM 思考 → 选择 Action (工具/检索) → 执行 → 观察结果 → 继续或输出最终结果
+- **Agent 执行模式 — Orchestrator 驱动循环**：
+  - **核心区别**: 不再由固定路由表决定调用哪些 Agent，而是由 Orchestrator（DeepSeek-Reasoner）在每一步自主推理决定下一个动作
+  - 循环流程：Orchestrator 分析当前 State（用户问题 + 已收集信息 + 上下文）→ 自主决策下一步动作 → 执行对应 Specialist Agent → 观察结果写回 State → 回到 Orchestrator 继续推理
+  - 终止条件：Orchestrator 判定已有足够信息回答用户问题 → 生成最终答案；或判定信息不足且无法获取 → 生成澄清追问
+  - 设置最大循环次数（如 5 次），避免无限循环
 
 - **Reflexion 模式（可选扩展，用于关键路径）**：
-  - 在 Agent 生成输出后添加自我反思节点
+  - 在 Orchestrator 生成最终回答后添加自我反思
   - 反思 prompt 要求 LLM 评估回答质量（准确性、完整性、相关性）
-  - 评估不通过 → 通过 conditional edge 回到 Agent 节点重新执行，携带反思反馈
-  - MVP 阶段可选启用：建议在 policy_qa（政策准确性要求高）场景启用
+  - 评估不通过 → 回到 Orchestrator 决策循环，携带反思反馈继续收集信息
   - 设置最大反思次数（如 2 次），避免无限循环
 
 **LangGraph State 定义**：
 AgentState {
   messages: Annotated[list[BaseMessage], add_messages] // LangGraph 消息列表（对话历史）
-  intent: IntentResult | None                         // 意图识别结果
-  target_agents: list[str]                            // 路由目标（目标 Agent 列表）
+  intent_hints: str | None                            // 意图提示（轻量分析，供 Orchestrator 参考）
+  orchestrator_action: str | None                     // Orchestrator 当前决策的动作（"rag" / "tool" / "memory" / "answer" / "clarify"）
+  orchestrator_reasoning: str | None                  // Orchestrator 决策推理过程
   rag_results: RetrievalResult | None                 // RAG 检索结果
   tool_results: list[ToolResult]                      // 工具执行结果
   session_context: list[str]                          // 当前会话上下文/短期记忆
   memory_context: list[str]                           // 检索到的长期记忆
   user_profile: dict[str, Any] | None                 // 用户画像/偏好信息
-  needs_clarification: bool                           // 是否需要用户进一步澄清
   final_response: str | None                          // 最终生成的响应内容
-  reflection_count: int                               // Reflexion 循环重试计数
+  loop_count: int                                     // 当前决策循环次数
+  max_loops: int                                      // 最大循环次数（默认 5）
   session_id: str                                     // 会话唯一标识
   user_id: str                                        // 用户 ID
-  current_agent_index: int                            // 执行到第几个agent了
-  agent_intent_map: list[dict[str, Any]]              // Agent 与意图的映射详情
 }
 
 
@@ -137,92 +139,94 @@ AgentState {
 **完整的请求处理流程（每步标注数据形态）**：
 ① 用户输入 (raw text) — CLI input()
    │
-② Orchestrator 加载上下文
+② 加载上下文 + 意图提示生成
    ├─→ Session Memory(本地): 获取当前会话历史 (message list)
-   └─→ Memory Agent → mem0 Cloud: 检索相关长期记忆 (memory snippets)
+   ├─→ mem0 Cloud: 检索相关长期记忆 (memory snippets) + 用户画像
+   └─→ Intent Hints 生成(DeepSeek-chat, 轻量分析)
+       输入: 用户消息 + 会话摘要 + 长短期记忆
+       输出: 意图提示文本 (自然语言，供 Orchestrator 参考)
    │
-③ Intent Recognition(DeepSeek-reasoner, structured output)
-   │  输入: 用户消息 + 会话摘要 + 长短期记忆
-   │  输出: intent_label, confidence, entities, requires_tools[]
+③ Orchestrator 决策循环 (DeepSeek-Reasoner)
+   │  输入: 用户消息 + 意图提示 + 已收集的中间结果 + 上下文
+   │  Reasoner 自主推理，输出下一步动作：
    │
-④ Router 决策(LangGraph conditional_edges)
-   │  输入: intent 分类结果
-   │  输出: target_agents[], execution_plan[]
+   │  ┌─────────────────────────────────────────────────┐
+   │  │ LOOP（最多 max_loops 轮）:                       │
+   │  │                                                   │
+   │  │  Orchestrator 分析当前 State，决策下一步：         │
+   │  │  ├─ action="rag"     → 执行 RAG Agent             │
+   │  │  │   输入: query + metadata_filter                │
+   │  │  │   输出: retrieved_chunks[] → state.rag_results │
+   │  │  │   → 结果回到 Orchestrator                      │
+   │  │  │                                                │
+   │  │  ├─ action="tool"    → 执行 Tool Agent            │
+   │  │  │   输入: tool_name + parameters                 │
+   │  │  │   输出: tool_result → state.tool_results       │
+   │  │  │   → 结果回到 Orchestrator                      │
+   │  │  │                                                │
+   │  │  ├─ action="memory"  → 执行 Memory Agent          │
+   │  │  │   输入: memory_query                           │
+   │  │  │   输出: relevant_memories[]                    │
+   │  │  │   → 结果回到 Orchestrator                      │
+   │  │  │                                                │
+   │  │  ├─ action="answer"  → 信息充足，生成最终回复     │
+   │  │  │   → 退出循环，进入④                            │
+   │  │  │                                                │
+   │  │  └─ action="clarify" → 信息不足且无法获取         │
+   │  │      → 退出循环，生成澄清问题                     │
+   │  └─────────────────────────────────────────────────┘
    │
-⑤ Agent 执行 — ReAct 循环（可并行）
-   ├─→ RAG Agent (policy_qa / document_search / process_inquiry)
-   │   输入: query + metadata_filter
-   │   内部: retrieve → rerank → context_filter
-   │   输出: retrieved_chunks[] → 写入 state.rag_results
+④ 回复生成 (DeepSeek-chat / DeepSeek-reasoner)
+   │  输入: 所有中间结果 + 会话历史 + 记忆 + 系统 prompt
+   │  处理: Context Assembly (token counting → compression → prompt building)
+   │  输出: final_response text
    │
-   ├─→ Tool Agent (employee_lookup / tool_action / process_inquiry)
-   │   输入: tool_name + parameters
-   │   内部: registry_lookup → schema_validate → execute → format
-   │   输出: tool_result (structured)
-   │
-   └─→ Memory Agent (需要时)
-       输入: memory_query
-       输出: relevant_memories[]
-   │
-    [可选] Reflexion 节点 (DeepSeek-reasoner)
-   │  评估 Agent 输出质量 → 通过则继续，不通过则回到 Agent 重试
-   │
-⑥ Context Assembly
-   │  输入: agent 结果 + 会话历史 + 记忆 + 系统 prompt
-   │  处理: token counting → compression → prompt building
-   │  输出: final_prompt (within context window)
-   │
-⑦ LLM 生成最终回复(DeepSeek-chat)
-   │  输入: final_prompt
-   │  输出: response text
-   │
-⑧ Post-processing
+⑤ Post-processing
    ├─→ Session Memory(本地): 追加当轮对话 (user_msg + assistant_msg) → JSON 持久化
-   ├─→ Memory Agent → mem0 Cloud: 判断是否需要写入长期记忆
+   ├─→ mem0 Cloud: 判断是否需要写入长期记忆
    │   (提取关键事实 → mem0.add() 写入, mem0 自动处理去重/重要性评估)
    └─→ 返回响应给用户(CLI print)
 
 **数据流完整性验证**：
-✅ 用户输入 → 意图识别 → 路由 → Agent 执行 → 结果聚合 → 回复生成 → 记忆更新：闭环
-✅ 所有模块有明确输入来源和输出
-✅ 无孤立模块、无断裂调用链
+✅ 用户输入 → 上下文加载 + 意图提示 → Orchestrator 自主推理循环 → 回复生成 → 记忆更新：闭环
+✅ Orchestrator 在每一步决策中都能观察到所有已收集的中间结果
+✅ 所有模块有明确输入来源和输出，无孤立模块、无断裂调用链
 
 # 3 Core Modules
-## 3.1 Intent Recognition
-**目标**：将用户自然语言输入分类为可路由的意图类别，支持多意图识别和低置信度回退。
+## 3.1 Intent Hints（意图提示生成）
+**目标**：对用户输入进行轻量预分析，生成自然语言意图提示，供 Orchestrator 决策中心参考。
 
 **子模块**：
 | 子模块 | 职责 |
 |------|------|
-| Intent Classifier | LLM-based 分类，输出 intent label + confidence |
-| Intent Router | 根据分类结果映射到目标 Agent 和执行计划 |
-**意图分类体系（MVP）**：
-| Intent Label | 描述 | 路由目标 |
-|-------------|------|----------|
-| policy_qa | HR 政策问答 | RAG Agent |
-| process_inquiry | HR 流程咨询 | RAG Agent + Tool Agent |
-| employee_lookup | 员工信息查询 | Tool Agent |
-| memory_recall | 回忆之前的对话内容 | Memory Agent |
-| chitchat | 闲聊/问候 | Orchestrator 直接响应 |
-| unknown | 无法识别 | Fallback 流程 |
+| Intent Analyzer | LLM-based 轻量分析，输出自然语言意图提示 |
+
+**意图类别参考（供 Intent Analyzer prompt 使用）**：
+| Intent Label | 描述 |
+|-------------|------|
+| policy_qa | HR 政策问答 |
+| process_inquiry | HR 流程咨询 |
+| employee_lookup | 员工信息查询 |
+| memory_recall | 回忆之前的对话内容 |
+| chitchat | 闲聊/问候 |
+| unknown | 无法识别 |
 
 **关键技术考虑**：
-- 分类方式：使用 LLM structured output（JSON mode），prompt 中包含意图定义与示例。对于 MVP 不需要训练分类模型，LLM few-shot 足够
-- Prompt Routing：Classifier 输出 intent label → Router 查表映射到 Agent。映射表可配置，便于扩展新意图
-- Tool Routing：当 intent 包含工具需求时，Classifier 同时输出 required_tools[]，Tool Agent 根据此列表选择工具
-- Multi-intent 处理：Classifier prompt 设计为可返回 intent_list[]（多意图数组），并返回意图执行的顺序。Router 按顺序拆解 Agent，并根据子意图进行query重写。最后由 Orchestrator 聚合结果
-- Fallback 策略：三级回退机制：
-  1. confidence < 阈值 → 追问澄清（生成澄清问题返回给用户）
-  2. 重试后仍无法识别 → 路由到 RAG Agent 做宽泛检索
-  3. RAG 也无结果 → 返回友好的"无法回答"提示 + 建议联系 HR
+- 分析方式：使用 LLM prompt（DeepSeek-chat），输入用户消息 + 上下文，输出自然语言提示
+- Intent Hints 输出示例：
+  - "意图为：policy_qa。理由：用户想了解年假政策。"
+  - "意图为：employee_lookup。理由：用户想查询张三的部门信息"
+  - "意图为：policy_qa + process_inquiry。理由：用户想要了解请假政策和请假流程。"
+- Multi-intent 处理：Intent Analyzer 在提示中描述多个可能的意图，由 Orchestrator 自行决定处理顺序和方式
+- Fallback：当分析不确定时，Intent Hints 可提示"意图不明确，建议向用户澄清"，但最终由 Orchestrator 决定是否澄清
 
 **技术选型映射**：
-- LLM：使用 DeepSeek-reasoner 进行意图分类
+- LLM：使用 DeepSeek-chat 进行意图提示生成（轻量、低成本）
 
 **输入**：用户消息 (str) + 会话摘要 (str, optional) + 长短期记忆
-**输出**：IntentResult { intents: [{label, confidence, entities}], requires_tools: [str] }
+**输出**：intent_hints (str)，自然语言意图提示
 **依赖**：LLM Client
-**被调用方**：Orchestrator Agent
+**被调用方**：Orchestrator Agent（在决策循环前调用一次）
 
 ## 3.2 Tool Calling
 **目标**：提供统一的工具注册、发现、选择、执行和结果格式化机制。
@@ -581,34 +585,65 @@ Session {
 **被调用方**：Memory Agent → Orchestrator
 
 # 4 Multi-Agent Coordination
-## 4.1 Orchestrator Agent（中心协调者）
-- **角色**：系统唯一入口，负责全局流程控制
+## 4.1 Orchestrator Agent（决策中心）
+- **角色**：系统唯一入口和决策核心，负责自主推理和全局流程控制
+- **核心机制**：Orchestrator 使用 DeepSeek-Reasoner 在每一步自主推理决定下一个动作，而非依赖固定路由表
 - **职责**：
   1. 接收用户输入
   2. 加载 session context + 相关长期记忆
-  3. 调用 Intent Classifier
-  4. 根据 Router 决策分发到 specialist agents
-  5. 收集 agent 结果
-  6. 通过 Context Manager 组装 prompt
-  7. 调用 LLM 生成最终回复
+  3. 生成 Intent Hints（轻量意图提示）
+  4. **进入决策循环**：分析当前 State（用户问题 + 意图提示 + 已收集的中间结果），自主推理出下一步动作
+  5. 调度 Specialist Agent 执行（Tool / RAG / Memory），观察结果
+  6. 循环 4-5 直到判定信息充足（或达到最大循环次数）
+  7. 通过 Context Manager 组装 prompt，生成最终回复（或生成澄清问题）
   8. 更新 session memory + 触发长期记忆写入
 
-**技术实现**：Orchestrator 即 LangGraph StateGraph 的编译图（compiled graph），上述职责对应图中的不同 Node 和 Edge。
+**Orchestrator 决策 Prompt**：
+每一轮循环中，Orchestrator 收到的输入包括：
+- 用户原始消息
+- Intent Hints（意图提示）
+- 已有的中间结果（RAG 检索结果、工具调用结果、记忆检索结果）
+- 可用的动作列表及说明
+- 会话上下文
 
-## 4.2 Agent Routing 规则
-| 意图 | 主 Agent | 辅助 Agent | 执行模式 |
-|------|----------|------------|----------|
-| policy_qa | RAG Agent | — | 单一 |
-| document_search | RAG Agent | — | 单一 |
-| employee_lookup | Tool Agent | — | 单一 |
-| tool_action | Tool Agent | — | 单一 |
-| process_inquiry | RAG Agent | Tool Agent（可能调用流程工具） | 串行 |
-| memory_recall | Memory Agent | — | 单一 |
-| chitchat | Orchestrator 直接响应 | — | 直接 |
-| unknown | 澄清 → fallback 到 RAG | — | 回退 |
-| Multi-intent | 按优先级顺序执行多个 Agent | — | 顺序/并行 |
+Orchestrator 输出结构化 JSON：
+```json
+{
+  "reasoning": "推理过程...",
+  "action": "rag" | "tool" | "memory" | "answer" | "clarify",
+  "action_input": { ... }   // 动作参数（如 RAG 的 query、Tool 的 tool_name + params）
+}
+```
 
-**技术实现**：路由规则通过 LangGraph conditional_edges 实现，Router Node 根据 state.intent.label 返回目标 Node 名称。
+**技术实现**：
+- Orchestrator 决策节点 = LangGraph StateGraph 中的核心 Node，使用 DeepSeek-Reasoner 进行推理
+- 循环实现 = conditional_edge：Specialist Agent 执行完毕后回到 Orchestrator Node，由 Reasoner 再次决策
+- 终止条件 = action 为 "answer" 或 "clarify" 时退出循环，进入回复生成节点
+- 安全阀 = loop_count >= max_loops 时强制退出循环，基于已有信息生成最佳回复
+
+## 4.2 Orchestrator 决策规则
+不再使用固定路由映射表，而是通过 Prompt 引导 Reasoner 自主推理：
+
+**Prompt 中的决策指引（非硬编码规则）**：
+- 当用户询问 HR 政策/制度/规定时，优先考虑 RAG 检索文档
+- 当用户需要查询具体数据（员工信息、假期余额等）时，优先考虑调用工具
+- 当用户提到"之前""上次""我们聊过"等时，考虑检索记忆
+- 当已有信息足以回答用户问题时，直接生成回答
+- 当信息不足且无法通过工具/RAG/记忆获取时，生成澄清问题
+- 闲聊/问候类消息可直接回答，无需调用任何 Agent
+
+**Multi-intent 处理**：
+- Orchestrator 自然地通过多轮循环处理多意图查询
+- 例如"查一下假期余额，再告诉我请假流程"：
+  - 第1轮：Reasoner 判断需要调用工具查假期余额 → 执行 Tool Agent
+  - 第2轮：观察到余额结果，判断还需要检索请假流程 → 执行 RAG Agent
+  - 第3轮：观察到所有结果充足 → action="answer"，生成综合回复
+
+**Fallback 策略**：
+- Orchestrator 在推理过程中自行判断信息是否充足
+- 当 RAG 检索无结果、工具调用失败时，Reasoner 会在下一轮推理中感知到并调整策略
+- 最终无法获取足够信息 → action="clarify"，生成用户友好的澄清问题
+- 达到最大循环次数仍信息不足 → 基于已有信息生成最佳回复 + 提示用户可联系 HR
 
 ## 4.3 错误处理与降级
 - 任何 specialist agent 失败 → Orchestrator 捕获异常 → 生成降级响应（告知用户该功能暂不可用）
@@ -618,7 +653,8 @@ Session {
 ## DeepSeek 双模型使用策略
 | 场景                                      | 模型                 | 理由                                           |
 |-------------------------------------------|----------------------|------------------------------------------------|
-| Intent Classification                     | deepseek-reasoner        | 分类任务复杂，包含分级意图,多轮意图        |
+| Intent Hints 生成                         | deepseek-chat        | 轻量意图提示，不需要深度推理                    |
+| Orchestrator 决策循环                      | deepseek-reasoner    | 核心推理节点，需要分析已有信息并自主决策下一步     |
 | Tool Selection & Calling                  | deepseek-chat        | 只有chat模式支持native function calling             |
 | RAG Answer 检索推理                    | deepseek-chat        | 查询改写和检索策略选择，标准能力足够                        |
 | Context Compression & Summarization       | deepseek-chat        | 摘要任务，不需要深度推理                      |
@@ -643,10 +679,9 @@ src/human_resource/
 │   ├── tool_agent.py                # Tool Agent (ReAct)
 │   └── memory_agent.py             # Memory Agent (Session + mem0 协调)
 │
-├── intent/                          # 意图识别模块
+├── intent/                          # 意图提示模块
 │   ├── __init__.py
-│   ├── classifier.py                # LLM-based 意图分类器
-│   └── router.py                    # 意图 → Agent 路由映射(conditional_edges 配置)
+│   └── analyzer.py                  # LLM-based 意图提示生成器（轻量分析，输出自然语言 hints）
 │
 ├── rag/                             # RAG 模块
 │   ├── __init__.py
@@ -693,7 +728,8 @@ src/human_resource/
 
 tests/
 ├── unit/                            # 单元测试
-│   ├── test_intent_classifier.py
+│   ├── test_intent_analyzer.py
+│   ├── test_orchestrator_decision.py
 │   ├── test_tool_registry.py
 │   ├── test_chunker.py
 │   ├── test_session_memory.py
@@ -720,8 +756,8 @@ data/                                # 运行时数据 (gitignore)
 main.py (CLI loop)
   └─→ agents/graph.py (LangGraph StateGraph)
         └─→ agents/orchestrator
-              ├─→ intent/classifier → utils/llm_client
-              ├─→ intent/router (conditional_edges)
+              ├─→ intent/analyzer (意图提示生成) → utils/llm_client
+              ├─→ orchestrator_decision (决策循环, Reasoner) → utils/llm_client
               ├─→ agents/rag_agent → rag/* → utils/llm_client
               │     ├─→ rag/embedder (BGE-M3 via HF API)
               │     ├─→ rag/vectorstore (ChromaDB)
@@ -736,8 +772,8 @@ main.py (CLI loop)
 ## 6.1 Unit Tests
 | 测试对象 | 测试内容 | 验证方式 |
 |----------|----------|----------|
-| Intent Classifier | 输入已知查询，验证分类出正确的 intent label 和合理的 confidence | 准备 sample_queries.json + expected_intents.json，断言 label 匹配率 ≥ 90% |
-| Intent Router | 输入各种 IntentResult，验证路由到正确的 Agent | 断言路由映射表正确 |
+| Intent Analyzer | 输入已知查询，验证生成的意图提示包含正确的意图方向和关键实体 | 准备 sample_queries.json，断言提示文本包含预期关键词（意图类型、实体名等） |
+| Orchestrator Decision | 输入不同 State（含不同中间结果），验证 Reasoner 输出正确的 action | mock Reasoner 返回值，断言 action 类型和参数正确 |
 | Tool Registry | 注册/查找/列举工具，验证 schema 校验逻辑 | 注册 mock 工具，验证可查找、schema 合法 |
 | Tool Executor | 参数校验、执行成功/失败场景 | mock 工具返回值，断言结果格式化正确、异常被正确捕获 |
 | Document Chunker | 输入长文本，验证 chunk 大小、overlap、metadata 保留 | 断言 chunk token 数 ≤ max_size、overlap 区域正确 |
@@ -752,7 +788,7 @@ main.py (CLI loop)
 | Tool Pipeline | 工具注册 → LLM 选择 → 参数生成 → 执行 → 结果格式化 | 注册 mock 工具，模拟 LLM 选择，验证执行结果正确 |
 | MCP Pipeline | Client 发现工具 → 调用 → 返回结果 | 启动client发现 MCP Server，验证 tools/list 和 tools/call 正常工作 |
 | Memory Pipeline | Session 写入 → 摘要 → 长期记忆写入 → 长期记忆检索 | 模拟多轮对话，验证: 会话历史正确 → 摘要生成合理 → 长期记忆可检索 |
-| LangGraph Pipeline | StateGraph 编译 → 输入消息 → Intent Node → Router Edge → Agent Node → Response | 验证图的执行流程与预期路由一致 |
+| LangGraph Pipeline | StateGraph 编译 → 输入消息 → Load Context → Intent Hints → Orchestrator 决策循环 → Agent Node → 回到 Orchestrator → Response | 验证图的执行流程与决策循环行为一致 |
 
 ## 6.3 End-to-End Tests
 | 测试场景 | 验证内容 |
@@ -760,7 +796,7 @@ main.py (CLI loop)
 | Single-turn policy Q&A | 用户问 "年假政策是什么" → 系统正确识别为 policy_qa → RAG 检索到相关文档 → 生成包含政策信息的回答 |
 | Single-turn employee lookup | 用户问 "查询张三的部门" → 识别为 employee_lookup → Tool Agent 调用 lookup_employee → 返回正确信息 |
 | Multi-turn conversation | 多轮对话中保持上下文：先问 "年假政策"，再问 "那病假呢" → 系统理解 "那" 指代 "政策"，正确检索 |
-| Multi-intent | "查一下我的假期余额，顺便告诉我请假流程" → 识别两个意图 → 分别路由执行 → 聚合结果 |
+| Multi-intent | "查一下我的假期余额，顺便告诉我请假流程" → Orchestrator 自主推理，多轮循环分别调用 Tool Agent 和 RAG Agent → 聚合结果 |
 | Fallback handling | 输入完全无关的问题 → 系统识别为 unknown → 返回友好的回退提示 |
 | Memory persistence | Session A 中告知 "我是研发部的" → Session B 中问 "我的部门" → 长期记忆正确召回 |
 | Reflexion quality | 对 policy_qa 启用 Reflexion → 验证低质量回答被重新生成，最终回答质量提升 |
@@ -773,24 +809,3 @@ main.py (CLI loop)
 - 测试数据：tests/fixtures/ 包含样例 HR 文档、预设查询和预期结果
 - CI 兼容：unit tests 和 module tests 使用 mock，可在 CI 中运行；e2e tests 可选使用真实 LLM
 
-# 7 Future Extensions
-| 方向 | 描述 | 架构准备 |
-|------|------|----------|
-| 更多知识库 | 接入更多 HR 文档类型（合同模板、培训材料、绩效表单） | RAG Loader 已支持多格式，Vector Store 支持多 collection，新增 Loader 即可 |
-| 更多 Agent | 如 Approval Agent（审批流）、Analytics Agent（HR 数据分析）、Onboarding Agent） | BaseAgent 抽象类 + Router 配置化，新增 Agent 只需继承基类 + 注册路由规则 |
-| Workflow Automation | 多步骤 HR 流程自动化（如请假审批全流程） | 在 Orchestrator 中引入 workflow engine，定义 DAG 式多步骤执行计划 |
-| Skills 设计 | 为典型 HR 任务封装可复用 Skill（如"请假查询 Skill"包含意图模板+工具调用+回复模板） | Skill = intent template + tool chain + response template，可注册到 Router |
-| 多模态 | 支持图片/表格解析（如工资条 OCR） | 在 Document Loader 中扩展 OCR/图表解析能力 |
-| 权限控制 | 不同角色用户可访问不同工具和文档 | Tool Registry 增加权限标记，RAG 检索增加权限过滤 |
-| 异步 Agent 通信 | 大规模部署时改为消息队列驱动 | AgentMessage 协议已统一，替换传输层即可 |
-| 对话评估 | 自动评估回答质量 | 引入 LLM-as-judge 打分机制 |
-| 多语言支持 | 支持中英文混合查询 | Embedding 模型选择支持多语言的版本，prompt 增加语言检测 |
-
-
-- 意图识别：Intent Accuracy（主指标）；Multi-intent 覆盖率（是否识别出多个意图）
-    - Routing Layer（路由正确性）：Routing Accuracy
-    - RAG Layer（检索质量）：Retrieval Hit Rate（是否命中正确文档）；Top-K Recall（Top3  是否包含正确 chunk）
-    - Tool Layer（工具调用）：Tool Call Success Rate；Parameter Accuracy（参数是否正确） 
-    - Memory Layer：Memory Write Precision（是否写入关键事实）；Memory Recall Accuracy
-
-- 我希望重构现有的outline结构，流程如.mmd所示

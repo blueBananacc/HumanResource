@@ -3,21 +3,22 @@
 每个函数对应 LangGraph StateGraph 中的一个 Node。
 函数签名：接收 AgentState，返回需要更新的 state 字段字典。
 
-Node 执行流程：
-  load_context → memory_retrieval → classify_intent → route_agents
-  → dispatch_agent → (rag_node / tool_node / memory_node)
-  → generate_response → post_process（含长期记忆写入）
+架构：Orchestrator 驱动决策循环
+  load_context → memory_retrieval → intent_hints
+  → orchestrator_decision ⟷ (rag_node / tool_node / memory_node) 循环
+  → generate_response → post_process
 """
 
 from __future__ import annotations
 
+import json as _json
 import logging
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
 
 from human_resource.config import (
-    INTENT_CONFIDENCE_THRESHOLD,
+    MAX_ORCHESTRATOR_LOOPS,
     MEMORY_IMPORTANCE_THRESHOLD,
     MEMORY_SEARCH_THRESHOLD,
     MEMORY_SEARCH_TOP_K,
@@ -26,15 +27,11 @@ from human_resource.config import (
 )
 from human_resource.context.compressor import ContextCompressor
 from human_resource.context.prompt_builder import PromptBuilder
-from human_resource.intent.classifier import IntentClassifier
-from human_resource.intent.router import resolve_route
+from human_resource.intent.analyzer import IntentAnalyzer
 from human_resource.memory.longterm import LongTermMemory
 from human_resource.memory.profile import UserProfileStore
 from human_resource.memory.session import SessionMemory
 from human_resource.schemas.models import (
-    IntentItem,
-    IntentLabel,
-    IntentResult,
     RetrievalResult,
     ToolResult,
 )
@@ -45,7 +42,7 @@ from human_resource.utils.llm_client import get_llm
 logger = logging.getLogger(__name__)
 
 # ── 模块级单例（按需初始化） ─────────────────────────────────
-_classifier: IntentClassifier | None = None
+_intent_analyzer: IntentAnalyzer | None = None
 _session_memory: SessionMemory | None = None
 _prompt_builder: PromptBuilder | None = None
 _compressor: ContextCompressor | None = None
@@ -53,11 +50,11 @@ _longterm_memory: LongTermMemory | None = None
 _tool_selector: ToolSelector | None = None
 
 
-def _get_classifier() -> IntentClassifier:
-    global _classifier
-    if _classifier is None:
-        _classifier = IntentClassifier()
-    return _classifier
+def _get_intent_analyzer() -> IntentAnalyzer:
+    global _intent_analyzer
+    if _intent_analyzer is None:
+        _intent_analyzer = IntentAnalyzer()
+    return _intent_analyzer
 
 
 def _get_session_memory() -> SessionMemory:
@@ -136,89 +133,6 @@ def _collect_prior_context(state: AgentState) -> str:
         parts.append(f"[历史会话] {session_ctx}")
 
     return "\n".join(parts)
-
-
-def _decompose_query(
-    user_message: str,
-    intent_result: IntentResult,
-    agent_intent_map: list[dict[str, Any]],
-    session_context: list[str] | None = None,
-) -> list[dict[str, Any]]:
-    """多意图时使用 LLM 将原始 query 拆解为每个执行步骤的子 query。
-
-    仅在存在多个意图时调用。为 agent_intent_map 中的每个步骤
-    生成针对性的 sub_query，提升 RAG 检索和工具选择的准确率。
-
-    Args:
-        user_message: 原始用户消息。
-        intent_result: 意图识别结果。
-        agent_intent_map: 执行计划列表。
-        session_context: 会话上下文（用于解析指代）。
-
-    Returns:
-        更新后的 agent_intent_map（每项增加 sub_query 字段）。
-    """
-    import json as _json
-
-    # 构建执行步骤描述
-    steps_desc: list[str] = []
-    for idx, entry in enumerate(agent_intent_map):
-        intent_idx = entry.get("intent_index", 0)
-        agent = entry.get("agent", "")
-        label = ""
-        if intent_idx < len(intent_result.intents):
-            label = intent_result.intents[intent_idx].label.value
-        steps_desc.append(
-            f"  步骤{idx}: agent={agent}, 意图={label}"
-        )
-
-    context_text = ""
-    if session_context:
-        context_text = "\n".join(session_context)
-
-    prompt = (
-        "你是一个查询拆解助手。用户发送了一条包含多个意图的消息，"
-        "系统已将其拆解为多个执行步骤。请为每个步骤生成一个独立的、"
-        "针对性的子查询（sub_query），使得：\n"
-        "- RAG 检索步骤的子查询适合文档检索（简洁、聚焦核心问题）\n"
-        "- 工具调用步骤的子查询包含完整的操作指令和必要参数\n"
-        "- 如果原始消息中有指代（如'这个邮箱'、'他的'），请结合会话上下文还原为具体内容\n\n"
-        f"原始用户消息: {user_message}\n\n"
-        f"会话上下文:\n{context_text or '(无)'}\n\n"
-        f"执行步骤:\n" + "\n".join(steps_desc) + "\n\n"
-        "请严格以 JSON 数组格式输出，数组长度与执行步骤数一致，每项为一个字符串（子查询）：\n"
-        f'[\"步骤0的子查询\", \"步骤1的子查询\", ...]\n'
-        "不要包含其他文字。"
-    )
-
-    try:
-        llm = get_llm("response_simple")
-        response = llm.invoke(prompt)
-        text = str(response.content).strip()
-
-        # 处理 markdown 代码块包裹
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1]).strip()
-
-        sub_queries = _json.loads(text)
-        if not isinstance(sub_queries, list):
-            logger.warning("Query 拆解结果格式错误，返回非数组: %s", text)
-            return agent_intent_map
-
-        # 将 sub_query 附加到 agent_intent_map
-        for idx, entry in enumerate(agent_intent_map):
-            if idx < len(sub_queries) and isinstance(sub_queries[idx], str):
-                entry["sub_query"] = sub_queries[idx]
-            else:
-                entry["sub_query"] = user_message
-
-        logger.info("多意图 Query 拆解完成: %s", sub_queries)
-        return agent_intent_map
-
-    except Exception:
-        logger.exception("Query 拆解失败，使用原始 query")
-        return agent_intent_map
 
 
 def _rewrite_query_for_rag(query: str, prior_context: str) -> str:
@@ -343,8 +257,8 @@ def load_context_node(state: AgentState) -> dict[str, Any]:
         return {
             "session_context": session_snippets,
             "memory_context": [],
-            "reflection_count": 0,
-            "current_agent_index": 0,
+            "loop_count": 0,
+            "max_loops": MAX_ORCHESTRATOR_LOOPS,
         }
 
     # 读取 write-time trimming 产生的增量摘要
@@ -364,130 +278,197 @@ def load_context_node(state: AgentState) -> dict[str, Any]:
     return {
         "session_context": session_snippets,
         "memory_context": [],
-        "reflection_count": 0,
-        "current_agent_index": 0,
+        "loop_count": 0,
+        "max_loops": MAX_ORCHESTRATOR_LOOPS,
     }
 
 
-def classify_intent_node(state: AgentState) -> dict[str, Any]:
-    """Node: 意图识别。
+def intent_hints_node(state: AgentState) -> dict[str, Any]:
+    """Node: 意图提示生成。
 
-    使用 IntentClassifier 对用户消息进行分类。
+    使用 DeepSeek-chat 对用户输入进行轻量预分析，
+    生成自然语言意图提示供 Orchestrator 决策中心参考。
     """
     messages = state.get("messages", [])
-    if not messages:
-        return {
-            "intent": IntentResult(
-                intents=[IntentItem(label=IntentLabel.UNKNOWN, confidence=0.0)]
-            )
-        }
-
-    # 获取最后一条用户消息
     user_message = _extract_user_message(messages)
 
     if not user_message:
-        return {
-            "intent": IntentResult(
-                intents=[IntentItem(label=IntentLabel.UNKNOWN, confidence=0.0)]
-            )
-        }
+        return {"intent_hints": None}
 
-    # 从 memory_context 中分离会话上下文和长期记忆
-    session_summary = ""
-    long_term_memory = ""
-
-    # session_context: 短期记忆（会话级）
+    # 收集上下文
     session_ctx = state.get("session_context", [])
-    if session_ctx:
-        session_summary = "\n".join(session_ctx)
-
-    # memory_context: 长期记忆（跨会话级）
     memory_ctx = state.get("memory_context", [])
-    if memory_ctx:
-        long_term_memory = "\n".join(memory_ctx)
-
-    # 提取用户画像
-    user_profile_text = ""
     user_profile = state.get("user_profile")
-    if user_profile:
-        user_profile_text = "\n".join(f"{k}: {v}" for k, v in user_profile.items())
 
-    classifier = _get_classifier()
-    intent_result = classifier.classify(
+    session_summary = "\n".join(session_ctx) if session_ctx else ""
+    memory_text = "\n".join(memory_ctx) if memory_ctx else ""
+    profile_text = ""
+    if user_profile:
+        profile_text = "\n".join(f"{k}: {v}" for k, v in user_profile.items())
+
+    analyzer = _get_intent_analyzer()
+    hints = analyzer.analyze(
         user_message,
         session_summary=session_summary,
-        long_term_memory=long_term_memory,
-        user_profile=user_profile_text,
+        long_term_memory=memory_text,
+        user_profile=profile_text,
     )
+
+    logger.info("意图提示: %s", hints[:100] if hints else "(空)")
+    return {"intent_hints": hints}
+
+
+# ── Orchestrator 决策 Prompt ─────────────────────────────────
+
+_ORCHESTRATOR_DECISION_PROMPT = """\
+你是一个 HR 智能助手的决策中心。请分析当前状态，决定下一步动作。
+
+## 用户消息
+{user_message}
+
+## 意图提示
+{intent_hints}
+
+## 已收集的信息
+### RAG 检索结果
+{rag_context}
+
+### 工具调用结果
+{tool_context}
+
+### 记忆检索结果
+{memory_context}
+
+### 会话历史
+{session_context}
+
+## 可用动作
+- rag: 从 HR 文档库检索相关政策/流程信息。action_input 需包含 {{"query": "检索查询"}}
+- tool: 调用工具查询具体数据（员工信息、假期余额、流程步骤等）。action_input 需包含 {{"query": "用户需求描述"}}
+- memory: 从长期记忆中检索用户相关的历史信息。action_input 需包含 {{"query": "记忆检索查询"}}
+- answer: 信息已充足，生成最终回复。action_input 为 {{}}
+- clarify: 信息不足且无法通过工具/RAG/记忆获取，需要向用户澄清。action_input 为 {{}}
+
+## 决策指引
+- 当用户询问 HR 政策/制度/规定时，优先考虑 RAG 检索文档
+- 当用户需要查询具体数据（员工信息、假期余额等）时，优先考虑调用工具
+- 当用户提到"之前""上次""我们聊过"等时，考虑检索记忆
+- 当已有信息足以回答用户问题时，直接选择 answer
+- 当信息不足且无法通过工具/RAG/记忆获取时，选择 clarify
+- 闲聊/问候类消息可直接 answer，无需调用任何 Agent
+- 不要重复执行已经获得结果的动作
+
+请严格以 JSON 格式输出你的决策，不要包含其他文字：
+{{"reasoning": "你的推理过程", "action": "rag|tool|memory|answer|clarify", "action_input": {{}}}}
+"""
+
+
+def _parse_decision(content: str) -> dict[str, Any]:
+    """解析 Orchestrator 决策 LLM 输出的 JSON。"""
+    text = content.strip()
+
+    # 处理 markdown 代码块包裹
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:-1]).strip()
+
+    try:
+        data = _json.loads(text)
+        action = data.get("action", "answer")
+        if action not in ("rag", "tool", "memory", "answer", "clarify"):
+            logger.warning("未知动作 '%s'，默认使用 answer", action)
+            action = "answer"
+        return {
+            "reasoning": data.get("reasoning", ""),
+            "action": action,
+            "action_input": data.get("action_input", {}),
+        }
+    except Exception:
+        logger.exception("决策 JSON 解析失败，默认使用 answer")
+        return {"reasoning": "JSON解析失败", "action": "answer", "action_input": {}}
+
+
+def orchestrator_decision_node(state: AgentState) -> dict[str, Any]:
+    """Node: Orchestrator 决策中心。
+
+    使用 DeepSeek-Reasoner 自主推理，决定下一步动作：
+    rag / tool / memory / answer / clarify。
+    """
+    loop_count = state.get("loop_count", 0)
+    max_loops = state.get("max_loops", MAX_ORCHESTRATOR_LOOPS)
+
+    # 安全阀：达到最大循环次数时强制生成回答
+    if loop_count >= max_loops:
+        logger.warning("达到最大循环次数 %d，强制生成回答", max_loops)
+        return {
+            "orchestrator_action": "answer",
+            "orchestrator_reasoning": "达到最大循环次数，基于已有信息生成回复",
+            "orchestrator_action_input": {},
+            "loop_count": loop_count,
+        }
+
+    # 收集当前状态信息
+    messages = state.get("messages", [])
+    user_message = _extract_user_message(messages)
+    intent_hints = state.get("intent_hints") or "无"
+
+    # RAG 结果
+    rag_context = "无"
+    rag_results = state.get("rag_results")
+    if rag_results and rag_results.chunks:
+        rag_parts = []
+        for c in rag_results.chunks:
+            source = c.metadata.get("source", "未知")
+            rag_parts.append(f"[{source}] {c.text}")
+        rag_context = "\n".join(rag_parts)
+
+    # 工具结果
+    tool_context = "无"
+    tool_results = state.get("tool_results", [])
+    if tool_results:
+        tool_parts = []
+        for tr in tool_results:
+            if tr.success:
+                tool_parts.append(tr.formatted)
+            else:
+                tool_parts.append(f"工具 {tr.tool_name} 调用失败: {tr.error}")
+        tool_context = "\n".join(tool_parts)
+
+    # 记忆上下文
+    memory_ctx = state.get("memory_context", [])
+    memory_context = "\n".join(memory_ctx) if memory_ctx else "无"
+
+    # 会话历史
+    session_ctx = state.get("session_context", [])
+    session_context = "\n".join(session_ctx) if session_ctx else "无"
+
+    prompt = _ORCHESTRATOR_DECISION_PROMPT.format(
+        user_message=user_message,
+        intent_hints=intent_hints,
+        rag_context=rag_context,
+        tool_context=tool_context,
+        memory_context=memory_context,
+        session_context=session_context,
+    )
+
+    try:
+        llm = get_llm("orchestrator_decision")
+        response = llm.invoke([HumanMessage(content=prompt)])
+        decision = _parse_decision(str(response.content))
+    except Exception:
+        logger.exception("Orchestrator 决策 LLM 调用失败，默认 answer")
+        decision = {"reasoning": "LLM调用失败", "action": "answer", "action_input": {}}
 
     logger.info(
-        "意图识别完成: %s",
-        [
-            (i.label.value, i.confidence, list(i.requires_tools))
-            for i in intent_result.intents
-        ],
+        "Orchestrator 决策 [loop=%d]: action=%s, reasoning=%s",
+        loop_count, decision["action"], decision["reasoning"][:80],
     )
 
-    # 低置信度回退：当所有意图的置信度都低于阈值时标记需要澄清
-    needs_clarification = False
-    if intent_result.intents:
-        max_confidence = max(i.confidence for i in intent_result.intents)
-        if max_confidence < INTENT_CONFIDENCE_THRESHOLD:
-            needs_clarification = True
-            logger.info(
-                "所有意图置信度 (最高=%.2f) 低于阈值 %.2f，标记需要澄清",
-                max_confidence,
-                INTENT_CONFIDENCE_THRESHOLD,
-            )
-
-    return {"intent": intent_result, "needs_clarification": needs_clarification}
-
-
-def route_agents_node(state: AgentState) -> dict[str, Any]:
-    """Node: 路由决策。
-
-    根据意图分类结果确定目标 Agent 列表。
-    低置信度三级回退策略：
-    1. 追问澄清 — needs_clarification=True 时直接进入 generate_response
-       生成澄清问题，不执行任何 Agent
-    2. 用户重试后若 UNKNOWN 意图，由 ROUTING_TABLE 路由到 RAG 做宽泛检索
-    3. RAG 也无结果 → generate_response 生成友好的"无法回答"提示
-    """
-    intent = state.get("intent")
-
-    needs_clarification = state.get("needs_clarification", False)
-
-    # 三级回退 Level 1：低置信度，直接追问澄清，不执行 Agent
-    if needs_clarification:
-        primary = intent.primary_intent
-        logger.info(
-            "低置信度回退 Level-1: 主意图=%s, 置信度=%.2f, 追问澄清",
-            primary.label.value if primary else "None",
-            primary.confidence if primary else 0.0,
-        )
-        # target_agents 为空 → _dispatch_router 直接到 generate_response
-        return {"target_agents": [], "current_agent_index": 0, "agent_intent_map": []}
-
-    target_agents, agent_intent_map = resolve_route(intent)
-
-    # ── 多意图 Query 拆解 ──
-    # 当存在多个意图时，将原始 query 拆解为每个执行步骤的子 query，
-    # 提升 RAG 检索及工具选择的准确率。
-    if intent and len(intent.intents) > 1:
-        messages = state.get("messages", [])
-        user_message = _extract_user_message(messages)
-        session_ctx = state.get("session_context", [])
-        if user_message:
-            agent_intent_map = _decompose_query(
-                user_message, intent, agent_intent_map, session_ctx,
-            )
-
-    logger.info("路由目标: %s", target_agents)
-    logger.info("意图映射: %s", agent_intent_map)
     return {
-        "target_agents": target_agents,
-        "current_agent_index": 0,
-        "agent_intent_map": agent_intent_map,
+        "orchestrator_action": decision["action"],
+        "orchestrator_reasoning": decision["reasoning"],
+        "orchestrator_action_input": decision.get("action_input", {}),
+        "loop_count": loop_count + 1,
     }
 
 
@@ -495,10 +476,8 @@ def rag_node(state: AgentState) -> dict[str, Any]:
     """Node: RAG Agent 执行。
 
     从 HR 文档库检索相关信息。
-    根据意图自动路由到对应的 collection：
-    - policy_qa → policy_collection
-    - process_inquiry → sop_collection
     使用 Hybrid Search（Vector + BM25 并行 + RRF）+ Reranker 完整管线。
+    查询来自 Orchestrator 决策中心的 action_input。
     """
     from human_resource.config import DEFAULT_COLLECTION, INTENT_COLLECTION_MAP
     from human_resource.rag.retriever import hybrid_search
@@ -506,17 +485,11 @@ def rag_node(state: AgentState) -> dict[str, Any]:
     messages = state.get("messages", [])
     user_message = _extract_user_message(messages)
 
-    # ── 优先使用 agent_intent_map 中的 sub_query（多意图拆解结果） ──
-    agent_intent_map = state.get("agent_intent_map", [])
-    current_idx = state.get("current_agent_index", 0)
-    query = user_message
-    if current_idx < len(agent_intent_map):
-        sub_query = agent_intent_map[current_idx].get("sub_query")
-        if sub_query:
-            query = sub_query
-            logger.info("RAG Agent 使用拆解后的子查询: %s", query)
+    # 优先使用 Orchestrator 提供的查询
+    action_input = state.get("orchestrator_action_input") or {}
+    query = action_input.get("query", user_message)
 
-    logger.info("RAG Agent 执行查询: %s", query[:50])
+    logger.info("RAG Agent 执行查询: %s", query[:50] if query else "(空)")
 
     if not query:
         return {"rag_results": RetrievalResult(chunks=[])}
@@ -528,19 +501,17 @@ def rag_node(state: AgentState) -> dict[str, Any]:
     if prior_context:
         query = _rewrite_query_for_rag(query, prior_context)
 
-    # 根据意图确定目标 collection
+    # 根据意图提示推断目标 collection
     collection_name = DEFAULT_COLLECTION
-    intent = state.get("intent")
-    if intent and intent.intents:
-        # 使用当前步骤服务的意图来确定 collection
-        intent_idx = 0
-        if current_idx < len(agent_intent_map):
-            intent_idx = agent_intent_map[current_idx].get("intent_index", 0)
-        if intent_idx < len(intent.intents):
-            label = intent.intents[intent_idx].label.value
-        else:
-            label = intent.intents[0].label.value
-        collection_name = INTENT_COLLECTION_MAP.get(label, DEFAULT_COLLECTION)
+    intent_hints = state.get("intent_hints") or ""
+    if any(kw in intent_hints for kw in ("process_inquiry", "流程")):
+        collection_name = INTENT_COLLECTION_MAP.get("process_inquiry", DEFAULT_COLLECTION)
+    elif any(kw in intent_hints for kw in ("policy_qa", "政策", "制度", "规定")):
+        collection_name = INTENT_COLLECTION_MAP.get("policy_qa", DEFAULT_COLLECTION)
+    # action_input 可覆盖 collection
+    if "category" in action_input:
+        cat = action_input["category"]
+        collection_name = INTENT_COLLECTION_MAP.get(cat, DEFAULT_COLLECTION)
     logger.info("RAG 目标 collection: %s", collection_name)
 
     try:
@@ -554,59 +525,36 @@ def rag_node(state: AgentState) -> dict[str, Any]:
 def tool_node(state: AgentState) -> dict[str, Any]:
     """Node: Tool Agent 执行。
 
-    两阶段工具选择中的第二阶段：
-    1. 根据 execution_plan 确定当前服务的意图及其候选工具（requires_tools 粗筛）
-    2. 使用 ToolSelector（bind_tools + Native Function Calling）精细选择工具并生成参数
-    3. 通过 executor 执行工具调用
-
-    每次 tool_node 调用仅服务一个意图（execution_plan 中的一步），
-    保证存在顺序依赖的意图能分步执行。ToolSelector 接收已有工具结果
-    作为上下文，支持多步推理（如先查员工信息再查假期余额）。
+    使用 ToolSelector（bind_tools + Native Function Calling）从所有已注册工具中
+    选择并执行工具调用。查询来自 Orchestrator 决策中心的 action_input。
     """
     from human_resource.tools.executor import execute_tool
+    from human_resource.tools.registry import registry
 
-    intent = state.get("intent")
     results: list[ToolResult] = list(state.get("tool_results", []))
     messages = state.get("messages", [])
-
-    if not intent or not intent.requires_tools:
-        logger.info("Tool Agent: 无工具调用需求")
-        return {"tool_results": results}
-
     user_message = _extract_user_message(messages)
 
-    # 确定当前 tool_agent 服务哪个意图及其候选工具
-    agent_intent_map = state.get("agent_intent_map", [])
-    current_idx = state.get("current_agent_index", 0)
+    # 优先使用 Orchestrator 提供的查询
+    action_input = state.get("orchestrator_action_input") or {}
+    query = action_input.get("query", user_message)
 
-    # ── 优先使用 agent_intent_map 中的 sub_query（多意图拆解结果） ──
-    query = user_message
-    if current_idx < len(agent_intent_map):
-        sub_query = agent_intent_map[current_idx].get("sub_query")
-        if sub_query:
-            query = sub_query
-            logger.info("Tool Agent 使用拆解后的子查询: %s", query)
-
-    candidate_tools: list[str] = []
-    if current_idx < len(agent_intent_map):
-        entry = agent_intent_map[current_idx]
-        if entry.get("agent") == "tool_agent":
-            serving_index = entry.get("intent_index")
-            if serving_index is not None and serving_index < len(intent.intents):
-                candidate_tools = list(intent.intents[serving_index].requires_tools)
-
-    if not candidate_tools:
-        # 无映射降级：使用所有意图声明的工具作为候选
-        candidate_tools = list(intent.requires_tools)
-        logger.info("Tool Agent: 当前意图无候选工具")
+    if not query:
+        logger.info("Tool Agent: 无查询内容")
         return {"tool_results": results}
 
-    # 构建上下文：聚合所有先前 Node 结果（工具 + RAG + 记忆 + 会话）
+    # 获取所有已注册工具名称
+    all_tool_names = [t.name for t in registry.get_all_tools()]
+    if not all_tool_names:
+        logger.info("Tool Agent: 无已注册工具")
+        return {"tool_results": results}
+
+    # 构建上下文：聚合所有先前 Node 结果
     context = _collect_prior_context(state)
 
-    # 使用 ToolSelector（LLM）精细选择工具并生成参数
+    # 使用 ToolSelector（LLM）选择工具并生成参数
     selector = _get_tool_selector()
-    tool_calls = selector.select(query, candidate_tools, context)
+    tool_calls = selector.select(query, all_tool_names, context)
 
     if not tool_calls:
         logger.info("Tool Agent: LLM 未选择任何工具")
@@ -679,28 +627,25 @@ def memory_retrieval_node(state: AgentState) -> dict[str, Any]:
 def memory_node(state: AgentState) -> dict[str, Any]:
     """Node: Memory Agent 执行。
 
-    当路由决策将 memory_recall 意图分发至此节点时，
-    根据用户 query 从 mem0 检索相关长期记忆。
-    仅写入 memory_context（长期记忆）。
+    当 Orchestrator 决策中心判断需要检索记忆时调用，
+    根据查询从 mem0 检索相关长期记忆。
     """
     user_id = state.get("user_id", "default_user")
     messages = state.get("messages", [])
     memory_ctx: list[str] = list(state.get("memory_context", []))
 
+    # 优先使用 Orchestrator 提供的查询
+    action_input = state.get("orchestrator_action_input") or {}
     user_message = _extract_user_message(messages)
+    query = action_input.get("query", user_message)
 
-    if not user_message:
+    if not query:
         return {"memory_context": memory_ctx}
-
-    # 聚合先前 Node 上下文（工具结果、RAG 结果等）
-    prior_context = _collect_prior_context(state)
-    if prior_context:
-        logger.info("Memory Agent 先前上下文可用 (%d 字符)", len(prior_context))
 
     try:
         ltm = _get_longterm_memory()
         results = ltm.search(
-            user_message, user_id=user_id,
+            query, user_id=user_id,
             top_k=MEMORY_SEARCH_TOP_K, threshold=MEMORY_SEARCH_THRESHOLD,
         )
         for item in results:
@@ -717,25 +662,16 @@ def memory_node(state: AgentState) -> dict[str, Any]:
 def generate_response_node(state: AgentState) -> dict[str, Any]:
     """Node: 生成最终回复。
 
-    基于所有 Agent 中间结果，组装 prompt 并调用 LLM 生成用户可见的最终回复。
-    仅此节点生成用户可见回复，保证风格一致。
+    基于所有中间结果，组装 prompt 并调用 LLM 生成用户可见的最终回复。
+    当 Orchestrator 决策为 clarify 时，生成澄清问题。
     """
     messages = state.get("messages", [])
-    intent = state.get("intent")
-
-    # 获取用户消息
     user_message = _extract_user_message(messages)
+    orchestrator_action = state.get("orchestrator_action", "answer")
 
-    # ── 低置信度回退 Level 1：生成澄清问题 ──
-    needs_clarification = state.get("needs_clarification", False)
-    if needs_clarification:
-        return _generate_clarification(user_message, intent)
-
-    # ── chitchat 直接响应 ──
-    if intent and intent.primary_intent:
-        label = intent.primary_intent.label
-        if label == IntentLabel.CHITCHAT:
-            return _handle_chitchat(user_message)
+    # ── clarify：生成澄清问题 ──
+    if orchestrator_action == "clarify":
+        return _generate_clarification(user_message)
 
     # ── 组装上下文 ──
     builder = _get_prompt_builder()
@@ -766,7 +702,7 @@ def generate_response_node(state: AgentState) -> dict[str, Any]:
 
     # 会话历史（短期记忆）
     session_ctx = state.get("session_context", [])
-    conversation_history = "\n".join(session_ctx) 
+    conversation_history = "\n".join(session_ctx)
 
     # 用户画像
     user_profile = state.get("user_profile")
@@ -774,18 +710,18 @@ def generate_response_node(state: AgentState) -> dict[str, Any]:
     if user_profile:
         profile_text = "\n".join(f"{k}: {v}" for k, v in user_profile.items())
 
-    # ── 三级回退 Level 3：UNKNOWN 意图 + RAG/Tool 均无结果 → 友好提示 ──
-    if (intent and intent.primary_intent
-            and intent.primary_intent.label == IntentLabel.UNKNOWN
-            and not rag_text and not tool_text):
-        fallback_text = (
-            "抱歉，我暂时无法理解您的问题，也未找到相关信息。\n"
-            "您可以尝试换个方式描述，或直接联系 HR 部门获取帮助。"
-        )
-        return {
-            "final_response": fallback_text,
-            "messages": [AIMessage(content=fallback_text)],
-        }
+    # ── 无任何上下文信息时的友好提示 ──
+    if not rag_text and not tool_text and not memory_text:
+        intent_hints = state.get("intent_hints") or ""
+        if any(kw in intent_hints for kw in ("unknown", "无法识别", "无关")):
+            fallback_text = (
+                "抱歉，我暂时无法理解您的问题，也未找到相关信息。\n"
+                "您可以尝试换个方式描述，或直接联系 HR 部门获取帮助。"
+            )
+            return {
+                "final_response": fallback_text,
+                "messages": [AIMessage(content=fallback_text)],
+            }
 
     # 构建 prompt
     prompt = builder.build(
@@ -797,14 +733,10 @@ def generate_response_node(state: AgentState) -> dict[str, Any]:
         conversation_history=conversation_history,
     )
 
-    # 选择模型：复杂推理用 reasoner，简单问题用 chat
+    # 选择模型
     purpose = "response_simple"
-    if intent and intent.primary_intent:
-        label = intent.primary_intent.label
-        if label in (IntentLabel.POLICY_QA, IntentLabel.PROCESS_INQUIRY):
-            # 如果有检索结果需要综合推理，使用更强模型
-            if rag_text or tool_text:
-                purpose = "response_complex"
+    # if rag_text or tool_text:
+    #     purpose = "response_complex"
 
     try:
         llm = get_llm(purpose)
@@ -820,45 +752,20 @@ def generate_response_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-def _handle_chitchat(user_message: str) -> dict[str, Any]:
-    """处理闲聊意图，轻量直接响应。"""
-    try:
-        llm = get_llm("response_simple")
-        prompt = (
-            "你是一个友好的 HR 助手。请简短回复以下闲聊，"
-            "并可以引导用户使用 HR 相关服务。\n\n"
-            f"用户: {user_message}"
-        )
-        response = llm.invoke(prompt)
-        text = str(response.content).strip()
-    except Exception:
-        text = "你好！我是 HR 智能助手，有什么可以帮你的吗？"
-
-    return {
-        "final_response": text,
-        "messages": [AIMessage(content=text)],
-    }
-
-
 def _generate_clarification(
-    user_message: str, intent: IntentResult | None
+    user_message: str,
 ) -> dict[str, Any]:
-    """低置信度回退 Level-1：生成澄清问题返回给用户。"""
+    """Orchestrator 判定需要澄清时，生成澄清问题返回给用户。"""
     try:
         llm = get_llm("response_simple")
-        intent_hint = ""
-        if intent and intent.primary_intent:
-            intent_hint = f"（系统猜测可能与 {intent.primary_intent.label.value} 相关，但不确定）"
-
         prompt = (
-            "你是一个 HR 智能助手。用户发送了一条消息，但你无法确定其意图。"
+            "你是一个 HR 智能助手。用户发送了一条消息，但信息不足以回答。"
             "请根据用户消息生成一个友好的澄清问题，帮助用户明确需求。\n"
             "要求：\n"
             "1. 简洁友好，不超过两句话\n"
             "2. 给出 2-3 个可能的选项供用户选择\n"
             "3. 不要编造信息\n\n"
-            f"用户消息: {user_message}\n"
-            f"{intent_hint}"
+            f"用户消息: {user_message}"
         )
         response = llm.invoke(prompt)
         text = str(response.content).strip()
@@ -895,22 +802,19 @@ def post_process_node(state: AgentState) -> dict[str, Any]:
     assistant_msg = state.get("final_response") or ""
 
     # ── 收集元数据 ──
-    intent = state.get("intent")
-    intent_label = ""
-    if intent and getattr(intent, "intents", None):
-        intent_label = ",".join([item.label.value for item in intent.intents])
+    intent_hints = state.get("intent_hints") or ""
 
     tools_used: list[str] = []
     tool_results = state.get("tool_results", [])
     if tool_results:
         tools_used = [tr.tool_name for tr in tool_results if tr.success and tr.tool_name]
 
-    target_agents = state.get("target_agents", [])
+    orchestrator_action = state.get("orchestrator_action") or ""
 
     metadata = {
-        "intent_label": intent_label,
+        "intent_hints": intent_hints,
         "tools_used": tools_used,
-        "target_agents": target_agents,
+        "orchestrator_action": orchestrator_action,
     }
 
     # ── 三级触发判断（在写入 session 之前，以便 turn count 计算正确）

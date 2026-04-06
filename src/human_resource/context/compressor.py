@@ -103,4 +103,3 @@ class ContextCompressor:
             enc = tiktoken.get_encoding("cl100k_base")
             tokens = enc.encode(text)
             return enc.decode(tokens[:max_tokens])
-# 3. 滑动窗口摘要：保留最近 K 轮原文 + 更早对话的摘要

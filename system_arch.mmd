@@ -1,78 +1,54 @@
 flowchart TD
 
-%% ========== 用户入口 ==========
-A["User Input (CLI)"] --> B[Orchestrator Agent]
+%% ========== 用户输入 ==========
+A[User Input CLI] --> B[Load Context<br/>Session Memory<br/>Long-term Memory]
 
 %% ========== 上下文加载 ==========
-subgraph Initialization ["初始化与加载"]
-    B --> C1[Load Session Memory]
-    B --> C2["Retrieve Long-term Memory (mem0)"]
-    C1 --> D[Context Aggregation]
-    C2 --> D
-end
+B --> B3[Intent Hints Generation]
 
-%% ========== 意图识别与路由 ==========
-D --> E["Intent Recognition (DeepSeek-reasoner)"]
-E --> F{Intent Router}
+B3 --> C
 
-F -->|policy_qa / document_search| G[RAG Agent]
-F -->|employee_lookup / tool_action| H[Tool Agent]
-F -->|memory_recall| I[Memory Agent]
-F -->|chitchat| J[Direct Response]
-F -->|"unknown (Fallback)"| K[Fallback / Clarification]
-F -->|multi-intent| L[Multi-Agent Execution]
+%% ========== Orchestrator ==========
+C[Orchestrator Decision Loop]
 
-%% ========== 各 Agent 内部逻辑 ==========
-subgraph RAG_Proc ["RAG 流程"]
-    G --> G1[Query Embedding]
-    G1 --> G2[Vector Search]
-    G1 --> G3[BM25 Search]
-    G2 --> G4[Merge + RRF]
-    G3 --> G4
-    G4 --> G5[BGE Reranker]
-    G5 --> G6[Context Filter]
-    G6 --> M["State: rag_results"]
-end
+%% ========== 决策分支 ==========
+C -->|action: rag| D[RAG Agent]
+C -->|action: tool| E[Tool Agent]
+C -->|action: memory| F[Memory Agent]
+C -->|action: answer| G[Generate Final Response]
+C -->|action: clarify| H[Ask Clarification]
 
-subgraph Tool_Proc ["工具调用流程"]
-    H --> H1[Tool Selection]
-    H1 --> H2[Tool Execution]
-    H2 --> H3[Format Result]
-    H3 --> N["State: tool_results"]
-end
+%% ========== RAG ==========
+D --> D1[Vector Search ChromaDB]
+D --> D2[BM25 Search]
+D1 --> D3[Merge + RRF]
+D2 --> D3
+D3 --> D4[Reranker BGE]
+D4 --> D5[Filtered Context]
+D5 --> C
 
-subgraph Mem_Proc ["记忆处理"]
-    I --> I1[Search mem0]
-    I1 --> O["State: memory_context"]
-    
-    L --> G
-    L --> H
-    L --> I
-end
+%% ========== Tool ==========
+E --> E1[Tool Registry]
+E1 --> E2[Tool Execution / MCP]
+E2 --> E3[Formatted Result]
+E3 --> C
 
-%% ========== 决策反馈 ==========
-K --> K1[Ask Clarification]
-K --> K2[Fallback to RAG]
+%% ========== Memory ==========
+F --> F1[Session Memory Read]
+F --> F2[mem0 Search]
+F1 --> F3[Memory Context]
+F2 --> F3
+F3 --> C
 
-%% ========== 汇总与生成 ==========
-M --> P[Context Manager]
-N --> P
-O --> P
-C1 --> P
+%% ========== 生成回复 ==========
+G --> I[Context Assembly]
+I --> J[LLM Response]
+J --> K[Post Processing]
 
-P --> Q[Prompt Builder]
-Q --> R[Final Prompt]
-R --> S["LLM Response (DeepSeek-chat/reasoner)"]
+%% ========== 澄清 ==========
+H --> K
 
-%% ========== 后处理与反思 ==========
-S --> W{"Reflexion Check?"}
-W -->|Fail| G
-W -->|Pass| T_Logic
-
-subgraph Persistence ["持久化更新"]
-    T_Logic[Process Final State] --> T1[Update Session Memory]
-    T_Logic --> T2["Write Long-term Memory (mem0)"]
-end
-
-T1 --> V["CLI Output"]
-T2 --> V
+%% ========== 后处理 ==========
+K --> K1[Update Session Memory]
+K --> K2[Write Long-term Memory]
+K --> L[Return to User]

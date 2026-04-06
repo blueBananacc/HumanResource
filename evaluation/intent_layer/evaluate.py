@@ -1,8 +1,11 @@
-"""Intent Layer 自动化评测脚本。
+"""Intent Layer 自动化评测脚本（IntentAnalyzer 版）。
+
+评估 IntentAnalyzer 生成的自然语言意图提示是否包含正确的意图类别。
 
 评估指标：
-- Intent Accuracy：模型正确识别出用户意图的比例（精确集合匹配）。
-- Multi-intent 覆盖率：模型识别出的意图覆盖预期意图的比例（Recall）。
+- Intent Accuracy：提取出的意图集合与预期意图集合精确匹配的比例。
+- Multi-intent Coverage（Recall）：提取出的意图覆盖预期意图的比例。
+- 平均延迟：单次 analyze 调用的平均耗时。
 
 运行方式（项目根目录）：
   conda activate HR
@@ -14,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import time
 from pathlib import Path
@@ -24,8 +28,7 @@ _src_dir = _project_root / "src"
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
-from human_resource.agents.orchestrator import register_default_tools
-from human_resource.intent.classifier import IntentClassifier
+from human_resource.intent.analyzer import IntentAnalyzer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,10 +36,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── 数据加载 ─────────────────────────────────────────────────
+# ── 数据路径 ─────────────────────────────────────────────────
 
 _DATA_PATH = Path(__file__).parent / "data.json"
 _RESULTS_PATH = Path(__file__).parent / "results.json"
+
+# IntentAnalyzer 支持的意图类别（与 analyzer.py prompt 保持一致）
+VALID_INTENTS = {
+    "policy_qa",
+    "process_inquiry",
+    "employee_lookup",
+    "memory_recall",
+    "chitchat",
+    "unknown",
+}
 
 
 def load_test_cases() -> list[dict]:
@@ -45,47 +58,68 @@ def load_test_cases() -> list[dict]:
         return json.load(f)
 
 
+# ── 意图提取 ─────────────────────────────────────────────────
+
+
+def extract_intents_from_hints(hints: str) -> list[str]:
+    """从自然语言 intent hints 中提取意图类别关键词。
+
+    策略：
+    1. 先尝试匹配 "label1 + label2" 格式（多意图）
+    2. 再逐个扫描已知意图类别
+    3. 去重、保持出现顺序
+    """
+    if not hints:
+        return ["unknown"]
+
+    found: list[str] = []
+    hints_lower = hints.lower()
+
+    for label in VALID_INTENTS:
+        if label in hints_lower:
+            found.append(label)
+
+    if not found:
+        return ["unknown"]
+
+    # 按在 hints 中出现的位置排序，保持顺序
+    found.sort(key=lambda x: hints_lower.index(x))
+    return found
+
+
 # ── 指标计算 ─────────────────────────────────────────────────
 
 
 def compute_intent_accuracy(expected: list[str], actual: list[str]) -> float:
-    """Intent Accuracy：预期意图集合与实际意图集合的精确匹配。
-
-    完全一致返回 1.0，否则返回 0.0。
-    """
+    """Intent Accuracy：精确集合匹配，完全一致返回 1.0，否则 0.0。"""
     return 1.0 if set(expected) == set(actual) else 0.0
 
 
 def compute_multi_intent_coverage(expected: list[str], actual: list[str]) -> float:
-    """Multi-intent 覆盖率：实际意图覆盖预期意图的比例（Recall）。
-
-    coverage = |expected ∩ actual| / |expected|
-    """
+    """Multi-intent Coverage（Recall）：actual 覆盖 expected 的比例。"""
     if not expected:
         return 1.0
-    expected_set = set(expected)
-    actual_set = set(actual)
-    return len(expected_set & actual_set) / len(expected_set)
+    return len(set(expected) & set(actual)) / len(set(expected))
 
 
 # ── 单条评测 ─────────────────────────────────────────────────
 
 
 def evaluate_single(
-    classifier: IntentClassifier,
+    analyzer: IntentAnalyzer,
     case: dict,
 ) -> dict:
-    """对单条测试用例运行意图分类并计算指标。"""
+    """对单条测试用例运行意图分析并计算指标。"""
     query = case["query"]
     expected_intents = case["expected_intents"]
-    expected_tools = case["expected_tools"]
 
-    # 调用分类器
-    result = classifier.classify(query)
+    # 调用 IntentAnalyzer
+    start = time.time()
+    hints = analyzer.analyze(query)
+    latency = time.time() - start
 
-    # 提取实际意图和工具
-    actual_intents = [item.label.value for item in result.intents]
-    actual_tools = list(result.requires_tools)
+    # 从 hints 提取意图类别
+    actual_intents = extract_intents_from_hints(hints)
 
     # 计算指标
     intent_acc = compute_intent_accuracy(expected_intents, actual_intents)
@@ -94,110 +128,76 @@ def evaluate_single(
     return {
         "query": query,
         "expected_intents": expected_intents,
-        "expected_tools": expected_tools,
+        "actual_hints": hints,
         "actual_intents": actual_intents,
-        "actual_tools": actual_tools,
         "intent_accuracy": intent_acc,
         "multi_intent_coverage": coverage,
+        "latency_s": round(latency, 3),
     }
 
 
-# ── 主流程 ───────────────────────────────────────────────────
+# ── 汇总 ─────────────────────────────────────────────────────
 
 
-def run_evaluation() -> list[dict]:
-    """运行完整评测流程并返回结果列表。"""
-    # 注册工具（分类器 prompt 需要工具列表）
-    register_default_tools()
-
-    classifier = IntentClassifier()
+def run_evaluation() -> dict:
+    """执行完整评测并输出汇总。"""
     cases = load_test_cases()
+    analyzer = IntentAnalyzer()
+
     results: list[dict] = []
-
-    logger.info("开始评测，共 %d 条用例", len(cases))
-
-    for idx, case in enumerate(cases, 1):
-        logger.info("[%d/%d] 评测: %s", idx, len(cases), case["query"])
-        record = evaluate_single(classifier, case)
-        results.append(record)
-        logger.info(
-            "  → 意图准确: %.1f | 覆盖率: %.1f | 实际意图: %s",
-            record["intent_accuracy"],
-            record["multi_intent_coverage"],
-            record["actual_intents"],
-        )
-
-    return results
-
-
-def print_summary(results: list[dict]) -> None:
-    """打印评测汇总报告。"""
-    total = len(results)
-    if total == 0:
-        print("无评测结果。")
-        return
-
-    avg_accuracy = sum(r["intent_accuracy"] for r in results) / total
-    avg_coverage = sum(r["multi_intent_coverage"] for r in results) / total
-
-    # 多意图子集统计
-    multi_cases = [r for r in results if len(r["expected_intents"]) > 1]
-    multi_accuracy = (
-        sum(r["intent_accuracy"] for r in multi_cases) / len(multi_cases)
-        if multi_cases
-        else float("nan")
-    )
-    multi_coverage = (
-        sum(r["multi_intent_coverage"] for r in multi_cases) / len(multi_cases)
-        if multi_cases
-        else float("nan")
-    )
+    total_acc = 0.0
+    total_cov = 0.0
+    total_latency = 0.0
 
     print("\n" + "=" * 70)
-    print("  Intent Layer 评测报告")
-    print("=" * 70)
-    print(f"  用例总数:              {total}")
-    print(f"  Intent Accuracy (avg): {avg_accuracy:.2%}")
-    print(f"  Multi-intent 覆盖率:   {avg_coverage:.2%}")
-    print("-" * 70)
-    print(f"  多意图用例数:          {len(multi_cases)}")
-    print(f"  多意图 Accuracy:       {multi_accuracy:.2%}")
-    print(f"  多意图 Coverage:       {multi_coverage:.2%}")
+    print("  Intent Layer 评测 — IntentAnalyzer")
     print("=" * 70)
 
-    # 逐条详情
-    print("\n逐条详情:")
-    print("-" * 70)
-    for i, r in enumerate(results, 1):
+    for i, case in enumerate(cases, 1):
+        r = evaluate_single(analyzer, case)
+        results.append(r)
+
+        total_acc += r["intent_accuracy"]
+        total_cov += r["multi_intent_coverage"]
+        total_latency += r["latency_s"]
+
         status = "✓" if r["intent_accuracy"] == 1.0 else "✗"
-        print(f"  [{status}] {i}. {r['query']}")
-        print(f"      预期意图: {r['expected_intents']}")
-        print(f"      实际意图: {r['actual_intents']}")
-        print(f"      预期工具: {r['expected_tools']}")
-        print(f"      实际工具: {r['actual_tools']}")
         print(
-            f"      Accuracy: {r['intent_accuracy']:.1f}  "
-            f"Coverage: {r['multi_intent_coverage']:.1f}"
+            f"  [{status}] #{i:02d} | Acc={r['intent_accuracy']:.0f} "
+            f"Cov={r['multi_intent_coverage']:.2f} "
+            f"| {r['latency_s']:.2f}s"
         )
-    print("-" * 70)
+        print(f"       Q: {r['query']}")
+        print(f"       Expected: {r['expected_intents']}")
+        print(f"       Actual:   {r['actual_intents']}")
+        print(f"       Hints:    {r['actual_hints'][:120]}")
+        print()
 
+    n = len(cases)
+    summary = {
+        "total_cases": n,
+        "intent_accuracy": round(total_acc / n, 4) if n else 0,
+        "multi_intent_coverage": round(total_cov / n, 4) if n else 0,
+        "avg_latency_s": round(total_latency / n, 3) if n else 0,
+        "total_latency_s": round(total_latency, 3),
+    }
 
-def save_results(results: list[dict]) -> None:
-    """将评测结果保存到 results.json。"""
+    print("=" * 70)
+    print(f"  总计: {n} cases")
+    print(f"  Intent Accuracy:        {summary['intent_accuracy']:.2%}")
+    print(f"  Multi-intent Coverage:  {summary['multi_intent_coverage']:.2%}")
+    print(f"  Avg Latency:            {summary['avg_latency_s']:.3f}s")
+    print(f"  Total Latency:          {summary['total_latency_s']:.3f}s")
+    print("=" * 70)
+
+    # 保存详细结果
+    output = {"summary": summary, "results": results}
     with open(_RESULTS_PATH, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
-    logger.info("评测结果已保存: %s", _RESULTS_PATH)
+        json.dump(output, f, ensure_ascii=False, indent=2)
+    print(f"\n  详细结果已保存: {_RESULTS_PATH}")
 
-
-def main() -> None:
-    start = time.time()
-    results = run_evaluation()
-    elapsed = time.time() - start
-
-    save_results(results)
-    print_summary(results)
-    print(f"\n  耗时: {elapsed:.1f}s")
+    return output
 
 
 if __name__ == "__main__":
-    main()
+    run_evaluation()

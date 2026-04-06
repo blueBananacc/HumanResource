@@ -371,24 +371,21 @@ class TestPostProcessMetadata:
     @patch("human_resource.agents.orchestrator._should_write_memory")
     @patch("human_resource.agents.orchestrator._get_session_memory")
     def test_records_intent_metadata(self, mock_sm, mock_should, mock_write, mock_comp):
-        """post_process_node 应将 intent_label 传入 metadata。"""
+        """post_process_node 应将 intent_hints 传入 metadata。"""
         from human_resource.agents.orchestrator import post_process_node
-        from human_resource.schemas.models import IntentItem, IntentLabel, IntentResult
 
         sm = MagicMock(spec=SessionMemory)
         mock_sm.return_value = sm
         mock_should.return_value = None
         mock_comp.return_value = MagicMock()
 
-        intent = IntentResult(
-            intents=[IntentItem(label=IntentLabel.POLICY_QA, confidence=0.9)]
-        )
         state = {
             "session_id": "s1",
             "user_id": "u1",
             "messages": [HumanMessage(content="年假政策是什么")],
             "final_response": "年假政策如下...",
-            "intent": intent,
+            "intent_hints": "意图为：policy_qa。理由：用户想了解年假政策。",
+            "orchestrator_action": "rag",
         }
         post_process_node(state)
 
@@ -398,7 +395,7 @@ class TestPostProcessMetadata:
         ]
         assert len(user_calls) == 1
         kwargs = user_calls[0].kwargs  # keyword args
-        assert kwargs["metadata"]["intent_label"] == "policy_qa"
+        assert "policy_qa" in kwargs["metadata"]["intent_hints"]
 
     @patch("human_resource.agents.orchestrator._get_compressor")
     @patch("human_resource.agents.orchestrator._write_longterm_memory")

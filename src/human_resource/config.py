@@ -27,7 +27,8 @@ DEEPSEEK_API_BASE = "https://api.deepseek.com"
 
 # 各场景使用的模型名称
 MODEL_CONFIG: dict[str, str] = {
-    "intent_classification": "deepseek-reasoner",
+    "intent_hints": "deepseek-chat",
+    "orchestrator_decision": "deepseek-reasoner",
     "tool_selection": "deepseek-chat",
     "rag_retrieval": "deepseek-chat",
     "context_compression": "deepseek-chat",
@@ -74,8 +75,6 @@ DIR_COLLECTION_MAP: dict[str, str] = {
 }
 
 # ── Context Engineering 配置 ──────────────────────────────
-CONTEXT_WINDOW_TOKENS = 64000
-MAX_PROMPT_TOKENS = 8000
 TOKEN_BUDGET: dict[str, int] = {
     "system_prompt": 300,
     "user_profile": 100,
@@ -116,11 +115,8 @@ MEMORY_WRITE_KEYWORDS: list[str] = [
     "remember this", "remember", "请记下",
 ]  # 用户显式触发长期记忆写入的关键词
 
-# ── Intent 配置 ──────────────────────────────────────────
-INTENT_CONFIDENCE_THRESHOLD = 0.7
-
-# ── Reflexion 配置 ────────────────────────────────────────
-MAX_REFLEXION_RETRIES = 2
+# ── Orchestrator 决策循环配置 ─────────────────────────────
+MAX_ORCHESTRATOR_LOOPS = 5  # 决策循环最大次数
 
 # ── Tool 配置 ─────────────────────────────────────────────
 TOOL_EXECUTION_TIMEOUT = 30  # seconds

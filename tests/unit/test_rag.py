@@ -753,14 +753,13 @@ class TestRagNodeIntegration:
         """policy_qa 意图应路由到 policy_collection。"""
         from langchain_core.messages import HumanMessage
         from human_resource.agents.orchestrator import rag_node
-        from human_resource.schemas.models import IntentItem, IntentLabel, IntentResult
         from human_resource.config import POLICY_COLLECTION
 
         mock_hs.return_value = RetrievalResult(chunks=[])
-        intent = IntentResult(intents=[IntentItem(label=IntentLabel.POLICY_QA, confidence=0.9)])
         state = {
             "messages": [HumanMessage(content="年假政策")],
-            "intent": intent,
+            "orchestrator_action_input": {"query": "年假政策"},
+            "intent_hints": "意图为：policy_qa。理由：用户询问年假政策。",
         }
         rag_node(state)
         mock_hs.assert_called_once_with("年假政策", collection_name=POLICY_COLLECTION)
@@ -770,14 +769,13 @@ class TestRagNodeIntegration:
         """process_inquiry 意图应路由到 sop_collection。"""
         from langchain_core.messages import HumanMessage
         from human_resource.agents.orchestrator import rag_node
-        from human_resource.schemas.models import IntentItem, IntentLabel, IntentResult
         from human_resource.config import SOP_COLLECTION
 
         mock_hs.return_value = RetrievalResult(chunks=[])
-        intent = IntentResult(intents=[IntentItem(label=IntentLabel.PROCESS_INQUIRY, confidence=0.9)])
         state = {
             "messages": [HumanMessage(content="入职流程")],
-            "intent": intent,
+            "orchestrator_action_input": {"query": "入职流程"},
+            "intent_hints": "意图为：process_inquiry。理由：用户想了解入职流程。",
         }
         rag_node(state)
         mock_hs.assert_called_once_with("入职流程", collection_name=SOP_COLLECTION)
@@ -790,7 +788,10 @@ class TestRagNodeIntegration:
         from human_resource.config import DEFAULT_COLLECTION
 
         mock_hs.return_value = RetrievalResult(chunks=[])
-        state = {"messages": [HumanMessage(content="查询")]}
+        state = {
+            "messages": [HumanMessage(content="查询")],
+            "orchestrator_action_input": {"query": "查询"},
+        }
         rag_node(state)
         mock_hs.assert_called_once_with("查询", collection_name=DEFAULT_COLLECTION)
 

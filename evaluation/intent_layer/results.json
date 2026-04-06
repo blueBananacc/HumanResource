@@ -1,173 +1,149 @@
-[
-  {
-    "query": "查一下我的假期余额",
-    "expected_intents": [
-      "employee_lookup"
-    ],
-    "expected_tools": [
-      "get_leave_balance"
-    ],
-    "actual_intents": [
-      "tool_action"
-    ],
-    "actual_tools": [
-      "get_leave_balance"
-    ],
-    "intent_accuracy": 0.0,
-    "multi_intent_coverage": 0.0
+{
+  "summary": {
+    "total_cases": 10,
+    "intent_accuracy": 0.7,
+    "multi_intent_coverage": 0.8,
+    "avg_latency_s": 1.392,
+    "total_latency_s": 13.924
   },
-  {
-    "query": "年假政策是什么",
-    "expected_intents": [
-      "policy_qa"
-    ],
-    "expected_tools": [],
-    "actual_intents": [
-      "policy_qa"
-    ],
-    "actual_tools": [],
-    "intent_accuracy": 1.0,
-    "multi_intent_coverage": 1.0
-  },
-  {
-    "query": "请告诉我请假流程怎么走",
-    "expected_intents": [
-      "process_inquiry"
-    ],
-    "expected_tools": [
-      "list_hr_processes",
-      "get_process_steps"
-    ],
-    "actual_intents": [
-      "process_inquiry"
-    ],
-    "actual_tools": [
-      "list_hr_processes",
-      "get_process_steps"
-    ],
-    "intent_accuracy": 1.0,
-    "multi_intent_coverage": 1.0
-  },
-  {
-    "query": "帮我查一下张三的部门",
-    "expected_intents": [
-      "employee_lookup"
-    ],
-    "expected_tools": [
-      "lookup_employee"
-    ],
-    "actual_intents": [
-      "employee_lookup"
-    ],
-    "actual_tools": [
-      "lookup_employee"
-    ],
-    "intent_accuracy": 1.0,
-    "multi_intent_coverage": 1.0
-  },
-  {
-    "query": "我想知道怎么报销差旅费",
-    "expected_intents": [
-      "process_inquiry"
-    ],
-    "expected_tools": [
-      "list_hr_processes",
-      "get_process_steps"
-    ],
-    "actual_intents": [
-      "process_inquiry"
-    ],
-    "actual_tools": [
-      "list_hr_processes",
-      "get_process_steps"
-    ],
-    "intent_accuracy": 1.0,
-    "multi_intent_coverage": 1.0
-  },
-  {
-    "query": "查一下我的假期余额，顺便告诉我请假流程",
-    "expected_intents": [
-      "employee_lookup",
-      "process_inquiry"
-    ],
-    "expected_tools": [
-      "get_leave_balance",
-      "list_hr_processes",
-      "get_process_steps"
-    ],
-    "actual_intents": [
-      "tool_action",
-      "process_inquiry"
-    ],
-    "actual_tools": [
-      "get_leave_balance",
-      "get_process_steps"
-    ],
-    "intent_accuracy": 0.0,
-    "multi_intent_coverage": 0.5
-  },
-  {
-    "query": "我是谁？之前我们聊过什么？",
-    "expected_intents": [
-      "memory_recall"
-    ],
-    "expected_tools": [],
-    "actual_intents": [
-      "memory_recall",
-      "memory_recall"
-    ],
-    "actual_tools": [],
-    "intent_accuracy": 1.0,
-    "multi_intent_coverage": 1.0
-  },
-  {
-    "query": "你好，今天心情不错",
-    "expected_intents": [
-      "chitchat"
-    ],
-    "expected_tools": [],
-    "actual_intents": [
-      "chitchat"
-    ],
-    "actual_tools": [],
-    "intent_accuracy": 1.0,
-    "multi_intent_coverage": 1.0
-  },
-  {
-    "query": "我想查一下我的年假额度和今年的调休规则",
-    "expected_intents": [
-      "employee_lookup",
-      "policy_qa"
-    ],
-    "expected_tools": [
-      "get_leave_balance"
-    ],
-    "actual_intents": [
-      "tool_action",
-      "policy_qa"
-    ],
-    "actual_tools": [
-      "get_leave_balance"
-    ],
-    "intent_accuracy": 0.0,
-    "multi_intent_coverage": 0.5
-  },
-  {
-    "query": "火星上的 HR 制度是什么",
-    "expected_intents": [
-      "unknown"
-    ],
-    "expected_tools": [],
-    "actual_intents": [
-      "policy_qa"
-    ],
-    "actual_tools": [],
-    "intent_accuracy": 0.0,
-    "multi_intent_coverage": 0.0
-  }
-]
+  "results": [
+    {
+      "query": "查一下我的假期余额",
+      "expected_intents": [
+        "employee_lookup"
+      ],
+      "actual_hints": "policy_qa。理由：用户查询个人假期余额，属于HR政策信息查询。",
+      "actual_intents": [
+        "policy_qa"
+      ],
+      "intent_accuracy": 0.0,
+      "multi_intent_coverage": 0.0,
+      "latency_s": 1.788
+    },
+    {
+      "query": "年假政策是什么",
+      "expected_intents": [
+        "policy_qa"
+      ],
+      "actual_hints": "policy_qa。理由：用户明确询问年假政策的具体内容，属于HR政策问答。",
+      "actual_intents": [
+        "policy_qa"
+      ],
+      "intent_accuracy": 1.0,
+      "multi_intent_coverage": 1.0,
+      "latency_s": 1.524
+    },
+    {
+      "query": "请告诉我请假流程怎么走",
+      "expected_intents": [
+        "process_inquiry"
+      ],
+      "actual_hints": "process_inquiry。理由：用户明确询问请假流程，属于HR流程咨询。",
+      "actual_intents": [
+        "process_inquiry"
+      ],
+      "intent_accuracy": 1.0,
+      "multi_intent_coverage": 1.0,
+      "latency_s": 1.508
+    },
+    {
+      "query": "帮我查一下张三的部门",
+      "expected_intents": [
+        "employee_lookup"
+      ],
+      "actual_hints": "employee_lookup。理由：用户查询员工张三的部门信息。",
+      "actual_intents": [
+        "employee_lookup"
+      ],
+      "intent_accuracy": 1.0,
+      "multi_intent_coverage": 1.0,
+      "latency_s": 1.013
+    },
+    {
+      "query": "我想知道怎么报销差旅费",
+      "expected_intents": [
+        "process_inquiry"
+      ],
+      "actual_hints": "process_inquiry。理由：用户咨询差旅费报销的具体流程。",
+      "actual_intents": [
+        "process_inquiry"
+      ],
+      "intent_accuracy": 1.0,
+      "multi_intent_coverage": 1.0,
+      "latency_s": 1.265
+    },
+    {
+      "query": "查一下我的假期余额，顺便告诉我请假流程",
+      "expected_intents": [
+        "employee_lookup",
+        "process_inquiry"
+      ],
+      "actual_hints": "policy_qa + process_inquiry。理由：用户查询个人假期余额（政策信息）并询问请假流程（流程咨询）。",
+      "actual_intents": [
+        "policy_qa",
+        "process_inquiry"
+      ],
+      "intent_accuracy": 0.0,
+      "multi_intent_coverage": 0.5,
+      "latency_s": 1.446
+    },
+    {
+      "query": "我是谁？之前我们聊过什么？",
+      "expected_intents": [
+        "memory_recall"
+      ],
+      "actual_hints": "memory_recall。理由：用户询问自身身份和对话历史，属于回忆之前的对话内容。",
+      "actual_intents": [
+        "memory_recall"
+      ],
+      "intent_accuracy": 1.0,
+      "multi_intent_coverage": 1.0,
+      "latency_s": 1.359
+    },
+    {
+      "query": "你好，今天心情不错",
+      "expected_intents": [
+        "chitchat"
+      ],
+      "actual_hints": "chitchat。理由：用户进行闲聊问候。",
+      "actual_intents": [
+        "chitchat"
+      ],
+      "intent_accuracy": 1.0,
+      "multi_intent_coverage": 1.0,
+      "latency_s": 1.139
+    },
+    {
+      "query": "我想查一下我的年假额度和今年的调休规则",
+      "expected_intents": [
+        "employee_lookup",
+        "policy_qa"
+      ],
+      "actual_hints": "policy_qa。理由：用户同时询问年假额度和调休规则，两者均属于HR政策问题。",
+      "actual_intents": [
+        "policy_qa"
+      ],
+      "intent_accuracy": 0.0,
+      "multi_intent_coverage": 0.5,
+      "latency_s": 1.53
+    },
+    {
+      "query": "火星上的 HR 制度是什么",
+      "expected_intents": [
+        "unknown"
+      ],
+      "actual_hints": "unknown。理由：问题涉及虚构或非现实场景，与HR领域无关，无法归类到已有意图类别。",
+      "actual_intents": [
+        "unknown"
+      ],
+      "intent_accuracy": 1.0,
+      "multi_intent_coverage": 1.0,
+      "latency_s": 1.352
+    }
+  ]
+}
 
-// [X]用例 1/6/9：模型将"查假期余额"识别为 tool_action 而非预期的 employee_lookup，这是分类器 prompt 中 tool_action 和 employee_lookup 边界定义的问题
-  // 去除了tool_action意图
-// [X]用例 10："火星上的 HR 制度"被识别为 policy_qa 而非 unknown
-  // 补充unknown意图的定义，后续可以通过意图实体过滤，query预处理进一步解决
+#	Query	Expected	Actual	原因
+1	查一下我的假期余额	employee_lookup	policy_qa	"余额"被当作政策而非数据查询
+6	查假期余额 + 请假流程	employee_lookup + process_inquiry	policy_qa + process_inquiry	同上
+9	查年假额度 + 调休规则	employee_lookup + policy_qa	policy_qa	"额度"也被归为政策，且缺少 employee_lookup

@@ -79,8 +79,7 @@ class TestLoadContextNode:
         assert len(result["session_context"]) == 6
         assert result["session_context"][0] == "user: 问题1"
         assert result["memory_context"] == []
-        assert result["reflection_count"] == 0
-        assert result["current_agent_index"] == 0
+        assert result["loop_count"] == 0
 
     @patch("human_resource.agents.orchestrator._get_session_memory")
     def test_with_stored_summary(self, mock_sm):
@@ -673,17 +672,17 @@ class TestGraphWithMemoryRetrieval:
     @patch("human_resource.agents.orchestrator.get_llm")
     @patch("human_resource.agents.orchestrator._get_longterm_memory")
     def test_graph_flow_order(self, mock_ltm, mock_get_llm, mock_profile_cls):
-        """验证 memory_retrieval 在 load_context 和 classify_intent 之间。"""
+        """验证 memory_retrieval 在 load_context 和 intent_hints 之间。"""
         from human_resource.agents.graph import build_graph
 
         graph = build_graph()
         compiled = graph.compile()
         graph_dict = compiled.get_graph()
 
-        # 检查边: load_context → memory_retrieval → classify_intent
+        # 检查边: load_context → memory_retrieval → intent_hints
         edges = [(e.source, e.target) for e in graph_dict.edges]
         assert ("load_context", "memory_retrieval") in edges
-        assert ("memory_retrieval", "classify_intent") in edges
+        assert ("memory_retrieval", "intent_hints") in edges
 
     @patch("human_resource.agents.orchestrator._should_write_memory")
     @patch("human_resource.agents.orchestrator.UserProfileStore")
@@ -708,13 +707,16 @@ class TestGraphWithMemoryRetrieval:
         # 设置 LLM mock
         mock_llm = MagicMock()
 
-        intent_response = MagicMock()
-        intent_response.content = '{"intents": [{"label": "chitchat", "confidence": 0.95, "entities": {}, "requires_tools": []}]}'
+        hints_response = MagicMock()
+        hints_response.content = "意图为：chitchat。理由：用户在打招呼。"
+
+        decision_response = MagicMock()
+        decision_response.content = '{"reasoning": "闲聊直接回答", "action": "answer", "action_input": {}}'
 
         reply_response = MagicMock()
         reply_response.content = "你好！有什么可以帮你的？"
 
-        mock_llm.invoke.side_effect = [intent_response, reply_response]
+        mock_llm.invoke.side_effect = [hints_response, decision_response, reply_response]
         mock_get_llm.return_value = mock_llm
 
         from human_resource.agents.graph import build_graph
