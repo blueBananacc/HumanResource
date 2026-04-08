@@ -86,7 +86,7 @@ def execute_tool(tool_name: str, parameters: dict[str, Any]) -> ToolResult:
         return ToolResult(
             success=False,
             tool_name=tool_name,
-            error=f"未找到工具: {tool_name}",
+            error=f"未找到工具 '{tool_name}'",
         )
 
     # ── 参数校验 ──
@@ -95,7 +95,7 @@ def execute_tool(tool_name: str, parameters: dict[str, Any]) -> ToolResult:
         return ToolResult(
             success=False,
             tool_name=tool_name,
-            error=err_msg,
+            error=f"工具 '{tool_name}' 参数错误: {err_msg}",
         )
 
     # ── 超时保护执行 ──
@@ -117,21 +117,30 @@ def execute_tool(tool_name: str, parameters: dict[str, Any]) -> ToolResult:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(tool.invoke, parameters)
                 result = future.result(timeout=TOOL_TIMEOUT_SECONDS)
-    except concurrent.futures.TimeoutError:
+    except (concurrent.futures.TimeoutError, asyncio.TimeoutError):
         logger.warning("工具 %s 执行超时（%d秒）", tool_name, TOOL_TIMEOUT_SECONDS)
         return ToolResult(
             success=False,
             tool_name=tool_name,
-            error=f"工具执行超时（{TOOL_TIMEOUT_SECONDS}秒）",
+            error=f"工具 '{tool_name}' 执行超时（超过{TOOL_TIMEOUT_SECONDS}秒未响应）",
         )
     except Exception as exc:
         return ToolResult(
             success=False,
             tool_name=tool_name,
-            error=f"工具执行失败: {exc}",
+            error=f"工具 '{tool_name}' 执行异常: {type(exc).__name__}: {exc}",
         )
 
     # ── 结果格式化 ──
+    # 工具返回 {"error": ...} 表示业务级失败
+    if isinstance(result, dict) and "error" in result:
+        return ToolResult(
+            success=False,
+            tool_name=tool_name,
+            data=result,
+            error=f"工具 '{tool_name}' 调用失败: {result['error']}",
+        )
+
     formatted = format_result(tool_name, result)
     return ToolResult(
         success=True,

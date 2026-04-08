@@ -60,7 +60,7 @@ class TestStartMcpClient:
     @patch("human_resource.mcp.client.registry")
     @patch("human_resource.mcp.client.MultiServerMCPClient")
     def test_normal_registration(self, MockClient, mock_registry):
-        """正常情况：MCP Server 返回工具，全部注册。"""
+        """正常情况：仅注册白名单工具。"""
         tool_a = _make_tool("send_email")
         tool_b = _make_tool("test_connection")
 
@@ -71,13 +71,10 @@ class TestStartMcpClient:
 
         count = _run(start_mcp_client())
 
-        assert count == 2
-        assert mock_registry.register.call_count == 2
+        assert count == 1
+        assert mock_registry.register.call_count == 1
         mock_registry.register.assert_any_call(
             tool_a, category="mcp", source="mcp"
-        )
-        mock_registry.register.assert_any_call(
-            tool_b, category="mcp", source="mcp"
         )
 
     @patch("human_resource.mcp.client.MCP_SERVERS", {
@@ -105,6 +102,37 @@ class TestStartMcpClient:
         assert mock_registry.register.call_count == 1
         mock_registry.register.assert_called_once_with(
             tool_a, category="mcp", source="mcp"
+        )
+
+    @patch("human_resource.mcp.client.MCP_SERVERS", {
+        "test-server": {
+            "command": "node",
+            "args": ["test.js"],
+            "transport": "stdio",
+        },
+    })
+    @patch("human_resource.mcp.client.registry")
+    @patch("human_resource.mcp.client.MultiServerMCPClient")
+    def test_suffix_allowlist_registration(self, MockClient, mock_registry):
+        """带前缀的 MCP 工具名也能按白名单后缀注册。"""
+        tool_a = _make_tool("mcp_firecrawl_fir_firecrawl_search")
+        tool_b = _make_tool("mcp_firecrawl_fir_firecrawl_scrape")
+        tool_c = _make_tool("mcp_firecrawl_fir_firecrawl_map")
+
+        mock_instance = AsyncMock()
+        mock_instance.get_tools = AsyncMock(return_value=[tool_a, tool_b, tool_c])
+        MockClient.return_value = mock_instance
+        mock_registry.has.return_value = False
+
+        count = _run(start_mcp_client())
+
+        assert count == 2
+        assert mock_registry.register.call_count == 2
+        mock_registry.register.assert_any_call(
+            tool_a, category="mcp", source="mcp"
+        )
+        mock_registry.register.assert_any_call(
+            tool_b, category="mcp", source="mcp"
         )
 
     @patch("human_resource.mcp.client.MCP_SERVERS", {})

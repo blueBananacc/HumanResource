@@ -40,6 +40,7 @@ class RetrievalResult:
     """RAG 检索完整结果。"""
 
     chunks: list[RetrievedChunk] = field(default_factory=list)
+    message: str = ""  # 检索反馈信息（空结果原因等）
 
 
 # ── Agent 通信 ───────────────────────────────────────────────

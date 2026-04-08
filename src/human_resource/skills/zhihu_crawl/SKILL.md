@@ -1,0 +1,126 @@
+---
+name: zhihu_crawl
+description: '根据用户的搜索输入在知乎上搜索 x 篇文章并生成摘要返回给用户'
+---
+
+# 知乎搜索与摘要 Skill
+
+**依赖**:
+- Firecrawl MCP Server
+
+## 目标
+根据用户输入的主题关键词与数量 x，在知乎站内检索相关文章，提取正文信息并生成摘要，最终返回：
+- 指定数量的文章摘要
+- 每条摘要对应的原文链接
+
+## 最小输入
+执行前要求用户至少提供：
+- 搜索主题（例如：武功山徒步）
+- 数量 x（正整数）
+- 可选：摘要字数要求（默认 120 到 200 字）
+
+## 强约束
+- 未拿到“搜索主题 + 数量 x”前，不开始检索。
+- 优先限定 `site:zhihu.com`，避免混入非知乎内容。
+- 摘要必须基于已抓取到的正文，不允许编造、扩写事实。
+- 每条输出必须附可访问链接。
+- 如果有效文章不足 x，必须明确输出“已获取 n/x 篇”及原因。
+- 若工具返回大体量结果，必须通过 `read_file` 读取 `content.json`，不能凭标题直接生成摘要。
+
+## 关键决策
+1. 搜索源选择
+- 使用 Firecrawl 搜索 MCP：`mcp_firecrawl_fir_firecrawl_search`
+- 查询模板建议：`site:zhihu.com <关键词>`
+- 结果优先级：
+  - `zhuanlan.zhihu.com/p/...`（知乎专栏）
+  - `www.zhihu.com/question/...`（问答页）
+
+2. 文章抓取方式
+- 已知具体 URL 后，使用 Firecrawl 抓取 MCP：`mcp_firecrawl_fir_firecrawl_scrape`
+- 默认参数：
+  - `formats: ["markdown"]`
+  - `onlyMainContent: true`
+  - `waitFor: 5000`
+- 如内容明显不全，可将 `waitFor` 提升到 `8000-10000` 后重试一次。
+
+3. 摘要策略
+- 单篇摘要默认 120 到 200 字，除非用户指定更短或更长。
+- 保留核心信息：路线/观点/建议/风险/结论。
+- 去除评论区、广告、推荐阅读等噪声段落。
+
+## 标准流程（严格遵循）
+1. 接收输入
+- 解析用户需求中的关键词和数量 x。
+- 若 x 缺失，补问一次；若仍缺失，停止执行。
+
+2. 站内搜索
+- 调用 `mcp_firecrawl_fir_firecrawl_search`：
+  - `query`: `site:zhihu.com <关键词>`
+  - `limit`: 建议 `max(x*3, 5)`，上限可设 20
+  - `sources`: `[{"type":"web"}]`
+- 过滤掉明显不相关或非内容页链接。
+
+3. 选文策略
+- 按相关性选择前 x 篇候选（优先标题强相关 + 描述完整）。
+- 若用户要求“只要一篇”，选择最相关一篇进入正文抓取。
+
+4. 正文抓取
+- 对每个候选 URL 调用 `mcp_firecrawl_fir_firecrawl_scrape`。
+- 推荐参数：
+  - `formats: ["markdown"]`
+  - `onlyMainContent: true`
+  - `waitFor: 5000`
+
+5. 摘要生成
+- 每篇生成对应摘要（按用户字数要求，默认 120-200 字）。
+- 若用户要求“200字摘要”，将目标控制在约 180 到 220 字。
+- 摘要只包含正文中可验证信息。
+
+6. 输出组装
+- 固定格式输出：序号 + 标题 + 摘要 + 链接。
+- 数量不足时，附原因说明（例如：可抓取正文不足、页面内容异常、相关结果不够）。
+
+## MCP 工具调用示例
+### 1) 搜索
+```json
+{
+  "tool": "mcp_firecrawl_fir_firecrawl_search",
+  "arguments": {
+    "query": "site:zhihu.com 武功山 徒步",
+    "limit": 5,
+    "sources": [{ "type": "web" }]
+  }
+}
+```
+
+### 2) 抓取正文
+```json
+{
+  "tool": "mcp_firecrawl_fir_firecrawl_scrape",
+  "arguments": {
+    "url": "https://zhuanlan.zhihu.com/p/386654624",
+    "formats": ["markdown"],
+    "onlyMainContent": true,
+    "waitFor": 5000
+  }
+}
+```
+
+## 失败与回退规则
+- 搜索无结果：
+  - 放宽关键词（去掉过长修饰词）后重试一次。
+- 抓取正文为空或噪声过多：
+  - 提升 `waitFor` 到 8000-10000 重试一次；仍失败则更换下一条候选。
+- 目标数量不足：
+  - 明确输出“已获取 n/x 篇”，并写明失败原因。
+
+## 输出模板
+1. 标题：<文章标题>
+摘要：<约定字数的摘要>
+链接：<知乎URL>
+
+2. 标题：<文章标题>
+摘要：<约定字数的摘要>
+链接：<知乎URL>
+
+...（共 x 篇；若不足，说明已获取 n/x）

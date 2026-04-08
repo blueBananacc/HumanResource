@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.tools import tool
 
-from human_resource.tools.selector import ToolCallRequest, ToolSelector
+from human_resource.tools.selector import ToolCallRequest, ToolSelectionResult, ToolSelector
 
 
 # ── 辅助工具注册 ─────────────────────────────────────────────
@@ -61,9 +61,9 @@ class TestToolSelector:
         selector = ToolSelector()
         result = selector.select("查询张三", ["lookup_employee"])
 
-        assert len(result) == 1
-        assert result[0].tool_name == "lookup_employee"
-        assert result[0].parameters == {"query": "张三"}
+        assert len(result.calls) == 1
+        assert result.calls[0].tool_name == "lookup_employee"
+        assert result.calls[0].parameters == {"query": "张三"}
 
     @patch("human_resource.tools.selector.get_llm")
     def test_select_multiple_tools(self, mock_get_llm):
@@ -84,30 +84,33 @@ class TestToolSelector:
         selector = ToolSelector()
         result = selector.select("查张三假期", ["lookup_employee", "get_leave_balance"])
 
-        assert len(result) == 2
-        assert result[0].tool_name == "lookup_employee"
-        assert result[1].tool_name == "get_leave_balance"
-        assert result[1].parameters == {"employee_id": "E001"}
+        assert len(result.calls) == 2
+        assert result.calls[0].tool_name == "lookup_employee"
+        assert result.calls[1].tool_name == "get_leave_balance"
+        assert result.calls[1].parameters == {"employee_id": "E001"}
 
     @patch("human_resource.tools.selector.get_llm")
-    def test_no_tool_calls_returns_empty(self, mock_get_llm):
-        """LLM 未选择任何工具（返回无 tool_calls 的响应）。"""
+    def test_no_tool_calls_returns_reason(self, mock_get_llm):
+        """当 LLM 未选择工具时，返回包含拒绝理由的 ToolSelectionResult。"""
         _register_test_tools()
 
         mock_llm = MagicMock()
         mock_bound = MagicMock()
-        mock_bound.invoke.return_value = MagicMock(tool_calls=[], content="你好")
+        mock_bound.invoke.return_value = MagicMock(
+            tool_calls=[], content="该用户请求是闲聊，不需要调用任何工具"
+        )
         mock_llm.bind_tools.return_value = mock_bound
         mock_get_llm.return_value = mock_llm
 
         selector = ToolSelector()
         result = selector.select("你好", ["lookup_employee"])
 
-        assert result == []
+        assert result.calls == []
+        assert "闲聊" in result.reason
 
     @patch("human_resource.tools.selector.get_llm")
-    def test_no_tool_calls_attr_returns_empty(self, mock_get_llm):
-        """LLM 响应没有 tool_calls 属性时，返回空列表。"""
+    def test_no_tool_calls_attr_returns_reason(self, mock_get_llm):
+        """LLM 响应没有 tool_calls 属性时，返回包含理由的结果。"""
         _register_test_tools()
 
         mock_llm = MagicMock()
@@ -120,7 +123,8 @@ class TestToolSelector:
         selector = ToolSelector()
         result = selector.select("查张三", ["lookup_employee"])
 
-        assert result == []
+        assert result.calls == []
+        assert result.reason  # 应含理由
 
     @patch("human_resource.tools.selector.get_llm")
     def test_unregistered_tool_filtered(self, mock_get_llm):
@@ -141,12 +145,12 @@ class TestToolSelector:
         selector = ToolSelector()
         result = selector.select("查张三", ["lookup_employee"])
 
-        assert len(result) == 1
-        assert result[0].tool_name == "lookup_employee"
+        assert len(result.calls) == 1
+        assert result.calls[0].tool_name == "lookup_employee"
 
     @patch("human_resource.tools.selector.get_llm")
     def test_llm_exception_returns_empty(self, mock_get_llm):
-        """LLM 调用异常，返回空列表。"""
+        """LLM 调用异常，返回包含理由的空结果。"""
         _register_test_tools()
 
         mock_llm = MagicMock()
@@ -158,11 +162,12 @@ class TestToolSelector:
         selector = ToolSelector()
         result = selector.select("查张三", ["lookup_employee"])
 
-        assert result == []
+        assert result.calls == []
+        assert "失败" in result.reason
 
     @patch("human_resource.tools.selector.get_llm")
     def test_empty_message_returns_empty(self, mock_get_llm):
-        """空消息直接返回空列表，不调用 LLM。"""
+        """空消息直接返回空结果，不调用 LLM。"""
         mock_llm = MagicMock()
         mock_bound = MagicMock()
         mock_llm.bind_tools.return_value = mock_bound
@@ -171,7 +176,8 @@ class TestToolSelector:
         selector = ToolSelector()
         result = selector.select("", ["lookup_employee"])
 
-        assert result == []
+        assert result.calls == []
+        assert result.reason
         mock_bound.invoke.assert_not_called()
 
     @patch("human_resource.tools.selector.get_llm")
@@ -209,8 +215,8 @@ class TestToolSelector:
         selector = ToolSelector()
         result = selector.select("查张三", ["lookup_employee"])
 
-        assert len(result) == 1
-        assert result[0].parameters == {}
+        assert len(result.calls) == 1
+        assert result.calls[0].parameters == {}
 
     @patch("human_resource.tools.selector.get_llm")
     def test_bind_tools_called_with_candidate_tools(self, mock_get_llm):
@@ -241,7 +247,8 @@ class TestToolSelector:
         selector = ToolSelector()
         result = selector.select("查张三", ["nonexistent_tool"])
 
-        assert result == []
+        assert result.calls == []
+        assert result.reason
         mock_llm.bind_tools.assert_not_called()
 
     @patch("human_resource.tools.selector.get_llm")
@@ -263,8 +270,8 @@ class TestToolSelector:
         selector = ToolSelector()
         result = selector.select("查张三", ["lookup_employee"])
 
-        assert len(result) == 1
-        assert result[0].tool_name == "lookup_employee"
+        assert len(result.calls) == 1
+        assert result.calls[0].tool_name == "lookup_employee"
 
 
 # ── ToolCallRequest 测试 ─────────────────────────────────────

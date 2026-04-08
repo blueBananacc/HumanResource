@@ -17,7 +17,7 @@ from typing import Any
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from human_resource.config import MCP_SERVERS
+from human_resource.config import MCP_ALLOWED_TOOLS, MCP_SERVERS
 from human_resource.tools.registry import registry
 
 logger = logging.getLogger(__name__)
@@ -26,11 +26,25 @@ logger = logging.getLogger(__name__)
 _mcp_client: MultiServerMCPClient | None = None
 
 
+def _is_allowed_mcp_tool(tool_name: str) -> bool:
+    """判断 MCP 工具是否在允许注册白名单内。
+
+    兼容两类命名：
+    - 原始名：send_email
+    - 带服务器前缀名：mcp_firecrawl_fir_firecrawl_search
+    """
+    return any(
+        tool_name == allowed or tool_name.endswith(f"_{allowed}")
+        for allowed in MCP_ALLOWED_TOOLS
+    )
+
+
 async def start_mcp_client() -> int:
     """启动 MCP Client，连接所有配置的 MCP Server 并注册工具。
 
     MCP Server 进程随 MultiServerMCPClient 在后台启动（stdio transport），
-    工具通过 get_tools() 自动发现并注册到 Tool Registry。
+    工具通过 get_tools() 自动发现；日志列出全部发现结果，
+    实际仅注册白名单中的工具到 Tool Registry。
 
     Returns:
         注册的 MCP 工具数量。
@@ -41,19 +55,36 @@ async def start_mcp_client() -> int:
         logger.info("MCP: 无配置的 MCP Server，跳过")
         return 0
 
-    _mcp_client = MultiServerMCPClient(MCP_SERVERS)
+    _mcp_client = MultiServerMCPClient(MCP_SERVERS)  # type: ignore[arg-type]
 
     tool_count = 0
     try:
         tools = await _mcp_client.get_tools()
+        discovered_tool_names = [tool.name for tool in tools]
+        if discovered_tool_names:
+            logger.info(
+                "MCP 可发现工具(%d): %s",
+                len(discovered_tool_names),
+                ", ".join(discovered_tool_names),
+            )
+        else:
+            logger.info("MCP 未发现可用工具")
+
         for tool in tools:
+            if not _is_allowed_mcp_tool(tool.name):
+                logger.info("MCP 工具未在白名单中，跳过注册: %s", tool.name)
+                continue
             if not registry.has(tool.name):
                 registry.register(tool, category="mcp", source="mcp")
                 logger.info("MCP 工具已注册: %s", tool.name)
                 tool_count += 1
             else:
                 logger.warning("MCP 工具名冲突，跳过: %s", tool.name)
-        logger.info("MCP Client 启动完成: 注册 %d 个工具", tool_count)
+        logger.info(
+            "MCP Client 启动完成: 发现 %d 个工具, 注册 %d 个白名单工具",
+            len(discovered_tool_names),
+            tool_count,
+        )
     except Exception:
         logger.exception("MCP Client 启动失败")
 
@@ -79,15 +110,4 @@ def register_mcp_tools_sync() -> int:
     Returns:
         注册的 MCP 工具数量。
     """
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        # 已有事件循环运行中，创建 future 等待
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(lambda: asyncio.run(start_mcp_client())).result()
-    else:
-        return asyncio.run(start_mcp_client())
+    return asyncio.run(start_mcp_client())

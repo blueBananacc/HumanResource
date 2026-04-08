@@ -67,7 +67,7 @@ def lookup_employee(query: str) -> dict:
 
 @tool
 def get_leave_balance(employee_id: str) -> dict:
-    """查询员工假期余额。
+    """查询员工相关假期余额：包括年假、病假、事假等。
 
     Args:
         employee_id: 员工工号。

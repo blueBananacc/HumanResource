@@ -5,8 +5,12 @@ Orchestrator 驱动决策循环架构。
 
 图结构：
   START → load_context → memory_retrieval → intent_hints
-    → orchestrator_decision ⟷ [rag_node / tool_node / memory_node] 循环
+    → [_intent_router] → orchestrator_decision ⟷ [rag_node / tool_node / memory_node] 循环
     → generate_response → post_process → END
+
+  _intent_router:
+    - skill_propose → generate_response（跳过 Orchestrator 循环）
+    - 其他 → orchestrator_decision（正常流程）
 """
 
 from __future__ import annotations
@@ -33,6 +37,18 @@ logger = logging.getLogger(__name__)
 
 
 # ── 路由函数（conditional edges） ────────────────────────────
+def _intent_router(state: AgentState) -> str:
+    """intent_hints_node 后的条件路由。
+
+    - skill_propose → 直接跳到 generate_response（跳过 Orchestrator 循环）
+    - 其他 → 正常进入 orchestrator_decision
+    """
+    action = state.get("orchestrator_action")
+    if action == "skill_propose":
+        return "generate_response"
+    return "orchestrator_decision"
+
+
 def _decision_router(state: AgentState) -> str:
     """根据 Orchestrator 决策中心的 action 路由到对应节点。"""
     action = state.get("orchestrator_action", "answer")
@@ -72,7 +88,16 @@ def build_graph() -> StateGraph:
     graph.add_edge(START, "load_context")
     graph.add_edge("load_context", "memory_retrieval")
     graph.add_edge("memory_retrieval", "intent_hints")
-    graph.add_edge("intent_hints", "orchestrator_decision")
+
+    # 意图提示 → 条件路由（skill_propose 跳过 Orchestrator）
+    graph.add_conditional_edges(
+        "intent_hints",
+        _intent_router,
+        {
+            "orchestrator_decision": "orchestrator_decision",
+            "generate_response": "generate_response",
+        },
+    )
 
     # 决策中心 → 条件路由
     graph.add_conditional_edges(
@@ -102,6 +127,18 @@ def compile_graph():
     """构建并编译图，返回可执行的 CompiledGraph。"""
     # 注册默认内置工具
     register_default_tools()
+
+    # 扫描 Skill 元数据
+    try:
+        from human_resource.config import SKILLS_DIR
+        from human_resource.skills.loader import SkillLoader
+
+        loader = SkillLoader(SKILLS_DIR)
+        skills = loader.scan()
+        if skills:
+            logger.info("Skill 扫描完成: %d 个", len(skills))
+    except Exception:
+        logger.exception("Skill 扫描失败，技能功能不可用")
 
     # 注册 MCP 工具（启动本地 MCP Server 并发现工具）
     try:

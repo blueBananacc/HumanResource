@@ -76,11 +76,11 @@ DIR_COLLECTION_MAP: dict[str, str] = {
 
 # ── Context Engineering 配置 ──────────────────────────────
 TOKEN_BUDGET: dict[str, int] = {
-    "system_prompt": 300,
+    "system_prompt": 1500,
     "user_profile": 100,
     "relevant_memories": 200,
-    "retrieved_context": 1500,
-    "tool_results": 500,
+    "retrieved_context": 5000,
+    "tool_results": 5000,
     "conversation_history": 2000,
     "current_message": 200,
 }
@@ -109,14 +109,31 @@ MCP_SERVERS: dict[str, dict] = {
             "EMAIL_TYPE": "qq",
         },
     },
+    "firecrawl/firecrawl-mcp-server": {
+			"transport": "stdio",
+			"command": "npx",
+			"args": [
+				"-y",
+				"firecrawl-mcp@latest"
+			],
+			"env": {
+				"FIRECRAWL_API_KEY": "fc-"
+			},
+		}
 }
+MCP_ALLOWED_TOOLS: list[str] = [
+    "send_email",
+    "firecrawl_search",
+    "firecrawl_scrape",
+]
 MEMORY_WRITE_KEYWORDS: list[str] = [
     "记住这个", "记住", "请记住", "帮我记一下", "记下来",
     "remember this", "remember", "请记下",
 ]  # 用户显式触发长期记忆写入的关键词
-
+# ── Skill 配置 ────────────────────────────────────────
+SKILLS_DIR = Path(__file__).parent / "skills"
 # ── Orchestrator 决策循环配置 ─────────────────────────────
-MAX_ORCHESTRATOR_LOOPS = 5  # 决策循环最大次数
+MAX_ORCHESTRATOR_LOOPS = 10  # 决策循环最大次数
 
 # ── Tool 配置 ─────────────────────────────────────────────
 TOOL_EXECUTION_TIMEOUT = 30  # seconds

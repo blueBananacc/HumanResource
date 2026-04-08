@@ -86,6 +86,7 @@ pytest
   - Specialist Agent = Graph 中的执行 Node，被决策中心按需调用
   - 循环机制 = conditional_edge 从 Specialist Agent 执行完毕后回到决策中心，由 Reasoner 判断是否继续
   - 状态管理 = LangGraph State（TypedDict），在 Node 之间传递和更新
+  - Skill 支持 = 可扩展技能系统，元数据预加载 + 意图驱动路由（首次检测→直达提议，确认后→完整内容注入 Orchestrator prompt 指导 ReAct 循环）
 
 
 
@@ -119,7 +120,7 @@ pytest
 AgentState {
   messages: Annotated[list[BaseMessage], add_messages] // LangGraph 消息列表（对话历史）
   intent_hints: str | None                            // 意图提示（轻量分析，供 Orchestrator 参考）
-  orchestrator_action: str | None                     // Orchestrator 当前决策的动作（"rag" / "tool" / "memory" / "answer" / "clarify"）
+  orchestrator_action: str | None                     // 当前决策动作，可由 intent_hints_node（"skill_propose"）或 orchestrator_decision_node（"rag"/"tool"/"memory"/"answer"/"clarify"）设置
   orchestrator_reasoning: str | None                  // Orchestrator 决策推理过程
   rag_results: RetrievalResult | None                 // RAG 检索结果
   tool_results: list[ToolResult]                      // 工具执行结果
@@ -131,6 +132,7 @@ AgentState {
   max_loops: int                                      // 最大循环次数（默认 5）
   session_id: str                                     // 会话唯一标识
   user_id: str                                        // 用户 ID
+  active_skill_content: str | None                    // 完整 SKILL.md 内容（intent_hints_node 确认后加载，当次 invoke 内传递给 Orchestrator prompt，不跨 turn 持久化）
 }
 
 
@@ -143,11 +145,16 @@ AgentState {
    ├─→ Session Memory(本地): 获取当前会话历史 (message list)
    ├─→ mem0 Cloud: 检索相关长期记忆 (memory snippets) + 用户画像
    └─→ Intent Hints 生成(DeepSeek-chat, 轻量分析)
-       输入: 用户消息 + 会话摘要 + 长短期记忆
-       输出: 意图提示文本 (自然语言，供 Orchestrator 参考)
+       输入: 用户消息 + 会话上下文 + 长短期记忆 + Skill 元数据列表
+       处理: LLM 结合 session 上下文判断 Skill 状态（首次检测 / 用户确认 / 用户拒绝 / 执行中）
+       输出: 意图提示文本 + 可选路由决策（skill_propose → 跳过 Orchestrator 直达回复）
+   │
+   ├─→ Intent Router（条件路由）
+   │     ├─ orchestrator_action="skill_propose" → 跳过③ → 直接进入④生成技能提议消息
+   │     └─ 其他 → 进入③ Orchestrator 决策循环（若 active_skill_content 已加载，则带入 Skill 指令）
    │
 ③ Orchestrator 决策循环 (DeepSeek-Reasoner)
-   │  输入: 用户消息 + 意图提示 + 已收集的中间结果 + 上下文
+   │  输入: 用户消息 + 意图提示 + 已收集的中间结果 + 上下文 + 激活的 Skill 内容（如有）
    │  Reasoner 自主推理，输出下一步动作：
    │
    │  ┌─────────────────────────────────────────────────┐
@@ -208,24 +215,47 @@ AgentState {
 | process_inquiry | HR 流程咨询 |
 | employee_lookup | 员工信息查询 |
 | memory_recall | 回忆之前的对话内容 |
+| skill:\<skill_name\> | 匹配到可用技能（动态，由 SkillLoader 元数据注入） |
 | chitchat | 闲聊/问候 |
 | unknown | 无法识别 |
 
 **关键技术考虑**：
 - 分析方式：使用 LLM prompt（DeepSeek-chat），输入用户消息 + 上下文，输出自然语言提示
 - Intent Hints 输出示例：
-  - "意图为：policy_qa。理由：用户想了解年假政策。"
-  - "意图为：employee_lookup。理由：用户想查询张三的部门信息"
-  - "意图为：policy_qa + process_inquiry。理由：用户想要了解请假政策和请假流程。"
+  - "理由：用户想了解年假政策。意图为：policy_qa。"
+  - "理由：用户想查询张三的部门信息。意图为：employee_lookup。"
+  - "理由：用户想要了解请假政策和请假流程。意图为：policy_qa + process_inquiry。"
+  - "理由：用户想在知乎上搜索文章并获取摘要。意图为：skill:zhihu_crawl。"
 - Multi-intent 处理：Intent Analyzer 在提示中描述多个可能的意图，由 Orchestrator 自行决定处理顺序和方式
 - Fallback：当分析不确定时，Intent Hints 可提示"意图不明确，建议向用户澄清"，但最终由 Orchestrator 决定是否澄清
+
+**Skill 元数据注入**：
+- SkillLoader 启动时扫描 `skills/` 目录，提取每个 Skill 的 `name` + `description`（YAML 前缀）
+- Intent Analyzer prompt 中动态追加所有 Skill 元数据作为额外意图类别：
+  ```
+  可用技能（当用户请求明确匹配某个技能时，使用 skill:<技能名> 作为意图标签）：
+  - zhihu_crawl: 根据用户的搜索输入在知乎上搜索 x 篇文章并生成摘要返回给用户
+  - ...
+  ```
+- 仅加载元数据（name + description），不加载完整 SKILL.md，节省 token
+
+**启动流程**：
+- `compile_graph()` 中调用 `SkillLoader.scan()` 扫描 `skills/` 目录并缓存元数据列表
+- `intent_hints_node` 启动时获取缓存的元数据列表，注入 Intent Analyzer prompt
 
 **技术选型映射**：
 - LLM：使用 DeepSeek-chat 进行意图提示生成（轻量、低成本）
 
-**输入**：用户消息 (str) + 会话摘要 (str, optional) + 长短期记忆
-**输出**：intent_hints (str)，自然语言意图提示
-**依赖**：LLM Client
+**Intent 路由（conditional edge after intent_hints_node）**：
+- `intent_hints_node` 在检测到首次 Skill 匹配时，直接设置 `orchestrator_action = "skill_propose"`
+- Graph 中 `intent_hints_node` 后接 `_intent_router` 条件边：
+  - `orchestrator_action == "skill_propose"` → `generate_response_node`（跳过 Orchestrator 循环，直接生成提议消息）
+  - 否则 → `orchestrator_decision_node`（正常流程，若 `active_skill_content` 已加载则注入 Orchestrator prompt）
+- 这避免了 Skill 提议经过 Orchestrator Reasoner 的不必要推理开销
+
+**输入**：用户消息 (str) + 会话上下文 (session messages) + 长短期记忆 + Skill 元数据列表
+**输出**：intent_hints (str) + 可选 orchestrator_action ("skill_propose") + 可选 active_skill_content (str)
+**依赖**：LLM Client、SkillLoader（元数据 + 按需加载完整内容）
 **被调用方**：Orchestrator Agent（在决策循环前调用一次）
 
 ## 3.2 Tool Calling
@@ -584,6 +614,81 @@ Session {
 **依赖**：mem0 Cloud、LLM Client
 **被调用方**：Memory Agent → Orchestrator
 
+## 3.8 Skill System（技能系统）
+**目标**：支持可扩展的 Skill（技能）机制，让系统能够遵循预定义的结构化工作流完成复杂多步任务（如：批量抓取网页并摘要）。Skill 通过 Token 节省策略（元数据预加载 + 确认后完整加载）降低日常对话的 token 消耗。
+
+**核心概念**：
+- **Skill vs Tool**：Tool 是原子操作（单次调用即返回），Skill 是多步结构化工作流（指导 Orchestrator 在 ReAct 循环中按步骤完成复杂任务）
+- **Token 节省策略**：日常对话仅加载 Skill 元数据（name + description）；完整 SKILL.md 内容仅在用户确认使用后才注入 Orchestrator prompt
+
+**子模块**：
+| 子模块 | 职责 |
+|--------|------|
+| SkillLoader | 扫描 skills 目录，解析 SKILL.md 的 YAML 前缀提取元数据，缓存元数据列表，按名称加载完整内容 |
+
+**SKILL.md 格式规范**：
+```markdown
+---
+name: skill_name          # 唯一标识符（必须与文件夹名一致）
+description: '一句话描述'  # 供意图识别使用的简短描述
+---
+
+**SkillMetadata 数据模型**：
+```python
+@dataclass
+class SkillMetadata:
+    name: str          # Skill 唯一标识（= 文件夹名）
+    description: str   # 简短描述（注入到意图识别 prompt）
+    path: str          # SKILL.md 文件的绝对路径
+```
+
+**Skill 生命周期（三阶段）**：
+
+**① 启动加载（仅元数据）**
+- 系统启动时，`compile_graph()` 调用 `SkillLoader.scan()` 扫描 `skills/` 目录下所有子文件夹
+- 查找并解析每个子文件夹中的 `SKILL.md` 文件的 YAML 前缀
+- 提取 `name` 和 `description`，缓存为 `list[SkillMetadata]`
+
+**② 首次检测 → 提议（跳过 Orchestrator）**
+- `intent_hints_node` 中 Intent Analyzer prompt 动态注入 Skill 元数据列表（仅 name + description）
+- LLM 结合 session 上下文判断：这是首次检测到可用 Skill（会话中无先前提议记录）
+- 输出意图 `skill:<skill_name>` + 设置 `orchestrator_action = "skill_propose"`
+- Graph 中 `_intent_router` 检测到 `skill_propose` → **直接路由到 `generate_response_node`**（跳过 Orchestrator 决策循环）
+- `generate_response_node` 生成提议消息："检测到可以使用「{description}」技能来完成此任务。是否启用？"
+- 提议消息写入 session 历史，**无需额外状态变量**
+
+**③ 确认 → 执行（进入 Orchestrator + Skill 指令）**
+- 下一轮对话，`intent_hints_node` 读取 session 上下文（包含上一轮的提议消息 + 用户回复）
+- LLM 语义判断用户是否确认：
+  - **确认**：输出 `skill:<name>` 意图 + 调用 `SkillLoader.load_content(name)` 加载完整 SKILL.md → 写入 `active_skill_content`
+  - **拒绝**：不输出 skill 意图，按正常意图分析处理
+- 确认后，`_intent_router` 检测到无 `skill_propose`（`orchestrator_action` 未设置）→ 正常进入 `orchestrator_decision_node`
+- `orchestrator_decision_node` 的 prompt 注入完整 Skill 指令：
+  ```
+  ## 当前激活技能
+  你正在执行「{skill_name}」技能，请严格遵循以下工作流完成任务：
+  {skill_content}
+  ```
+- Orchestrator 在 ReAct 循环中遵循 Skill 的步骤完成任务 → `action="answer"` → 生成最终结果
+- 若 Skill 任务需要多轮对话，每轮 `intent_hints_node` 从 session 上下文判断 Skill 仍在执行中 → 继续加载完整内容
+- 若用户明显改变话题 → LLM 不再输出 skill 意图 → Orchestrator 不注入 Skill 指令 → 自然退出
+
+
+**与现有模块的交互**：
+| 模块 | 交互方式 |
+|------|---------|
+| Intent Analyzer | 注入 Skill 元数据到 prompt + 读取 session 上下文判断 Skill 状态 → 识别 `skill:xxx` 意图 |
+| Orchestrator Decision | 当 `active_skill_content` 存在时，注入完整 Skill 指令到 prompt → 指导 ReAct 循环 |
+| Tool Node | Skill 引用的 MCP 工具已在 Tool Registry 中注册（通过 MCP Client） |
+| Session Memory | Skill 状态隐含在对话历史中（提议消息、用户确认），无需额外 metadata 字段 |
+| Graph Router | `_intent_router`: `skill_propose` → `generate_response`；`_decision_router`: 正常动作路由 |
+
+
+**输入**：Skill 名称（str）
+**输出**：SkillMetadata（元数据）或 str（完整 SKILL.md 内容）
+**依赖**：文件系统（skills/ 目录）
+**被调用方**：Intent Hints Node（元数据注入 + 确认后加载完整内容）、Orchestrator（通过 State 接收 active_skill_content）
+
 # 4 Multi-Agent Coordination
 ## 4.1 Orchestrator Agent（决策中心）
 - **角色**：系统唯一入口和决策核心，负责自主推理和全局流程控制
@@ -628,6 +733,7 @@ Orchestrator 输出结构化 JSON：
 - 当用户询问 HR 政策/制度/规定时，优先考虑 RAG 检索文档
 - 当用户需要查询具体数据（员工信息、假期余额等）时，优先考虑调用工具
 - 当用户提到"之前""上次""我们聊过"等时，考虑检索记忆
+- 当 `active_skill_content` 存在时，严格遵循技能指令中的步骤完成任务
 - 当已有信息足以回答用户问题时，直接生成回答
 - 当信息不足且无法通过工具/RAG/记忆获取时，生成澄清问题
 - 闲聊/问候类消息可直接回答，无需调用任何 Agent
@@ -638,6 +744,11 @@ Orchestrator 输出结构化 JSON：
   - 第1轮：Reasoner 判断需要调用工具查假期余额 → 执行 Tool Agent
   - 第2轮：观察到余额结果，判断还需要检索请假流程 → 执行 RAG Agent
   - 第3轮：观察到所有结果充足 → action="answer"，生成综合回复
+
+**Skill 处理流程（跨 turn）**：
+- Turn 1：“帮我在知乎搜3篇关于机器学习的文章” → intent_hints: skill:zhihu_crawl + orchestrator_action="skill_propose" → _intent_router 跳过 Orchestrator → generate_response 生成提议消息
+- Turn 2：“好的” → intent_hints 读取 session 上下文，LLM 判断用户确认 → skill:zhihu_crawl + 加载完整 SKILL.md → _intent_router 正常进入 Orchestrator → Orchestrator prompt 包含 Skill 指令 → ReAct 循环（搜索 → 抓取 → 摘要）→ action="answer"
+- Turn 2 (拒绝)：“不用了” → intent_hints LLM 判断用户拒绝 → 正常意图分析 → Orchestrator 正常处理
 
 **Fallback 策略**：
 - Orchestrator 在推理过程中自行判断信息是否充足
@@ -695,11 +806,19 @@ src/human_resource/
 ├── tools/                           # 工具调用模块
 │   ├── __init__.py
 │   ├── registry.py                  # 工具注册表 (统一管理内置+MCP工具)
+│   ├── selector.py                  # 工具选择器 (LLM Native Function Calling)
 │   ├── executor.py                  # 工具执行器 (参数校验+调用+格式化)
 │   └── hr_tools/                    # HR 专用内置工具 (LangChain @tool 装饰器)
 │       ├── __init__.py
 │       ├── employee_lookup.py       # 员工信息查询
 │       └── process_tools.py         # HR 流程工具
+│
+├── skills/                          # 技能系统模块
+│   ├── loader.py                    # SkillLoader: 元数据扫描 + 完整内容加载
+│   ├── zhihu_crawl/                 # 知乎搜索与摘要技能
+│   │   └── SKILL.md
+│   └── <future_skill>/             # 其他技能（按需添加）
+│       └── SKILL.md
 │
 ├── mcp/                             # MCP 集成模块 (后续接入)
 │   ├── __init__.py
@@ -733,7 +852,8 @@ tests/
 │   ├── test_tool_registry.py
 │   ├── test_chunker.py
 │   ├── test_session_memory.py
-│   └── test_context_manager.py
+│   ├── test_context_manager.py
+│   └── test_skill_loader.py
 ├── module/                          # 模块集成测试
 │   ├── test_rag_pipeline.py
 │   ├── test_tool_pipeline.py
@@ -757,6 +877,7 @@ main.py (CLI loop)
   └─→ agents/graph.py (LangGraph StateGraph)
         └─→ agents/orchestrator
               ├─→ intent/analyzer (意图提示生成) → utils/llm_client
+              │     └─→ skills/loader (Skill 元数据注入 + 确认后加载完整内容)
               ├─→ orchestrator_decision (决策循环, Reasoner) → utils/llm_client
               ├─→ agents/rag_agent → rag/* → utils/llm_client
               │     ├─→ rag/embedder (BGE-M3 via HF API)
@@ -780,6 +901,7 @@ main.py (CLI loop)
 | Session Memory | append / read / trim / summarize 操作 | 断言消息列表正确、trimming 后长度在预算内 |
 | Context Manager | 各段落 token 超限时的压缩和截断行为 | 断言最终 prompt token 数 ≤ 预算 |
 | Prompt Builder | 输入各模块结果，验证 prompt 结构正确 | 断言 prompt 包含所有必要段落且顺序正确 |
+| SkillLoader | 扫描 skills 目录、解析 YAML 元数据、加载完整内容 | 断言元数据列表正确解析、完整内容可按名称加载、缺失文件处理正确 |
 
 ## 6.2 Module Integration Tests
 | 测试对象 | 测试内容 | 验证方式 |
@@ -799,6 +921,8 @@ main.py (CLI loop)
 | Multi-intent | "查一下我的假期余额，顺便告诉我请假流程" → Orchestrator 自主推理，多轮循环分别调用 Tool Agent 和 RAG Agent → 聚合结果 |
 | Fallback handling | 输入完全无关的问题 → 系统识别为 unknown → 返回友好的回退提示 |
 | Memory persistence | Session A 中告知 "我是研发部的" → Session B 中问 "我的部门" → 长期记忆正确召回 |
+| Skill propose & confirm | 输入 “帮我搜3篇知乎文章” → intent_hints 识别 skill:zhihu_crawl → _intent_router 跳过 Orchestrator → 提议用户确认 → 用户确认 → intent_hints 加载完整 Skill → Orchestrator 按工作流执行 |
+| Skill reject | 输入匹配技能的请求 → 系统提议 → 用户拒绝 → intent_hints LLM 判断拒绝 → 正常意图分析，Orchestrator 正常处理 |
 | Reflexion quality | 对 policy_qa 启用 Reflexion → 验证低质量回答被重新生成，最终回答质量提升 |
 
 # 6.4 测试基础设施

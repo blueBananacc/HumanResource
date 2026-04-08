@@ -147,3 +147,4 @@
 1	查一下我的假期余额	employee_lookup	policy_qa	"余额"被当作政策而非数据查询
 6	查假期余额 + 请假流程	employee_lookup + process_inquiry	policy_qa + process_inquiry	同上
 9	查年假额度 + 调休规则	employee_lookup + policy_qa	policy_qa	"额度"也被归为政策，且缺少 employee_lookup
+通过完善提示词中对employee_lookup的定义解决

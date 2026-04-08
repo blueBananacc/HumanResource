@@ -23,7 +23,7 @@ class AgentState(TypedDict, total=False):
 
     messages: Annotated[list[BaseMessage], add_messages]
     intent_hints: str | None  # 意图提示（轻量分析，供 Orchestrator 参考）
-    orchestrator_action: str | None  # 当前决策动作: rag/tool/memory/answer/clarify
+    orchestrator_action: str | None  # 当前决策动作: rag/tool/memory/answer/clarify/skill_propose
     orchestrator_reasoning: str | None  # 决策推理过程
     orchestrator_action_input: dict[str, Any] | None  # 动作参数
     rag_results: RetrievalResult | None
@@ -36,3 +36,4 @@ class AgentState(TypedDict, total=False):
     max_loops: int  # 最大循环次数（默认 5）
     session_id: str
     user_id: str
+    active_skill_content: str | None  # 完整 SKILL.md 内容（intent_hints_node 确认后加载）

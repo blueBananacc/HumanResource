@@ -22,12 +22,12 @@ from human_resource.utils.llm_client import get_llm
 logger = logging.getLogger(__name__)
 
 _TOOL_SELECTION_SYSTEM_PROMPT = """\
-你是一个 HR 智能助手的工具调用代理。根据用户请求和上下文信息，选择合适的工具并生成正确的调用参数。
+你是一个 HR 智能助手的工具调用代理。根据用户请求和上下文信息，判断是否需要调用工具，\
+如果需要则选择合适的工具并生成正确的调用参数。
 
-规则：
-- 仅在用户请求明确需要工具时才调用
-- 参数值必须从用户消息或上下文中提取，不要编造不存在的信息
-- 可以同时调用多个工具"""
+**工具选择原则**
+1. 参数值必须从用户消息或上下文中提取，禁止编造不存在的信息
+2. 可以同时调用多个工具来满足复合查询需求"""
 
 
 @dataclass
@@ -37,6 +37,14 @@ class ToolCallRequest:
     tool_name: str
     parameters: dict[str, Any] = field(default_factory=dict)
     reason: str = ""
+
+
+@dataclass
+class ToolSelectionResult:
+    """工具选择结果，包含调用请求和 LLM 的选择理由。"""
+
+    calls: list[ToolCallRequest] = field(default_factory=list)
+    reason: str = ""  # LLM 的选择/拒绝理由（无论是否选择了工具）
 
 
 class ToolSelector:
@@ -56,7 +64,7 @@ class ToolSelector:
         user_message: str,
         candidate_tool_names: list[str],
         context: str = "",
-    ) -> list[ToolCallRequest]:
+    ) -> ToolSelectionResult:
         """使用 Native Function Calling 选择工具并生成参数。
 
         Args:
@@ -65,16 +73,16 @@ class ToolSelector:
             context: 上下文信息（已有工具结果、会话历史等）。
 
         Returns:
-            LLM 选择的工具调用请求列表。LLM 失败时返回空列表。
+            ToolSelectionResult，包含工具调用列表和 LLM 的选择理由。
         """
         if not user_message:
-            return []
+            return ToolSelectionResult(reason="工具查询消息为空")
 
         # 从 registry 获取候选 BaseTool 对象
         candidate_tools = registry.list_by_names(candidate_tool_names)
         if not candidate_tools:
             logger.info("ToolSelector: 无有效候选工具")
-            return []
+            return ToolSelectionResult(reason="无有效候选工具")
 
         # 通过 bind_tools 将候选工具绑定到 LLM（Native Function Calling）
         llm_with_tools = self._llm.bind_tools(candidate_tools)
@@ -94,7 +102,7 @@ class ToolSelector:
             return self._parse_tool_calls(response)
         except Exception:
             logger.exception("工具选择 LLM 调用失败")
-            return []
+            return ToolSelectionResult(reason="工具选择 LLM 调用失败")
 
     @staticmethod
     def _extract_reason(response: Any) -> str:
@@ -102,17 +110,18 @@ class ToolSelector:
         content = getattr(response, "content", "")
         return content if isinstance(content, str) else ""
 
-    def _parse_tool_calls(self, response: Any) -> list[ToolCallRequest]:
+    def _parse_tool_calls(self, response: Any) -> ToolSelectionResult:
         """从 AIMessage.tool_calls 解析工具调用请求。
 
         LangChain 自动将 Native Function Calling 的返回解析为
         tool_calls 列表，每项包含 name、args、id。
+        当 LLM 未选择任何工具时，content 中通常包含拒绝原因。
         """
-        tool_calls = getattr(response, "tool_calls", None) or []
-        if not tool_calls:
-            return []
-
         reason = self._extract_reason(response)
+        tool_calls = getattr(response, "tool_calls", None) or []
+
+        if not tool_calls:
+            return ToolSelectionResult(reason=reason or "LLM 未选择任何工具")
 
         results: list[ToolCallRequest] = []
         for tc in tool_calls:
@@ -127,4 +136,4 @@ class ToolSelector:
                 args = {}
             results.append(ToolCallRequest(tool_name=name, parameters=args, reason=reason))
 
-        return results
+        return ToolSelectionResult(calls=results, reason=reason)

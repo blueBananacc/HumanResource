@@ -15,6 +15,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from human_resource.agents.orchestrator import (
+    _collect_prior_context,
     _parse_decision,
     generate_response_node,
     intent_hints_node,
@@ -24,12 +25,13 @@ from human_resource.agents.orchestrator import (
     rag_node,
     register_default_tools,
     tool_node,
+    _generate_skill_proposal,
 )
 from human_resource.schemas.models import (
     RetrievalResult,
     ToolResult,
 )
-from human_resource.tools.selector import ToolCallRequest
+from human_resource.tools.selector import ToolCallRequest, ToolSelectionResult
 
 
 # ── IntentAnalyzer 测试 ──────────────────────────────────────
@@ -266,7 +268,7 @@ class TestLoadContextNode:
         assert "memory_context" in result
         assert result["memory_context"] == []
         assert result["loop_count"] == 0
-        assert result["max_loops"] == 5
+        assert result["max_loops"] == 10
 
 
 class TestRagNode:
@@ -314,16 +316,21 @@ class TestToolNode:
             "tool_results": [],
         }
         result = tool_node(state)
-        assert result["tool_results"] == []
+        assert len(result["tool_results"]) == 1
+        assert result["tool_results"][0].success is False
+        assert "查询内容为空" in result["tool_results"][0].error
 
     @patch("human_resource.agents.orchestrator._get_tool_selector")
     def test_executes_lookup_employee(self, mock_get_selector):
         """ToolSelector 选择工具并生成参数。"""
         register_default_tools()
         mock_selector = MagicMock()
-        mock_selector.select.return_value = [
-            ToolCallRequest(tool_name="lookup_employee", parameters={"query": "张三"}),
-        ]
+        mock_selector.select.return_value = ToolSelectionResult(
+            calls=[
+                ToolCallRequest(tool_name="lookup_employee", parameters={"query": "张三"}),
+            ],
+            reason="用户查询员工信息",
+        )
         mock_get_selector.return_value = mock_selector
 
         state = {
@@ -341,7 +348,9 @@ class TestToolNode:
         """ToolSelector 返回空列表时，不执行任何工具。"""
         register_default_tools()
         mock_selector = MagicMock()
-        mock_selector.select.return_value = []
+        mock_selector.select.return_value = ToolSelectionResult(
+            calls=[], reason="该请求是闲聊，不需要工具",
+        )
         mock_get_selector.return_value = mock_selector
 
         state = {
@@ -350,7 +359,9 @@ class TestToolNode:
             "tool_results": [],
         }
         result = tool_node(state)
-        assert result["tool_results"] == []
+        assert len(result["tool_results"]) == 1
+        assert result["tool_results"][0].success is False
+        assert "闲聊" in result["tool_results"][0].error
 
 
 class TestGenerateResponseNode:
@@ -406,8 +417,15 @@ class TestGenerateResponseNode:
         assert result["final_response"] is not None
         assert isinstance(result["messages"][0], AIMessage)
 
-    def test_unknown_no_context_returns_fallback(self):
+    @patch("human_resource.agents.orchestrator.get_llm")
+    def test_unknown_no_context_returns_fallback(self, mock_get_llm):
         """无任何上下文 + unknown 意图提示时返回友好提示。"""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(
+            content="抱歉，我暂时无法理解您的问题。作为 HR 助手，我可以帮助您咨询政策、查询员工信息、了解流程等。"
+        )
+        mock_get_llm.return_value = mock_llm
+
         state = {
             "messages": [HumanMessage(content="xyz随机内容")],
             "orchestrator_action": "answer",
@@ -418,8 +436,10 @@ class TestGenerateResponseNode:
             "memory_context": [],
         }
         result = generate_response_node(state)
-        assert "无法理解" in result["final_response"]
-        assert "联系 HR" in result["final_response"]
+        assert result["final_response"] is not None
+        assert isinstance(result["messages"][0], AIMessage)
+        # 确认使用了专用 unknown 回复而非普通回复
+        mock_get_llm.assert_called_with("response_simple")
 
 
 class TestPostProcessNode:
@@ -566,3 +586,234 @@ class TestGraphCompilation:
         })
 
         assert result.get("final_response") == "年假政策是每年15天。"
+
+
+# ── Skill 相关测试 ───────────────────────────────────────────
+
+
+class TestIntentHintsNodeSkill:
+    """测试 intent_hints_node 的 Skill 路由逻辑。"""
+
+    @patch("human_resource.agents.orchestrator._get_intent_analyzer")
+    def test_skill_first_detection_sets_propose(self, mock_get_analyzer):
+        """首次检测到 Skill → orchestrator_action=skill_propose。"""
+        mock_analyzer = MagicMock()
+        mock_analyzer.analyze.return_value = (
+            "理由：用户想搜知乎文章，匹配技能。意图为：skill:zhihu_crawl。首次检测，需提议"
+        )
+        mock_get_analyzer.return_value = mock_analyzer
+
+        state = {
+            "messages": [HumanMessage(content="帮我搜3篇知乎文章")],
+            "session_context": [],
+            "memory_context": [],
+        }
+        result = intent_hints_node(state)
+        assert result["orchestrator_action"] == "skill_propose"
+        assert result["orchestrator_action_input"]["skill_name"] == "zhihu_crawl"
+
+    @patch("human_resource.agents.orchestrator._get_skill_loader")
+    @patch("human_resource.agents.orchestrator._get_intent_analyzer")
+    def test_skill_confirmed_loads_content(self, mock_get_analyzer, mock_get_loader):
+        """用户确认 Skill → 加载完整 SKILL.md 到 active_skill_content。"""
+        mock_analyzer = MagicMock()
+        mock_analyzer.analyze.return_value = (
+            "理由：上下文中有技能提议消息且用户确认。意图为：skill:zhihu_crawl。用户已确认技能"
+        )
+        mock_get_analyzer.return_value = mock_analyzer
+
+        mock_loader = MagicMock()
+        mock_loader.load_content.return_value = "---\nname: zhihu_crawl\n---\n# 知乎搜索"
+        mock_get_loader.return_value = mock_loader
+
+        state = {
+            "messages": [HumanMessage(content="好的")],
+            "session_context": [
+                "assistant: 检测到可以使用「知乎搜索」技能。是否启用？",
+                "user: 好的",
+            ],
+            "memory_context": [],
+        }
+        result = intent_hints_node(state)
+        assert "active_skill_content" in result
+        assert "zhihu_crawl" in result["active_skill_content"]
+        assert "orchestrator_action" not in result  # 不设置 skill_propose
+
+    @patch("human_resource.agents.orchestrator._get_intent_analyzer")
+    def test_skill_rejected_normal_flow(self, mock_get_analyzer):
+        """用户拒绝 Skill → 不输出 skill 意图，正常流程。"""
+        mock_analyzer = MagicMock()
+        mock_analyzer.analyze.return_value = "理由：用户拒绝了技能提议。意图为：chitchat。"
+        mock_get_analyzer.return_value = mock_analyzer
+
+        state = {
+            "messages": [HumanMessage(content="不用了")],
+            "session_context": [
+                "assistant: 检测到可以使用「知乎搜索」技能。是否启用？",
+            ],
+            "memory_context": [],
+        }
+        result = intent_hints_node(state)
+        assert "orchestrator_action" not in result
+        assert "active_skill_content" not in result
+
+    @patch("human_resource.agents.orchestrator._get_skill_loader")
+    @patch("human_resource.agents.orchestrator._get_intent_analyzer")
+    def test_skill_executing_continues_loading(self, mock_get_analyzer, mock_get_loader):
+        """Skill 执行中 → 继续加载完整内容。"""
+        mock_analyzer = MagicMock()
+        mock_analyzer.analyze.return_value = (
+            "理由：技能正在执行中。意图为：skill:zhihu_crawl。技能执行中"
+        )
+        mock_get_analyzer.return_value = mock_analyzer
+
+        mock_loader = MagicMock()
+        mock_loader.load_content.return_value = "---\nname: zhihu_crawl\n---\n# 知乎搜索"
+        mock_get_loader.return_value = mock_loader
+
+        state = {
+            "messages": [HumanMessage(content="继续搜索")],
+            "session_context": [],
+            "memory_context": [],
+        }
+        result = intent_hints_node(state)
+        assert "active_skill_content" in result
+
+
+class TestGenerateSkillProposal:
+    """测试 _generate_skill_proposal 技能提议消息生成。"""
+
+    @patch("human_resource.agents.orchestrator._get_skill_loader")
+    def test_generates_proposal_with_description(self, mock_get_loader):
+        from human_resource.skills.loader import SkillMetadata
+
+        mock_loader = MagicMock()
+        mock_loader.get_metadata_list.return_value = [
+            SkillMetadata(name="zhihu_crawl", description="在知乎搜索文章", path="/tmp"),
+        ]
+        mock_get_loader.return_value = mock_loader
+
+        state = {
+            "orchestrator_action_input": {"skill_name": "zhihu_crawl"},
+        }
+        result = _generate_skill_proposal(state)
+        assert "在知乎搜索文章" in result["final_response"]
+        assert "是否启用" in result["final_response"]
+
+    @patch("human_resource.agents.orchestrator._get_skill_loader")
+    def test_generates_proposal_fallback(self, mock_get_loader):
+        """找不到描述时使用 skill_name 作为提示。"""
+        mock_loader = MagicMock()
+        mock_loader.get_metadata_list.return_value = []
+        mock_get_loader.return_value = mock_loader
+
+        state = {
+            "orchestrator_action_input": {"skill_name": "unknown_skill"},
+        }
+        result = _generate_skill_proposal(state)
+        assert "unknown_skill" in result["final_response"]
+        assert "是否启用" in result["final_response"]
+
+    def test_skill_propose_action_routes_to_proposal(self):
+        """generate_response_node 收到 skill_propose 时调用 _generate_skill_proposal。"""
+        with patch("human_resource.agents.orchestrator._generate_skill_proposal") as mock_proposal:
+            mock_proposal.return_value = {
+                "final_response": "检测到技能",
+                "messages": [AIMessage(content="检测到技能")],
+            }
+            state = {
+                "messages": [HumanMessage(content="搜知乎")],
+                "orchestrator_action": "skill_propose",
+            }
+            result = generate_response_node(state)
+            mock_proposal.assert_called_once()
+            assert result["final_response"] == "检测到技能"
+
+
+class TestIntentRouter:
+    """测试 _intent_router 条件路由。"""
+
+    def test_skill_propose_routes_to_generate_response(self):
+        from human_resource.agents.graph import _intent_router
+        state = {"orchestrator_action": "skill_propose"}
+        assert _intent_router(state) == "generate_response"
+
+    def test_normal_routes_to_orchestrator(self):
+        from human_resource.agents.graph import _intent_router
+        state = {"orchestrator_action": None}
+        assert _intent_router(state) == "orchestrator_decision"
+
+    def test_no_action_routes_to_orchestrator(self):
+        from human_resource.agents.graph import _intent_router
+        state = {}
+        assert _intent_router(state) == "orchestrator_decision"
+
+
+class TestOrchestratorSkillInjection:
+    """测试 orchestrator_decision_node 的 Skill 指令注入。"""
+
+    @patch("human_resource.agents.orchestrator.get_llm")
+    def test_skill_content_injected_into_prompt(self, mock_get_llm):
+        """当 active_skill_content 存在时，prompt 包含 Skill 指令。"""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(
+            content='{"reasoning": "执行技能步骤", "action": "tool", "action_input": {"query": "搜知乎"}}'
+        )
+        mock_get_llm.return_value = mock_llm
+
+        state = {
+            "messages": [HumanMessage(content="搜3篇机器学习文章")],
+            "intent_hints": "skill:zhihu_crawl，用户已确认技能",
+            "active_skill_content": "---\nname: zhihu_crawl\n---\n# 知乎搜索",
+            "loop_count": 0,
+            "max_loops": 5,
+        }
+        orchestrator_decision_node(state)
+
+        # 验证 prompt 中包含 Skill 指令
+        call_args = mock_llm.invoke.call_args[0][0]
+        prompt_text = call_args[0].content if hasattr(call_args[0], 'content') else str(call_args)
+        assert "当前激活技能" in prompt_text
+        assert "zhihu_crawl" in prompt_text
+
+
+class TestCollectPriorContextSkill:
+    """测试 _collect_prior_context 对 active_skill_content 的注入。"""
+
+    def test_skill_content_included_in_context(self):
+        """active_skill_content 存在时，应出现在聚合上下文中。"""
+        state = {
+            "active_skill_content": "---\nname: zhihu_crawl\n---\n# 知乎搜索\n使用 firecrawl 工具",
+            "tool_results": [],
+            "memory_context": [],
+            "session_context": [],
+        }
+        ctx = _collect_prior_context(state)
+        assert "当前激活技能指令" in ctx
+        assert "zhihu_crawl" in ctx
+        assert "firecrawl" in ctx
+
+    def test_skill_content_placed_first(self):
+        """Skill 指令应排在聚合上下文的最前面。"""
+        state = {
+            "active_skill_content": "---\nname: test_skill\n---\n# Test",
+            "tool_results": [
+                ToolResult(success=True, data={}, formatted="工具返回结果"),
+            ],
+            "memory_context": ["用户偏好中文"],
+            "session_context": [],
+        }
+        ctx = _collect_prior_context(state)
+        skill_pos = ctx.index("当前激活技能指令")
+        tool_pos = ctx.index("工具返回结果")
+        assert skill_pos < tool_pos
+
+    def test_no_skill_content_no_injection(self):
+        """无 active_skill_content 时，上下文不包含技能段。"""
+        state = {
+            "tool_results": [],
+            "memory_context": [],
+            "session_context": [],
+        }
+        ctx = _collect_prior_context(state)
+        assert "当前激活技能指令" not in ctx

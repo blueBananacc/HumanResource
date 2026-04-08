@@ -168,7 +168,7 @@ class TestExecuteTool:
         result = execute_tool("ghost", {"x": 1})
         assert result.success is False
         assert result.tool_name == "ghost"
-        assert "未找到工具" in result.error
+        assert "未找到工具" in result.error and "ghost" in result.error
 
     def test_execute_tool_failure(self):
         """工具执行抛异常时返回失败结果。"""
