@@ -42,9 +42,9 @@ class TestSessionMessage:
         assert msg.metadata == {}
 
     def test_custom_metadata(self):
-        meta = {"intent_label": "policy_qa", "tools_used": ["lookup"]}
+        meta = {"intent_label": "info_query", "tools_used": ["lookup"]}
         msg = SessionMessage(role="user", content="查询", metadata=meta)
-        assert msg.metadata["intent_label"] == "policy_qa"
+        assert msg.metadata["intent_label"] == "info_query"
 
 
 # ── Session 数据模型测试 ─────────────────────────────────────
@@ -113,17 +113,17 @@ class TestSessionMemoryOps:
         assert history[1].content == "你好！有什么帮助？"
 
     def test_append_with_metadata(self):
-        meta = {"intent_label": "policy_qa", "tools_used": []}
+        meta = {"intent_label": "info_query", "tools_used": []}
         self.sm.append("s1", "user", "年假政策", metadata=meta)
         history = self.sm.get_history("s1")
-        assert history[0].metadata["intent_label"] == "policy_qa"
+        assert history[0].metadata["intent_label"] == "info_query"
 
     def test_append_records_intent_history(self):
         self.sm.append("s1", "user", "q1", metadata={"intent_label": "chitchat"})
         self.sm.append("s1", "assistant", "a1")
-        self.sm.append("s1", "user", "q2", metadata={"intent_label": "policy_qa"})
+        self.sm.append("s1", "user", "q2", metadata={"intent_label": "info_query"})
         session = self.sm.get_or_create("s1")
-        assert session.intent_history == ["chitchat", "policy_qa"]
+        assert session.intent_history == ["chitchat", "info_query"]
 
     def test_append_no_metadata_no_intent_history(self):
         self.sm.append("s1", "user", "q1")

@@ -400,7 +400,7 @@ _ORCHESTRATOR_DECISION_PROMPT = """\
 
 ## 可用动作
 - rag: 从 HR 文档库检索相关政策/流程信息。action_input 需包含 {{"query": "检索查询"}}
-- tool: 调用工具查询具体数据（员工信息、假期余额、流程步骤等）。action_input 需包含 {{"query": "用户需求描述"}}
+- tool: 调用工具查询具体数据（员工信息、假期余额等）或执行特定功能。action_input 需包含 {{"query": "用户需求描述"}}
 - memory: 从长期记忆中检索用户相关的历史信息。action_input 需包含 {{"query": "记忆检索查询"}}
 - answer: 信息已充足，生成最终回复。action_input 为 {{}}
 - clarify: 信息不足且无法通过工具/RAG/记忆获取，需要向用户澄清。action_input 为 {{}}
@@ -545,6 +545,45 @@ def orchestrator_decision_node(state: AgentState) -> dict[str, Any]:
     }
 
 
+def _classify_collection(query: str) -> str:
+    """使用 LLM 判断查询应该检索哪个 collection。
+
+    对 info_query 类查询，根据内容判断是政策类（policy_collection）
+    还是流程类（sop_collection）。
+
+    Args:
+        query: 用户查询（可能已改写）。
+
+    Returns:
+        collection 名称。
+    """
+    from human_resource.config import DEFAULT_COLLECTION, POLICY_COLLECTION, SOP_COLLECTION
+
+    prompt = (
+        "你是一个分类助手。请判断以下查询应该在哪个文档库中检索。\n\n"
+        "可选类别：\n"
+        "- policy: HR 政策、制度、规定类（如年假政策、薪资规定、福利制度、考勤制度等）\n"
+        "- sop: HR 流程、操作步骤类（如请假流程、入职流程、离职流程、报销流程等）\n\n"
+        f"查询: {query}\n\n"
+        "请只输出一个词：policy 或 sop"
+    )
+
+    try:
+        llm = get_llm("response_simple")
+        response = llm.invoke(prompt)
+        category = str(response.content).strip().lower()
+        if "sop" in category:
+            logger.info("Collection 分类: sop (query=%s)", query[:50])
+            return SOP_COLLECTION
+        if "policy" in category:
+            logger.info("Collection 分类: policy (query=%s)", query[:50])
+            return POLICY_COLLECTION
+    except Exception:
+        logger.exception("Collection 分类失败，使用默认 collection")
+
+    return DEFAULT_COLLECTION
+
+
 def rag_node(state: AgentState) -> dict[str, Any]:
     """Node: RAG Agent 执行。
 
@@ -552,7 +591,7 @@ def rag_node(state: AgentState) -> dict[str, Any]:
     使用 Hybrid Search（Vector + BM25 并行 + RRF）+ Reranker 完整管线。
     查询来自 Orchestrator 决策中心的 action_input。
     """
-    from human_resource.config import DEFAULT_COLLECTION, INTENT_COLLECTION_MAP
+    from human_resource.config import DEFAULT_COLLECTION
     from human_resource.rag.retriever import hybrid_search
 
     messages = state.get("messages", [])
@@ -574,17 +613,11 @@ def rag_node(state: AgentState) -> dict[str, Any]:
     if prior_context:
         query = _rewrite_query_for_rag(query, prior_context)
 
-    # 根据意图提示推断目标 collection
-    collection_name = DEFAULT_COLLECTION
-    intent_hints = state.get("intent_hints") or ""
-    if any(kw in intent_hints for kw in ("process_inquiry", "流程")):
-        collection_name = INTENT_COLLECTION_MAP.get("process_inquiry", DEFAULT_COLLECTION)
-    elif any(kw in intent_hints for kw in ("policy_qa", "政策", "制度", "规定")):
-        collection_name = INTENT_COLLECTION_MAP.get("policy_qa", DEFAULT_COLLECTION)
-    # action_input 可覆盖 collection
-    if "category" in action_input:
-        cat = action_input["category"]
-        collection_name = INTENT_COLLECTION_MAP.get(cat, DEFAULT_COLLECTION)
+    # action_input 可直接指定 collection，否则由 LLM 判断
+    if "collection" in action_input:
+        collection_name = action_input["collection"]
+    else:
+        collection_name = _classify_collection(query)
     logger.info("RAG 目标 collection: %s", collection_name)
 
     try:

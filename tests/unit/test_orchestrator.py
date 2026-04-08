@@ -43,7 +43,7 @@ class TestIntentHintsNode:
     @patch("human_resource.agents.orchestrator._get_intent_analyzer")
     def test_generates_hints(self, mock_get_analyzer):
         mock_analyzer = MagicMock()
-        mock_analyzer.analyze.return_value = "意图为：policy_qa。理由：用户想了解年假政策。"
+        mock_analyzer.analyze.return_value = "意图为：info_query。理由：用户想了解年假政策。"
         mock_get_analyzer.return_value = mock_analyzer
 
         state = {
@@ -53,7 +53,7 @@ class TestIntentHintsNode:
         }
         result = intent_hints_node(state)
         assert result["intent_hints"] is not None
-        assert "policy_qa" in result["intent_hints"]
+        assert "info_query" in result["intent_hints"]
         mock_analyzer.analyze.assert_called_once()
 
     def test_empty_messages_returns_none(self):
@@ -135,7 +135,7 @@ class TestOrchestratorDecisionNode:
 
         state = {
             "messages": [HumanMessage(content="年假政策是什么")],
-            "intent_hints": "意图为：policy_qa",
+            "intent_hints": "意图为：info_query",
             "loop_count": 0,
             "max_loops": 5,
         }
@@ -295,18 +295,32 @@ class TestRagNode:
         call_args = mock_hs.call_args
         assert call_args[0][0] == "年假政策文档"
 
+    @patch("human_resource.agents.orchestrator._classify_collection")
     @patch("human_resource.rag.retriever.hybrid_search")
-    def test_process_inquiry_uses_sop_collection(self, mock_hs):
-        """intent_hints 包含 process_inquiry 时使用 sop_collection。"""
+    def test_llm_classify_collection(self, mock_hs, mock_classify):
+        """rag_node 通过 _classify_collection LLM 判断 collection。"""
         mock_hs.return_value = RetrievalResult(chunks=[])
+        mock_classify.return_value = "sop_collection"
         state = {
             "messages": [HumanMessage(content="请假流程")],
             "orchestrator_action_input": {"query": "请假流程"},
-            "intent_hints": "意图为：process_inquiry。理由：用户想了解请假流程。",
+        }
+        rag_node(state)
+        mock_classify.assert_called_once()
+        call_kwargs = mock_hs.call_args.kwargs
+        assert call_kwargs.get("collection_name") == "sop_collection"
+
+    @patch("human_resource.rag.retriever.hybrid_search")
+    def test_action_input_collection_overrides_llm(self, mock_hs):
+        """action_input 中直接指定 collection 时跳过 LLM 分类。"""
+        mock_hs.return_value = RetrievalResult(chunks=[])
+        state = {
+            "messages": [HumanMessage(content="年假政策")],
+            "orchestrator_action_input": {"query": "年假政策", "collection": "policy_collection"},
         }
         rag_node(state)
         call_kwargs = mock_hs.call_args.kwargs
-        assert call_kwargs.get("collection_name") == "sop_collection"
+        assert call_kwargs.get("collection_name") == "policy_collection"
 
 
 class TestToolNode:
@@ -547,7 +561,7 @@ class TestGraphCompilation:
 
         # 设置 IntentAnalyzer mock
         mock_analyzer = MagicMock()
-        mock_analyzer.analyze.return_value = "意图为：policy_qa。理由：用户想了解年假。"
+        mock_analyzer.analyze.return_value = "意图为：info_query。理由：用户想了解年假。"
         mock_get_analyzer.return_value = mock_analyzer
 
         mock_llm = MagicMock()
@@ -560,6 +574,10 @@ class TestGraphCompilation:
         rewrite_response = MagicMock()
         rewrite_response.content = "年假政策"
 
+        # Collection 分类 (rag_node 内部 _classify_collection 调用)
+        classify_response = MagicMock()
+        classify_response.content = "policy"
+
         # 第2轮决策：已有信息，answer
         decision2 = MagicMock()
         decision2.content = '{"reasoning": "RAG 返回了年假信息，可以回答", "action": "answer", "action_input": {}}'
@@ -568,7 +586,7 @@ class TestGraphCompilation:
         reply_response = MagicMock()
         reply_response.content = "年假政策是每年15天。"
 
-        mock_llm.invoke.side_effect = [decision1, rewrite_response, decision2, reply_response]
+        mock_llm.invoke.side_effect = [decision1, rewrite_response, classify_response, decision2, reply_response]
         mock_get_llm.return_value = mock_llm
 
         mock_hs.return_value = RetrievalResult(chunks=[

@@ -211,8 +211,7 @@ AgentState {
 **意图类别参考（供 Intent Analyzer prompt 使用）**：
 | Intent Label | 描述 |
 |-------------|------|
-| policy_qa | HR 政策问答 |
-| process_inquiry | HR 流程咨询 |
+| info_query | HR 信息查询（政策问答 + 流程咨询，具体 collection 由 RAG 流程内 LLM 判断） |
 | employee_lookup | 员工信息查询 |
 | memory_recall | 回忆之前的对话内容 |
 | skill:\<skill_name\> | 匹配到可用技能（动态，由 SkillLoader 元数据注入） |
@@ -222,9 +221,8 @@ AgentState {
 **关键技术考虑**：
 - 分析方式：使用 LLM prompt（DeepSeek-chat），输入用户消息 + 上下文，输出自然语言提示
 - Intent Hints 输出示例：
-  - "理由：用户想了解年假政策。意图为：policy_qa。"
   - "理由：用户想查询张三的部门信息。意图为：employee_lookup。"
-  - "理由：用户想要了解请假政策和请假流程。意图为：policy_qa + process_inquiry。"
+  - "理由：用户想要了解年假政策和请假流程。意图为：info_query。"
   - "理由：用户想在知乎上搜索文章并获取摘要。意图为：skill:zhihu_crawl。"
 - Multi-intent 处理：Intent Analyzer 在提示中描述多个可能的意图，由 Orchestrator 自行决定处理顺序和方式
 - Fallback：当分析不确定时，Intent Hints 可提示"意图不明确，建议向用户澄清"，但最终由 Orchestrator 决定是否澄清
@@ -395,6 +393,7 @@ Tool Agent 选择 MCP 工具
   - MVP 选择：ChromaDB
   - 存储内容：chunk text + embedding vector + metadata dict
   - Collection 按文档类别分组（policy_collection, sop_collection）
+  - Collection 路由：在 RAG 流程内部由 LLM 根据查询内容判断应检索哪个 collection（政策类 → policy_collection，流程类 → sop_collection）
 
 - **Metadata 设计**：
 {
@@ -915,7 +914,7 @@ main.py (CLI loop)
 ## 6.3 End-to-End Tests
 | 测试场景 | 验证内容 |
 |-----------|----------|
-| Single-turn policy Q&A | 用户问 "年假政策是什么" → 系统正确识别为 policy_qa → RAG 检索到相关文档 → 生成包含政策信息的回答 |
+| Single-turn info query | 用户问 "年假政策是什么" → 系统正确识别为 info_query → RAG 内 LLM 判断路由到 policy_collection → 检索到相关文档 → 生成包含政策信息的回答 |
 | Single-turn employee lookup | 用户问 "查询张三的部门" → 识别为 employee_lookup → Tool Agent 调用 lookup_employee → 返回正确信息 |
 | Multi-turn conversation | 多轮对话中保持上下文：先问 "年假政策"，再问 "那病假呢" → 系统理解 "那" 指代 "政策"，正确检索 |
 | Multi-intent | "查一下我的假期余额，顺便告诉我请假流程" → Orchestrator 自主推理，多轮循环分别调用 Tool Agent 和 RAG Agent → 聚合结果 |
@@ -923,7 +922,7 @@ main.py (CLI loop)
 | Memory persistence | Session A 中告知 "我是研发部的" → Session B 中问 "我的部门" → 长期记忆正确召回 |
 | Skill propose & confirm | 输入 “帮我搜3篇知乎文章” → intent_hints 识别 skill:zhihu_crawl → _intent_router 跳过 Orchestrator → 提议用户确认 → 用户确认 → intent_hints 加载完整 Skill → Orchestrator 按工作流执行 |
 | Skill reject | 输入匹配技能的请求 → 系统提议 → 用户拒绝 → intent_hints LLM 判断拒绝 → 正常意图分析，Orchestrator 正常处理 |
-| Reflexion quality | 对 policy_qa 启用 Reflexion → 验证低质量回答被重新生成，最终回答质量提升 |
+| Reflexion quality | 对 info_query 启用 Reflexion → 验证低质量回答被重新生成，最终回答质量提升 |
 
 # 6.4 测试基础设施
 - LLM Mock：测试中使用 unittest.mock.patch mock ChatOpenAI 调用，返回预设响应，避免 API 依赖和费用

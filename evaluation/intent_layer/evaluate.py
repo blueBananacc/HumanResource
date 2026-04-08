@@ -43,8 +43,7 @@ _RESULTS_PATH = Path(__file__).parent / "results.json"
 
 # IntentAnalyzer 支持的意图类别（与 analyzer.py prompt 保持一致）
 VALID_INTENTS = {
-    "policy_qa",
-    "process_inquiry",
+    "info_query",
     "employee_lookup",
     "memory_recall",
     "chitchat",

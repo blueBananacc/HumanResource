@@ -748,52 +748,104 @@ class TestRagNodeIntegration:
         assert isinstance(result["rag_results"], RetrievalResult)
         assert result["rag_results"].chunks == []
 
+    @patch("human_resource.agents.orchestrator._classify_collection")
     @patch("human_resource.rag.retriever.hybrid_search")
-    def test_rag_node_routes_policy_qa(self, mock_hs):
-        """policy_qa 意图应路由到 policy_collection。"""
+    def test_rag_node_routes_policy_via_llm(self, mock_hs, mock_classify):
+        """政策类查询应由 LLM 路由到 policy_collection。"""
         from langchain_core.messages import HumanMessage
         from human_resource.agents.orchestrator import rag_node
         from human_resource.config import POLICY_COLLECTION
 
         mock_hs.return_value = RetrievalResult(chunks=[])
+        mock_classify.return_value = POLICY_COLLECTION
         state = {
             "messages": [HumanMessage(content="年假政策")],
             "orchestrator_action_input": {"query": "年假政策"},
-            "intent_hints": "意图为：policy_qa。理由：用户询问年假政策。",
         }
         rag_node(state)
+        mock_classify.assert_called_once()
         mock_hs.assert_called_once_with("年假政策", collection_name=POLICY_COLLECTION)
 
+    @patch("human_resource.agents.orchestrator._classify_collection")
     @patch("human_resource.rag.retriever.hybrid_search")
-    def test_rag_node_routes_process_inquiry(self, mock_hs):
-        """process_inquiry 意图应路由到 sop_collection。"""
+    def test_rag_node_routes_sop_via_llm(self, mock_hs, mock_classify):
+        """流程类查询应由 LLM 路由到 sop_collection。"""
         from langchain_core.messages import HumanMessage
         from human_resource.agents.orchestrator import rag_node
         from human_resource.config import SOP_COLLECTION
 
         mock_hs.return_value = RetrievalResult(chunks=[])
+        mock_classify.return_value = SOP_COLLECTION
         state = {
             "messages": [HumanMessage(content="入职流程")],
             "orchestrator_action_input": {"query": "入职流程"},
-            "intent_hints": "意图为：process_inquiry。理由：用户想了解入职流程。",
         }
         rag_node(state)
+        mock_classify.assert_called_once()
         mock_hs.assert_called_once_with("入职流程", collection_name=SOP_COLLECTION)
 
+    @patch("human_resource.agents.orchestrator._classify_collection")
     @patch("human_resource.rag.retriever.hybrid_search")
-    def test_rag_node_default_collection_without_intent(self, mock_hs):
-        """无意图时使用默认 collection。"""
+    def test_rag_node_default_collection_fallback(self, mock_hs, mock_classify):
+        """_classify_collection 返回默认 collection 时使用默认值。"""
         from langchain_core.messages import HumanMessage
         from human_resource.agents.orchestrator import rag_node
         from human_resource.config import DEFAULT_COLLECTION
 
         mock_hs.return_value = RetrievalResult(chunks=[])
+        mock_classify.return_value = DEFAULT_COLLECTION
         state = {
             "messages": [HumanMessage(content="查询")],
             "orchestrator_action_input": {"query": "查询"},
         }
         rag_node(state)
         mock_hs.assert_called_once_with("查询", collection_name=DEFAULT_COLLECTION)
+
+
+# ═══════════════════════════════════════════════════════════════
+# _classify_collection 测试
+# ═══════════════════════════════════════════════════════════════
+
+
+class TestClassifyCollection:
+    """测试 _classify_collection LLM 分类逻辑。"""
+
+    @patch("human_resource.agents.orchestrator.get_llm")
+    def test_classify_policy(self, mock_get_llm):
+        """LLM 返回 policy 时使用 policy_collection。"""
+        from human_resource.agents.orchestrator import _classify_collection
+        from human_resource.config import POLICY_COLLECTION
+
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(content="policy")
+        mock_get_llm.return_value = mock_llm
+
+        result = _classify_collection("年假政策是什么")
+        assert result == POLICY_COLLECTION
+
+    @patch("human_resource.agents.orchestrator.get_llm")
+    def test_classify_sop(self, mock_get_llm):
+        """LLM 返回 sop 时使用 sop_collection。"""
+        from human_resource.agents.orchestrator import _classify_collection
+        from human_resource.config import SOP_COLLECTION
+
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(content="sop")
+        mock_get_llm.return_value = mock_llm
+
+        result = _classify_collection("请假流程怎么走")
+        assert result == SOP_COLLECTION
+
+    @patch("human_resource.agents.orchestrator.get_llm")
+    def test_classify_fallback_on_error(self, mock_get_llm):
+        """LLM 调用失败时使用默认 collection。"""
+        from human_resource.agents.orchestrator import _classify_collection
+        from human_resource.config import DEFAULT_COLLECTION
+
+        mock_get_llm.side_effect = RuntimeError("LLM 不可用")
+
+        result = _classify_collection("查询")
+        assert result == DEFAULT_COLLECTION
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -833,13 +885,11 @@ class TestRAGConfig:
     def test_collection_constants(self):
         from human_resource.config import (
             POLICY_COLLECTION, SOP_COLLECTION, DEFAULT_COLLECTION,
-            INTENT_COLLECTION_MAP, DIR_COLLECTION_MAP,
+            DIR_COLLECTION_MAP,
         )
         assert POLICY_COLLECTION == "policy_collection"
         assert SOP_COLLECTION == "sop_collection"
         assert DEFAULT_COLLECTION == POLICY_COLLECTION
-        assert INTENT_COLLECTION_MAP["policy_qa"] == POLICY_COLLECTION
-        assert INTENT_COLLECTION_MAP["process_inquiry"] == SOP_COLLECTION
         assert DIR_COLLECTION_MAP["policy"] == POLICY_COLLECTION
         assert DIR_COLLECTION_MAP["sop"] == SOP_COLLECTION
 

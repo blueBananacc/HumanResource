@@ -62,12 +62,6 @@ POLICY_COLLECTION = "policy_collection"
 SOP_COLLECTION = "sop_collection"
 DEFAULT_COLLECTION = POLICY_COLLECTION
 
-# 意图 → Collection 映射
-INTENT_COLLECTION_MAP: dict[str, str] = {
-    "policy_qa": POLICY_COLLECTION,
-    "process_inquiry": SOP_COLLECTION,
-}
-
 # 子目录 → Collection 映射（索引用）
 DIR_COLLECTION_MAP: dict[str, str] = {
     "policy": POLICY_COLLECTION,
