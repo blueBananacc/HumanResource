@@ -1,17 +1,16 @@
-# FreeHire - 智能招聘系统
-
-<p align="center">
+# FreeAiHR - AI时代下的人力资源系统
+<p align="left">
   <img src="https://img.shields.io/badge/Java-17-orange" alt="Java">
   <img src="https://img.shields.io/badge/Spring%20Boot-3.2.5-green" alt="Spring Boot">
   <img src="https://img.shields.io/badge/React-18-blue" alt="React">
   <img src="https://img.shields.io/badge/Ant%20Design-5.x-blue" alt="Ant Design">
   <img src="https://img.shields.io/badge/PostgreSQL-16-blue" alt="PostgreSQL">
-  <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License">
+  <img src="https://img.shields.io/badge/License-AGPL-yellow" alt="License">
 </p>
-
+ 
 ## 📖 简介
 
-FreeHire 是一款企业级智能招聘解决方案，支持私有化部署，AI驱动的全流程招聘管理系统。
+AI面试，AI简历，AI人力资源！FreeAiHR 是一款企业级、人工智能时代下的智能招聘解决方案，支持私有化部署，AI驱动的全流程招聘管理系统！
 
 ### ✨ 核心特性
 
@@ -30,7 +29,6 @@ FreeHire 是一款企业级智能招聘解决方案，支持私有化部署，AI
 - MyBatis-Plus (ORM)
 - PostgreSQL (数据库)
 - Redis (缓存)
-- MinIO (文件存储)
 
 ### 前端
 - React 18
@@ -140,7 +138,8 @@ npm run dev
 | 面试管理 | 面试安排、反馈录入 | ✅ |
 | 人才库 | 人才搜索、标签管理 | ✅ |
 | 系统管理 | 用户/角色/部门/AI配置 | ✅ |
-| 招聘官网 | 对外招聘页面、在线投递 | 🚧 |
+| 招聘官网 | 对外招聘页面、在线投递 | ✅ |
+| 社区建设 | 企业人力资源社区建设 | 🚧 |
 
 ## 🤖 AI功能
 
@@ -182,15 +181,59 @@ AI功能包括：
 | 中型 (<500用户) | 4核 | 8GB | 100GB |
 | 大型 (>500用户) | 8核 | 16GB | 200GB+ |
 
-## 📄 License
+## 🤝 部分截图
 
-[MIT License](LICENSE)
+登录页面：
+<img width="1600" height="864" alt="926db4452a465f515ac2a22a4786375a" src="https://github.com/user-attachments/assets/377ab974-7e3a-4c5e-a367-4a4f06b8aa51" />
 
-## 🤝 联系我们
+工作岗位发布界面：
+<img width="1183" height="754" alt="8843a450ab16a0616744eb7a5244beb2" src="https://github.com/user-attachments/assets/6519d671-d7a0-4ae1-98ee-b92d2995f747" />
+
+HR发布岗位界面：
+<img width="1753" height="829" alt="d7731d1f36aa1146c351acfe3bb4ffec" src="https://github.com/user-attachments/assets/13caa020-4917-4aac-87bf-f1716c05af1a" />
+
+工作台界面：
+<img width="1440" height="778" alt="31065121555f4874b08999925bdae5c8" src="https://github.com/user-attachments/assets/82702ca1-a04f-4f68-b463-2a815b247ec6" />
+
+大模型配置界面：
+<img width="2369" height="1280" alt="70a6f9f13f480f631d50564670700f89" src="https://github.com/user-attachments/assets/2dbfcc4a-88d3-49d7-ae8f-19664fe577b6" />
+
+企业个性化界面：
+<img width="1430" height="694" alt="d9ef22a0099c7e6239f62b957075db81" src="https://github.com/user-attachments/assets/eeb8ba0b-4149-4027-a5e0-7a2a145cd3cb" />
+
+
+
+## 🤝 欢迎使用我们团队的大模型呼叫中心
+
+可访问：
+www.freeaicc.com 
+www.freeipcc.com
+
+有三个版本：
+1. 外呼系统
+2. 呼入系统
+3. 大模型呼叫中心系统（呼入与呼出）
+
+## 🤝 联系客服小编
+
+通过网盘分享的文件：freeaihr源码包.zip
+链接: https://pan.baidu.com/s/1pt1tlACaoVZkkaIVIKRBOQ?pwd=dh9r 提取码: dh9r 
+--来自百度网盘超级会员v9的分享
+
+
+点击Star后，入群讨论：
+
+<img width="885" height="1488" alt="ad74d7ed5cbf9332d8752b3d50d2e15c" src="https://github.com/user-attachments/assets/f3f5605f-4421-4c74-aa03-ef3cccfbf85c" />
+
+扫码添加客服小编微信
+![0e1483a4df22e1f6c8ec5404ee86a7f0](https://github.com/user-attachments/assets/d0b5edf3-aefd-4631-a073-5c95f30bc945)
 
 如有问题或建议，欢迎提交 Issue 或 Pull Request。
 
+另：
+由于开源协议为AGPL，如希望不遵守该协议，1k-2k转账即可（备注公司名称、个人姓名等标识信息）。
+
 ---
 
-<p align="center">Made with ❤️ by FreeHire Team</p>
+<p align="center">Made with ❤️ by FreeAiHR Team</p>
 
