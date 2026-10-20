@@ -132,7 +132,7 @@ function Card({
   children: React.ReactNode;
 }) {
   return (
-    <section className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6 flex flex-col gap-4">
+    <section className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-4">
       <div className="flex items-start gap-3">
         <div className="w-9 h-9 rounded-full bg-[var(--color-bg-subtle)] flex items-center justify-center shrink-0">
           <Icon className="w-4 h-4 text-[var(--color-accent)]" />

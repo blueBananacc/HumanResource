@@ -10,7 +10,7 @@ import { CandidateLayout } from "@/pages/CandidateInvite";
 export function CandidateDone() {
   return (
     <CandidateLayout>
-      <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-8 flex flex-col items-center text-center gap-3">
+      <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-8 flex flex-col items-center text-center gap-3">
         <div className="w-12 h-12 rounded-full bg-[var(--color-success-soft)] text-[var(--color-success)] flex items-center justify-center">
           <CheckCircle2 className="w-6 h-6" />
         </div>

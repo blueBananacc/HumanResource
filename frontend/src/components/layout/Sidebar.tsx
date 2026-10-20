@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
   FileText,
@@ -17,13 +17,40 @@ import {
   BookOpen,
   TrendingUp,
   Users,
-  Ellipsis,
-  LogOut,
+  ChevronsLeft,
+  ChevronsRight,
+  CircleHelp,
+  Headset,
+  Rocket,
+  ExternalLink,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
-import { PERM, formatRoleLabel, type AppPermission } from "@/lib/roles";
+import { PERM, type AppPermission } from "@/lib/roles";
+
+// 帮助菜单链接。私有化部署时可替换为客户自己的客服 / 文档地址。
+const REPO = "https://github.com/blueBananacc/HumanResource";
+const helpLinks: { label: string; desc: string; href: string; icon: LucideIcon }[] = [
+  {
+    label: "使用手册",
+    desc: "功能说明与常见操作",
+    href: `${REPO}/blob/main/docs/ops/customer-guide.md`,
+    icon: BookOpen,
+  },
+  {
+    label: "快速入门",
+    desc: "部署与首次配置",
+    href: `${REPO}/blob/main/docs/ops/quickstart.md`,
+    icon: Rocket,
+  },
+  {
+    label: "联系客服",
+    desc: "提交问题或建议",
+    href: `${REPO}/issues`,
+    icon: Headset,
+  },
+];
 
 type NavDef = {
   to: string;
@@ -60,31 +87,41 @@ const sysNav: NavDef[] = [
   { to: "/settings/audit", label: "审计中心", icon: ShieldCheck, adminOnly: true },
 ];
 
-function NavRow({ to, label, icon: Icon }: NavDef) {
+function NavRow({ to, label, icon: Icon, collapsed }: NavDef & { collapsed: boolean }) {
   return (
     <NavLink
       to={to}
       end={to === "/"}
+      title={collapsed ? label : undefined}
       className={({ isActive }) =>
         cn(
-          "flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors font-body",
+          "relative flex items-center gap-3 py-2 rounded-md text-sm font-body transition-colors duration-200",
+          collapsed ? "justify-center px-0" : "px-3",
           isActive
-            ? "bg-[var(--color-bg-subtle)] text-[var(--color-text-primary)] font-semibold"
-            : "text-[var(--color-text-secondary)] font-medium hover:bg-[var(--color-bg-muted)]",
+            ? "bg-[var(--color-brand-active)] text-white font-bold before:absolute before:left-[-8px] before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-full before:bg-[var(--color-orange)]"
+            : "text-[var(--color-brand-text)] hover:bg-[var(--color-brand-hover)] hover:text-white",
         )
       }
     >
-      <Icon className="w-4 h-4" />
-      <span>{label}</span>
+      <Icon className="w-[18px] h-[18px] shrink-0" />
+      {!collapsed && <span className="truncate">{label}</span>}
     </NavLink>
   );
 }
 
+const COLLAPSE_KEY = "hronfire.sidebar.collapsed";
+
 export function Sidebar() {
-  const { user, logout, hasPermission } = useAuth();
-  const navigate = useNavigate();
+  const { user, hasPermission } = useAuth();
   const [openMenu, setOpenMenu] = useState(false);
-  const initials = user?.email.slice(0, 2).toUpperCase() ?? "—";
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem(COLLAPSE_KEY) === "1",
+  );
+  const toggleCollapsed = () =>
+    setCollapsed((v) => {
+      localStorage.setItem(COLLAPSE_KEY, v ? "0" : "1");
+      return !v;
+    });
   const isAdmin = user?.role === "admin";
 
   const filterNav = (items: NavDef[]) =>
@@ -98,66 +135,91 @@ export function Sidebar() {
   const visibleSysNav = filterNav(sysNav);
 
   return (
-    <aside className="w-[240px] h-full bg-white border-r border-[var(--color-border-subtle)] flex flex-col px-4 py-5 shrink-0">
-      <div className="flex items-center gap-2.5 px-2 py-2 shrink-0">
-        <div className="w-7 h-7 rounded-md bg-[var(--color-accent)] text-white font-heading font-bold text-sm flex items-center justify-center">
-          F
-        </div>
-        <span className="font-heading font-semibold text-base">Free-Hire</span>
-      </div>
-      <nav className="flex-1 overflow-y-auto flex flex-col gap-1 mt-4 -mx-1 px-1">
-        <div className="px-3 py-1 text-[11px] font-medium text-[var(--color-text-tertiary)] tracking-wider font-body">
-          工作台
-        </div>
+    <aside
+      className={cn(
+        "h-full bg-[var(--color-brand)] flex flex-col py-4 shrink-0 transition-[width] duration-300 ease-[var(--ease-bob)]",
+        collapsed ? "w-[64px] px-2" : "w-[220px] px-3",
+      )}
+    >
+      <nav className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col gap-0.5 -mx-1 px-1">
+        <SectionLabel collapsed={collapsed}>工作台</SectionLabel>
         {visibleMainNav.map((it) => (
-          <NavRow key={it.to} {...it} />
+          <NavRow key={it.to} {...it} collapsed={collapsed} />
         ))}
         <div className="h-4" />
-        <div className="px-3 py-1 text-[11px] font-medium text-[var(--color-text-tertiary)] tracking-wider font-body">
-          系统
-        </div>
+        <SectionLabel collapsed={collapsed}>系统</SectionLabel>
         {visibleSysNav.map((it) => (
-          <NavRow key={it.to} {...it} />
+          <NavRow key={it.to} {...it} collapsed={collapsed} />
         ))}
       </nav>
 
-      {/* 用户区 — 点击展开"登出"菜单 */}
-      <div className="relative shrink-0 mt-1">
+      <button
+        type="button"
+        onClick={toggleCollapsed}
+        title={collapsed ? "展开导航" : "收起导航"}
+        className={cn(
+          "flex items-center gap-3 py-2 mt-2 rounded-md text-[13px] font-body text-white/60 hover:text-white hover:bg-[var(--color-brand-hover)] transition-colors",
+          collapsed ? "justify-center" : "px-3",
+        )}
+      >
+        {collapsed ? (
+          <ChevronsRight className="w-[18px] h-[18px]" />
+        ) : (
+          <>
+            <ChevronsLeft className="w-[18px] h-[18px]" />
+            收起导航
+          </>
+        )}
+      </button>
+
+      {/* 帮助入口 — 账号信息已在顶栏右上角,这里只放帮助与支持 */}
+      <div className="relative shrink-0 mt-1 pt-2 border-t border-white/10">
         <button
           type="button"
           onClick={() => setOpenMenu((v) => !v)}
-          className="flex items-center gap-2.5 px-2 py-2 rounded-lg w-full hover:bg-[var(--color-bg-muted)] transition-colors text-left"
+          title={collapsed ? "帮助与支持" : undefined}
+          aria-label="帮助与支持"
+          aria-expanded={openMenu}
+          className={cn(
+            "flex items-center gap-3 py-2 rounded-md w-full text-[13px] font-body text-white/80 hover:text-white hover:bg-[var(--color-brand-hover)] transition-colors",
+            collapsed ? "justify-center px-0" : "px-3",
+            openMenu && "bg-[var(--color-brand-active)] text-white",
+          )}
         >
-          <div className="w-8 h-8 rounded-full bg-[var(--color-bg-subtle)] flex items-center justify-center text-xs font-heading font-semibold">
-            {initials}
-          </div>
-          <div className="flex flex-col flex-1 min-w-0">
-            <span className="text-[13px] font-medium truncate font-body">
-              {user?.email ?? "未登录"}
-            </span>
-            <span className="text-[11px] text-[var(--color-text-tertiary)] font-body">
-              {formatRoleLabel(user?.role)}
-            </span>
-          </div>
-          <Ellipsis className="w-4 h-4 text-[var(--color-text-tertiary)] shrink-0" />
+          <CircleHelp className="w-[18px] h-[18px] shrink-0" />
+          {!collapsed && "帮助与支持"}
         </button>
         {openMenu && (
           <div
-            className="absolute bottom-[calc(100%+6px)] left-0 right-0 z-40 bg-white rounded-xl border border-[var(--color-border-subtle)] shadow-[0_8px_24px_rgba(15,17,21,0.08)] overflow-hidden"
+            className="absolute bottom-[calc(100%+6px)] left-0 w-[240px] z-40 bg-white rounded-xl border border-[var(--color-border-subtle)] shadow-[0_8px_24px_rgba(58,58,55,0.14)] overflow-hidden py-1.5"
             onClick={(e) => e.stopPropagation()}
           >
-            <button
-              type="button"
-              onClick={() => {
-                setOpenMenu(false);
-                logout();
-                navigate("/login", { replace: true });
-              }}
-              className="flex items-center gap-2 w-full px-4 py-2.5 text-[13px] text-[var(--color-text-primary)] hover:bg-[var(--color-bg-muted)] font-body transition-colors"
-            >
-              <LogOut className="w-4 h-4" />
-              登出
-            </button>
+            <div className="px-4 pt-1.5 pb-2 text-[11px] font-bold tracking-[0.12em] text-[var(--color-text-tertiary)] font-body">
+              帮助与支持
+            </div>
+            {helpLinks.map(({ label, desc, href, icon: Icon }) => (
+              <a
+                key={label}
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setOpenMenu(false)}
+                className="group flex items-center gap-3 px-4 py-2.5 hover:bg-[var(--color-bg-muted)] transition-colors"
+              >
+                <span className="w-8 h-8 rounded-full bg-[var(--color-accent-soft)] text-[var(--color-accent)] grid place-items-center shrink-0">
+                  <Icon className="w-4 h-4" />
+                </span>
+                <span className="flex flex-col flex-1 min-w-0">
+                  <span className="text-[13px] font-bold text-[var(--color-text-primary)] font-body">
+                    {label}
+                  </span>
+                  <span className="text-[11px] text-[var(--color-text-tertiary)] font-body">
+                    {desc}
+                  </span>
+                </span>
+                <ExternalLink className="w-3.5 h-3.5 text-[var(--color-text-tertiary)] opacity-0 group-hover:opacity-100 transition-opacity" />
+              </a>
+            ))}
           </div>
         )}
       </div>
@@ -170,5 +232,15 @@ export function Sidebar() {
         />
       )}
     </aside>
+  );
+}
+
+function SectionLabel({ collapsed, children }: { collapsed: boolean; children: string }) {
+  return collapsed ? (
+    <div className="mx-3 my-2 h-px bg-white/15" />
+  ) : (
+    <div className="px-3 py-1 text-[11px] font-bold text-white/50 tracking-[0.12em] uppercase font-body">
+      {children}
+    </div>
   );
 }

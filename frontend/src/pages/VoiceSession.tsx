@@ -319,7 +319,7 @@ function QuestionCard({
   }, [turn.id, onTtsEnded]);
 
   return (
-    <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6 flex flex-col gap-3">
+    <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-3">
       <div className="flex items-center gap-2">
         <span className="text-[11px] font-mono text-[var(--color-text-tertiary)]">
           第 {turn.idx} 题
@@ -354,7 +354,7 @@ function QuestionCard({
 
 function WaitingForNext({ isLast }: { isLast: boolean }) {
   return (
-    <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-8 flex flex-col items-center gap-3 text-center">
+    <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-8 flex flex-col items-center gap-3 text-center">
       <div className="inline-flex gap-1">
         <span className="w-2 h-2 rounded-full bg-[var(--color-text-tertiary)] animate-bounce [animation-delay:0ms]" />
         <span className="w-2 h-2 rounded-full bg-[var(--color-text-tertiary)] animate-bounce [animation-delay:150ms]" />

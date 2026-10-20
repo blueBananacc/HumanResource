@@ -150,7 +150,7 @@ export function CandidateInvite() {
           />
 
           {isVoice && (
-            <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-5 flex flex-col gap-3">
+            <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-5 flex flex-col gap-3">
               <div className="flex items-center gap-2 text-[13px] font-medium text-[var(--color-text-primary)] font-body">
                 <Mic className="w-4 h-4 text-[var(--color-text-secondary)]" />
                 录音同意
@@ -172,7 +172,7 @@ export function CandidateInvite() {
           )}
 
           {data.need_verify && (
-            <div className="flex flex-col gap-2 bg-white border border-[var(--color-border-subtle)] rounded-2xl p-5">
+            <div className="flex flex-col gap-2 bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-5">
               <div className="flex items-center gap-2 text-[13px] font-medium text-[var(--color-text-primary)] font-body">
                 <Lock className="w-4 h-4 text-[var(--color-text-secondary)]" />
                 身份核对
@@ -239,7 +239,7 @@ function Rules({
   singleTurnSeconds: number;
 }) {
   return (
-    <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-5 flex flex-col gap-3">
+    <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-5 flex flex-col gap-3">
       <RuleRow label="共" value={`${count} 道题`} />
       <RuleRow label="形式" value={modality === "voice" ? "语音录音作答" : "文字作答"} />
       {modality === "voice" && (
@@ -307,7 +307,7 @@ export function CandidateError({
   desc: string;
 }) {
   return (
-    <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-8 text-center flex flex-col gap-2">
+    <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-8 text-center flex flex-col gap-2">
       <h2 className="font-heading font-semibold text-lg text-[var(--color-text-primary)]">
         {title}
       </h2>

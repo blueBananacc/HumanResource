@@ -302,7 +302,7 @@ export function VoiceSettings() {
 
       <form
         onSubmit={onSubmit}
-        className="flex flex-col gap-6 bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6"
+        className="flex flex-col gap-6 bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6"
       >
         {/* STT */}
         <Section icon={<Mic className="w-4 h-4" />} title="STT(语音转文字)">

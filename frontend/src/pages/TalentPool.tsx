@@ -106,7 +106,7 @@ export function TalentPool() {
         </Button>
       </div>
 
-      <section className="bg-white border border-[var(--color-border-subtle)] rounded-2xl overflow-hidden">
+      <section className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
         <div className="px-6 py-4 border-b border-[var(--color-border-subtle)] flex flex-wrap items-center gap-3">
           <SearchInput
             value={inputQ}

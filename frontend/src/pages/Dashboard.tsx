@@ -1,8 +1,10 @@
 import { Sparkles, FileText } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
+import { BrandShape } from "@/components/brand/BrandShape";
 import { Button } from "@/components/ui/button";
 import { fetchJSON } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { formatRelative } from "@/lib/format";
 
 type LicenseStatus = {
@@ -28,6 +30,7 @@ type Resume = {
 type Job = { id: string; title: string; status: string };
 
 export function Dashboard() {
+  const { user } = useAuth();
   const { data: lic } = useQuery({
     queryKey: ["license-status"],
     queryFn: () => fetchJSON<LicenseStatus>("/api/license/status"),
@@ -61,12 +64,16 @@ export function Dashboard() {
   const allJobsCount = allJobsPage?.total ?? 0;
 
   return (
-    <main className="p-8 flex flex-col gap-6 max-w-[1200px] mx-auto w-full">
+    <main className="flex flex-col w-full">
+      <HomeBanner name={user?.email.split("@")[0] ?? ""} />
+      <div className="px-8 pb-8 -mt-10 relative flex flex-col gap-6 max-w-[1200px] mx-auto w-full">
       {lic && lic.source === "trial" && (
-        <div className="flex items-center gap-4 p-5 rounded-xl bg-[var(--color-warning-soft)] border border-[var(--color-warning-stroke)]">
-          <Sparkles className="w-5 h-5 text-[var(--color-warning)] shrink-0" />
+        <div className="flex items-center gap-4 p-5 rounded-xl bg-[var(--color-bg-muted)] border border-[var(--color-orange-tint)] shadow-[var(--shadow-card)]">
+          <div className="w-9 h-9 rounded-full bg-[var(--color-orange)] grid place-items-center shrink-0">
+            <Sparkles className="w-[18px] h-[18px] text-white" />
+          </div>
           <div className="flex flex-col gap-0.5 flex-1 min-w-0">
-            <span className="font-heading font-semibold text-sm">
+            <span className="font-heading font-semibold text-[15px]">
               试用期还剩 {lic.days_remaining} 天
             </span>
             <span className="text-xs text-[var(--color-text-secondary)] font-body">
@@ -110,7 +117,38 @@ export function Dashboard() {
         <RecentResumes resumes={resumes ?? []} />
         <TodayTodos />
       </div>
+      </div>
     </main>
+  );
+}
+
+function HomeBanner({ name }: { name: string }) {
+  return (
+    <section className="relative h-[200px] overflow-hidden bg-[var(--color-brand)]">
+      <BrandShape kind="circle" color="#FAA32B" className="-top-16 right-[30%] w-[220px] h-[220px]" />
+      <BrandShape kind="star" color="#FFD887" className="top-4 right-[22%] w-[90px] h-[90px] rotate-12" />
+      <BrandShape kind="free" color="#EE164F" className="-top-10 right-[6%] w-[260px] h-[260px]" />
+      <BrandShape kind="triangle" color="#FEABB0" className="top-20 right-[40%] w-[120px] h-[120px] -rotate-12" />
+      <BrandShape kind="arc" color="#F36488" className="-bottom-6 right-[16%] w-[130px] h-[130px]" />
+      <BrandShape kind="rect" color="#60032A" className="-bottom-24 -right-10 w-[220px] h-[220px] rotate-6" />
+      <div className="relative max-w-[1200px] mx-auto px-8 pt-10">
+        <h2 className="font-heading font-bold text-[32px] leading-tight text-white">
+          Hi {name}，很高兴见到你
+        </h2>
+        <p className="mt-2 text-[15px] text-white/80 font-body">
+          今天也一起找到对的人。
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function CardHeader({ title, extra }: { title: string; extra?: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between px-5 pt-4 pb-3">
+      <h3 className="font-body font-bold text-[14px] text-[var(--color-text-primary)]">{title}</h3>
+      {extra}
+    </div>
   );
 }
 
@@ -126,30 +164,23 @@ function Stat({
   deltaClass: string;
 }) {
   return (
-    <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-5 flex flex-col gap-1.5">
+    <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-5 flex flex-col gap-1.5 transition-shadow duration-200 hover:shadow-[var(--shadow-card-hover)]">
       <span className="text-[13px] text-[var(--color-text-secondary)] font-body">
         {label}
       </span>
-      <span className="font-heading font-semibold text-3xl text-[var(--color-text-primary)]">
+      <span className="font-heading font-bold text-[32px] leading-none py-1 text-[var(--color-text-primary)]">
         {value}
       </span>
-      <span className={`font-mono text-[11px] ${deltaClass}`}>{delta}</span>
+      <span className={`font-body text-[12px] ${deltaClass}`}>{delta}</span>
     </div>
   );
 }
 
 function RecentResumes({ resumes }: { resumes: Resume[] }) {
   return (
-    <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6 flex flex-col gap-2">
-      <div className="flex items-center justify-between px-1">
-        <h3 className="font-heading font-semibold text-base">最近简历</h3>
-        <Link
-          to="/resumes"
-          className="text-[13px] text-[var(--color-text-secondary)] font-body hover:text-[var(--color-text-primary)] transition-colors"
-        >
-          查看全部 →
-        </Link>
-      </div>
+    <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] flex flex-col">
+      <CardHeader title="最近简历" />
+      <div className="px-3 flex-1">
       {resumes.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
           <FileText className="w-5 h-5 text-[var(--color-text-tertiary)]" />
@@ -189,6 +220,13 @@ function RecentResumes({ resumes }: { resumes: Resume[] }) {
           );
         })
       )}
+      </div>
+      <Link
+        to="/resumes"
+        className="block text-center py-3 border-t border-[var(--color-border-row)] text-[13px] font-bold text-[var(--color-text-primary)] font-body hover:text-[var(--color-accent)] transition-colors"
+      >
+        查看全部
+      </Link>
     </div>
   );
 }
@@ -202,15 +240,17 @@ const TODOS = [
 
 function TodayTodos() {
   return (
-    <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6 flex flex-col gap-2">
-      <div className="flex items-center justify-between px-1">
-        <h3 className="font-heading font-semibold text-base">今日待办</h3>
-        <span className="font-mono text-xs text-[var(--color-text-tertiary)]">
-          {TODOS.length}
-        </span>
-      </div>
+    <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] flex flex-col pb-3">
+      <CardHeader
+        title="今日待办"
+        extra={
+          <span className="min-w-6 h-6 px-2 rounded-full bg-[var(--color-orange)] text-white text-xs font-bold font-body grid place-items-center">
+            {TODOS.length}
+          </span>
+        }
+      />
       {TODOS.map((t) => (
-        <div key={t.title} className="flex items-center gap-3 px-2.5 py-2.5">
+        <div key={t.title} className="flex items-center gap-3 px-5 py-2.5 border-t border-[var(--color-border-row)]">
           <input
             type="checkbox"
             disabled

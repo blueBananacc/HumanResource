@@ -175,7 +175,7 @@ function TurnView({ turn }: { turn: ChatTurn }) {
           <span className="text-[11px] text-[var(--color-text-tertiary)] font-body">
             第 {turn.idx} 题
           </span>
-          <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl rounded-tl-md px-4 py-3 text-sm text-[var(--color-text-primary)] font-body whitespace-pre-wrap">
+          <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] rounded-tl-md px-4 py-3 text-sm text-[var(--color-text-primary)] font-body whitespace-pre-wrap">
             {turn.question}
           </div>
         </div>
@@ -222,7 +222,7 @@ function ThinkingBubble({
         <Sparkles className="w-3.5 h-3.5 animate-pulse" />
       </div>
       <div className="flex flex-col gap-1 max-w-[75%]">
-        <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl rounded-tl-md px-4 py-3 text-sm text-[var(--color-text-secondary)] font-body inline-flex items-center gap-2">
+        <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] rounded-tl-md px-4 py-3 text-sm text-[var(--color-text-secondary)] font-body inline-flex items-center gap-2">
           <span className="inline-flex gap-1">
             <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-text-tertiary)] animate-bounce [animation-delay:0ms]" />
             <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-text-tertiary)] animate-bounce [animation-delay:150ms]" />

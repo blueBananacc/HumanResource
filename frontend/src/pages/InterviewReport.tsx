@@ -149,7 +149,7 @@ export function InterviewReport() {
       </div>
 
       {/* 总体推荐 + 平均分 */}
-      <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-8 flex items-start gap-8">
+      <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-8 flex items-start gap-8">
         <div className="flex flex-col gap-2 shrink-0">
           <span className="text-[11px] text-[var(--color-text-tertiary)] tracking-wider font-body">
             综合得分
@@ -177,7 +177,7 @@ export function InterviewReport() {
       </div>
 
       {/* 4 维度得分条 */}
-      <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6 flex flex-col gap-4">
+      <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-4">
         <div className="flex flex-col gap-1 px-1">
           <h3 className="font-heading font-semibold text-base">维度评分</h3>
           <p className="text-[13px] text-[var(--color-text-secondary)] font-body">
@@ -194,7 +194,7 @@ export function InterviewReport() {
       </div>
 
       {/* 题目明细 */}
-      <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl overflow-hidden">
+      <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
         <div className="flex flex-col gap-1 px-6 py-5 border-b border-[var(--color-border-subtle)]">
           <h3 className="font-heading font-semibold text-base">题目明细</h3>
           <p className="text-[13px] text-[var(--color-text-secondary)] font-body">

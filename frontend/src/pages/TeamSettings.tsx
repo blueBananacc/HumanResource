@@ -223,7 +223,7 @@ export function TeamSettings() {
       )}
 
       <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
-        <section className="bg-white border border-[var(--color-border-subtle)] rounded-2xl overflow-hidden">
+        <section className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
           <div className="px-6 py-5 border-b border-[var(--color-border-subtle)] flex items-start justify-between gap-4">
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-2 text-[var(--color-text-primary)]">
@@ -303,7 +303,7 @@ export function TeamSettings() {
           )}
         </section>
 
-        <section className="bg-white border border-[var(--color-border-subtle)] rounded-2xl overflow-hidden">
+        <section className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
           <div className="px-6 py-5 border-b border-[var(--color-border-subtle)] flex items-start justify-between gap-4">
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-2 text-[var(--color-text-primary)]">

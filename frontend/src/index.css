@@ -9,21 +9,37 @@
  */
 :root {
   /* 颜色 */
-  --color-bg-canvas: #fafafb;
+  /* 色板取自 HiBob Brand Guidelines 2024:
+     Cherry Syrup #EE164F / Dark Wine #83143D / Orange Juice #FAA32B /
+     Cappuccino Foam #FDF6EB / Black Coffee #3A3A37 及其 tints & shades */
+  --color-bg-canvas: #fffbf4;
   --color-bg-base: #ffffff;
-  --color-bg-muted: #f8f9fb;
-  --color-bg-subtle: #f1f3f6;
-  --color-text-primary: #0f1115;
-  --color-text-secondary: #4b5563;
-  --color-text-tertiary: #9ca3af;
+  --color-bg-muted: #fdf6eb;
+  --color-bg-subtle: #f7efe2;
+  --color-text-primary: #3a3a37;
+  --color-text-secondary: #67645e;
+  --color-text-tertiary: #9c978e;
   --color-text-inverse: #ffffff;
-  --color-border-subtle: #e5e7eb;
-  --color-border-row: #f1f3f6;
-  --color-accent: #0f1115;
-  --color-accent-hover: #111827;
+  --color-border-subtle: #ece4d8;
+  --color-border-row: #f4ede2;
+  --color-accent: #ee164f;
+  --color-accent-hover: #bb1141;
   /* accent 的低饱和背景:Tailwind 对 var() 不支持 bg-opacity,所以预先算好。
-     由 #0f1115 ≈ rgb(15,17,21) 取 ~6% alpha 得到的"软背景"。 */
-  --color-accent-soft: rgba(15, 17, 21, 0.06);
+     由 #ee164f ≈ rgb(238,22,79) 取 ~8% alpha 得到的"软背景"。 */
+  --color-accent-soft: rgba(238, 22, 79, 0.08);
+  --color-accent-tint: #fac7d1;
+  --color-orange: #faa32b;
+  --color-orange-tint: #ffd887;
+  /* 品牌酒红:顶栏 / 侧栏 */
+  --color-brand: #83143d;
+  --color-brand-deep: #60032a;
+  --color-brand-hover: rgba(255, 255, 255, 0.1);
+  --color-brand-active: rgba(255, 255, 255, 0.18);
+  --color-brand-text: rgba(255, 255, 255, 0.82);
+  /* 卡片阴影:暖色、柔和 */
+  --shadow-card: 0 1px 2px rgba(58, 58, 55, 0.04), 0 2px 8px rgba(58, 58, 55, 0.05);
+  --shadow-card-hover: 0 4px 16px rgba(58, 58, 55, 0.1);
+  --ease-bob: cubic-bezier(0.22, 1, 0.36, 1);
   --color-success: #10b981;
   --color-success-soft: #ecfdf5;
   --color-warning: #f59e0b;
@@ -46,9 +62,24 @@
   body {
     background: var(--color-bg-canvas);
     color: var(--color-text-primary);
-    font-family: "Inter", system-ui, -apple-system, "PingFang SC",
+    font-family: "Lato", system-ui, -apple-system, "PingFang SC",
       "Microsoft YaHei", sans-serif;
+    font-size: 14px;
     -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: var(--color-accent-tint);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: var(--color-accent);
   }
 
   /*
@@ -63,11 +94,13 @@
   }
 
   /* 字体栈不能放 :root(逗号会破坏 var())。这里以 utility class 暴露。 */
+  /* 标题:Sentinel 的官方 G Suite 替代 Domine(衬线);正文:Gotham 的替代 Lato。
+     中文回落到系统字体。 */
   .font-heading {
-    font-family: "Geist", "Inter", system-ui, sans-serif;
+    font-family: "Domine", Georgia, "Songti SC", "SimSun", serif;
   }
   .font-body {
-    font-family: "Inter", system-ui, "PingFang SC", "Microsoft YaHei",
+    font-family: "Lato", system-ui, "PingFang SC", "Microsoft YaHei",
       sans-serif;
   }
   .font-mono {

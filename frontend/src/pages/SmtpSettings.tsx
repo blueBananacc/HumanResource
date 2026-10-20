@@ -200,13 +200,13 @@ export function SmtpSettings() {
       </div>
 
       {isLoading ? (
-        <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-12 text-center text-sm text-[var(--color-text-tertiary)] font-body">
+        <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-12 text-center text-sm text-[var(--color-text-tertiary)] font-body">
           加载中…
         </div>
       ) : (
         <form
           onSubmit={onSubmit}
-          className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6 flex flex-col gap-4"
+          className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-4"
         >
           {/* 状态条 */}
           {isEdit && (

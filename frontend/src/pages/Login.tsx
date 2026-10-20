@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { Building2 } from "lucide-react";
+import { BrandShape } from "@/components/brand/BrandShape";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fetchJSON } from "@/lib/api";
@@ -58,13 +59,21 @@ export function Login() {
   }
 
   return (
-    <main className="h-full grid place-items-center bg-[var(--color-bg-canvas)] p-4">
-      <div className="w-[440px] max-w-full bg-white rounded-2xl border border-[var(--color-border-subtle)] shadow-[0_4px_24px_rgba(15,17,21,0.06)] p-10 flex flex-col gap-7">
+    <main className="relative h-full grid place-items-center bg-[var(--color-brand)] p-4 overflow-hidden">
+      <div aria-hidden className="pointer-events-none absolute inset-0">
+        <BrandShape kind="circle" color="#FAA32B" className="-top-28 -left-20 w-[440px] h-[440px]" />
+        <BrandShape kind="star" color="#FEBB59" className="top-[8%] left-[34%] w-[150px] h-[150px] rotate-12" />
+        <BrandShape kind="free" color="#EE164F" className="bottom-[-80px] left-[6%] w-[340px] h-[340px]" />
+        <BrandShape kind="triangle" color="#FEABB0" className="top-[14%] right-[10%] w-[220px] h-[220px] -rotate-12" />
+        <BrandShape kind="arc" color="#F36488" className="bottom-[10%] right-[24%] w-[180px] h-[180px]" />
+        <BrandShape kind="rect" color="#60032A" className="-bottom-24 -right-16 w-[380px] h-[380px] rotate-6" />
+      </div>
+      <div className="relative w-[440px] max-w-full bg-white rounded-2xl shadow-[0_12px_40px_rgba(43,10,25,0.35)] p-10 flex flex-col gap-7">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-[var(--color-accent)] text-white font-heading font-bold flex items-center justify-center text-base">
-            F
+          <div className="w-8 h-8 rounded-[12px_12px_12px_3px] bg-[var(--color-accent)] text-white font-body font-bold flex items-center justify-center text-sm">
+            Hi
           </div>
-          <span className="font-heading font-semibold text-lg">Free-Hire</span>
+          <span className="font-body font-bold text-lg tracking-tight">HROnfire</span>
         </div>
         <div className="flex flex-col gap-1.5">
           <h1 className="font-heading font-semibold text-2xl text-[var(--color-text-primary)]">

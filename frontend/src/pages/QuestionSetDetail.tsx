@@ -195,7 +195,7 @@ export function QuestionSetDetail() {
       </div>
 
       {/* 元信息 */}
-      <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6 flex flex-col gap-3">
+      <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-3">
         <div className="flex items-center gap-2.5">
           <Sparkles className="w-5 h-5 text-[var(--color-accent)]" />
           <h2 className="font-heading font-semibold text-xl">
@@ -243,7 +243,7 @@ export function QuestionSetDetail() {
 
       {/* 进行中提示 */}
       {isInflight(data.status) && (
-        <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-4 font-body flex items-center gap-3 text-[var(--color-text-secondary)]">
+        <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-4 font-body flex items-center gap-3 text-[var(--color-text-secondary)]">
           <Loader2 className="w-4 h-4 animate-spin" />
           {data.status === "pending"
             ? "已入队,等 worker 拉取…"
@@ -336,7 +336,7 @@ function QuestionCard({
   copied: boolean;
 }) {
   return (
-    <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-5 flex flex-col gap-3">
+    <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-5 flex flex-col gap-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-1.5 min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">

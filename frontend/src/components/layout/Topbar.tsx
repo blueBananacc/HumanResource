@@ -21,11 +21,18 @@ export function Topbar({ title }: { title: string }) {
   const initials = user?.email.slice(0, 2).toUpperCase() ?? "—";
 
   return (
-    <header className="h-16 bg-white border-b border-[var(--color-border-subtle)] flex items-center justify-between px-6 gap-4 shrink-0 relative">
-      <h1 className="font-heading font-semibold text-lg text-[var(--color-text-primary)]">
-        {title}
-      </h1>
-      <div className="flex items-center gap-3">
+    <header className="h-14 bg-[var(--color-brand-deep)] flex items-center justify-between px-4 gap-4 shrink-0 relative z-20">
+      <div className="flex items-center gap-3 min-w-0">
+        <div className="w-8 h-8 rounded-[12px_12px_12px_3px] bg-[var(--color-accent)] text-white font-body font-bold text-sm flex items-center justify-center shrink-0">
+          Hi
+        </div>
+        <span className="font-body font-bold text-base text-white shrink-0 tracking-tight">HROnfire</span>
+        <span className="w-px h-5 bg-white/20 shrink-0" />
+        <h1 className="font-heading text-[15px] text-white/90 truncate">
+          {title}
+        </h1>
+      </div>
+      <div className="flex items-center gap-2">
         {/* 铃铛 */}
         <div className="relative">
           <button
@@ -33,10 +40,10 @@ export function Topbar({ title }: { title: string }) {
             onClick={() =>
               setOpenMenu((s) => (s === "bell" ? "none" : "bell"))
             }
-            className="w-9 h-9 grid place-items-center rounded-lg hover:bg-[var(--color-bg-muted)] transition-colors"
+            className="w-9 h-9 grid place-items-center rounded-full hover:bg-[var(--color-brand-hover)] transition-colors"
             aria-label="通知"
           >
-            <Bell className="w-[18px] h-[18px] text-[var(--color-text-secondary)]" />
+            <Bell className="w-[18px] h-[18px] text-white" />
           </button>
           {openMenu === "bell" && (
             <Dropdown align="right">
@@ -59,10 +66,15 @@ export function Topbar({ title }: { title: string }) {
             onClick={() =>
               setOpenMenu((s) => (s === "user" ? "none" : "user"))
             }
-            className="w-8 h-8 rounded-full bg-[var(--color-bg-subtle)] hover:bg-[var(--color-border-subtle)] flex items-center justify-center text-[11px] font-heading font-semibold transition-colors"
+            className="h-8 pl-1 pr-3 rounded-full bg-white hover:bg-[var(--color-bg-subtle)] flex items-center gap-2 transition-colors"
             aria-label="个人信息"
           >
-            {initials}
+            <span className="w-6 h-6 rounded-full bg-[var(--color-accent)] text-white flex items-center justify-center text-[10px] font-heading font-semibold">
+              {initials}
+            </span>
+            <span className="text-[13px] font-semibold text-[var(--color-accent)] font-body max-w-[140px] truncate">
+              {user?.email.split("@")[0] ?? "—"}
+            </span>
           </button>
           {openMenu === "user" && (
             <Dropdown align="right">

@@ -153,7 +153,7 @@ export function LicenseSettings() {
       </div>
 
       {/* 状态总览 */}
-      <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-8 flex flex-col gap-6">
+      <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-8 flex flex-col gap-6">
         <div className="flex flex-col gap-2.5">
           <div className="flex items-center gap-2.5 flex-wrap">
             {data?.edition && EDITION_BADGE[data.edition] && (
@@ -230,7 +230,7 @@ export function LicenseSettings() {
       {usageData && <UsageCard data={usageData} />}
 
       {/* 功能权限 */}
-      <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6 flex flex-col gap-2">
+      <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-2">
         <div className="flex flex-col gap-1 px-2">
           <h3 className="font-heading font-semibold text-base">功能权限</h3>
           <p className="text-[13px] text-[var(--color-text-secondary)] font-body">
@@ -277,7 +277,7 @@ export function LicenseSettings() {
       </div>
 
       {/* 导入新 License */}
-      <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6 flex flex-col gap-4">
+      <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-4">
         <div className="flex flex-col gap-1 px-1">
           <h3 className="font-heading font-semibold text-base">
             导入新 License
@@ -375,7 +375,7 @@ function UsageCard({ data }: { data: LicenseUsage }) {
   const showCta = isCommunity || overLimit;
 
   return (
-    <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6 flex flex-col gap-4">
+    <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-4">
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-1 px-1">
           <h3 className="font-heading font-semibold text-base">用量配额</h3>

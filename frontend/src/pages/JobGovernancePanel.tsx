@@ -136,7 +136,7 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6 flex flex-col gap-3">
+    <section className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-3">
       <div className="flex items-center gap-2">
         <Icon className="w-4 h-4 text-[var(--color-text-primary)]" />
         <h3 className="font-heading font-semibold text-base text-[var(--color-text-primary)]">

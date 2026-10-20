@@ -176,7 +176,7 @@ export function JobDetail() {
       </div>
 
       {/* 标题块 */}
-      <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6 flex flex-col gap-4">
+      <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-4">
         <div className="flex items-start gap-4">
           <div className="shrink-0 w-12 h-12 rounded-xl bg-[var(--color-bg-subtle)] grid place-items-center text-[var(--color-text-secondary)]">
             <Briefcase className="w-6 h-6" />
@@ -274,7 +274,7 @@ export function JobDetail() {
       </div>
 
       {/* 技能要求 */}
-      <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6 flex flex-col gap-3">
+      <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-3">
         <div className="flex items-center gap-2">
           <Tags className="w-4 h-4 text-[var(--color-text-tertiary)]" />
           <h3 className="font-heading font-semibold text-base text-[var(--color-text-primary)]">
@@ -300,7 +300,7 @@ export function JobDetail() {
       </div>
 
       {/* 岗位描述 */}
-      <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6 flex flex-col gap-3">
+      <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-3">
         <h3 className="font-heading font-semibold text-base text-[var(--color-text-primary)]">
           岗位描述
         </h3>

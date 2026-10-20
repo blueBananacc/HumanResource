@@ -83,7 +83,7 @@ export function Reports() {
       </div>
 
       {isLoading || !data ? (
-        <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-12 text-center text-sm text-[var(--color-text-tertiary)] font-body">
+        <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-12 text-center text-sm text-[var(--color-text-tertiary)] font-body">
           加载中…
         </div>
       ) : (
@@ -262,7 +262,7 @@ function KpiCard({
   hint: string;
 }) {
   return (
-    <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-5 flex flex-col gap-2">
+    <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-5 flex flex-col gap-2">
       <div className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
         <Icon className="w-4 h-4" />
         <span className="text-[12px] font-body">{label}</span>
@@ -287,7 +287,7 @@ function Card({
   children: React.ReactNode;
 }) {
   return (
-    <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl p-6 flex flex-col gap-4 min-h-[200px]">
+    <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-4 min-h-[200px]">
       <div className="flex flex-col gap-1">
         <h3 className="font-heading font-semibold text-base text-[var(--color-text-primary)]">
           {title}

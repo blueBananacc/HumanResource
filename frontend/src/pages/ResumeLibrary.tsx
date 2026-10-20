@@ -200,7 +200,7 @@ export function ResumeLibrary() {
         )}
       </div>
 
-      <div className="bg-white border border-[var(--color-border-subtle)] rounded-2xl overflow-hidden">
+      <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
         {isLoading ? (
           <div className="p-12 text-center text-sm text-[var(--color-text-tertiary)] font-body">
             加载中…
