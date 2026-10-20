@@ -2,7 +2,6 @@ import { useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
-  FileText,
   Briefcase,
   Video,
   ChartBar,
@@ -64,7 +63,6 @@ type NavDef = {
 
 const mainNav: NavDef[] = [
   { to: "/", label: "概览", icon: LayoutDashboard },
-  { to: "/resumes", label: "简历库", icon: FileText },
   { to: "/talents", label: "人才库", icon: Users },
   { to: "/jobs", label: "岗位", icon: Briefcase },
   { to: "/question-sets", label: "面试题集", icon: Sparkles },

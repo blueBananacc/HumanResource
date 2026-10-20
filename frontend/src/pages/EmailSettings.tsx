@@ -63,7 +63,7 @@ export function EmailSettings() {
             邮箱拉取
           </h2>
           <p className="text-sm text-[var(--color-text-secondary)] font-body">
-            配置 IMAP 邮箱后, 系统会每 5 分钟自动拉取新邮件附件 (PDF / DOCX / TXT, 不支持旧版 .doc) 入简历库
+            配置 IMAP 邮箱后, 系统会每 5 分钟自动拉取新邮件附件 (PDF / DOCX / TXT, 不支持旧版 .doc) 入人才库
           </p>
         </div>
         <Button onClick={() => setShowCreate(true)}>

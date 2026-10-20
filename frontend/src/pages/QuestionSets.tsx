@@ -78,11 +78,11 @@ export function QuestionSets() {
           </p>
         </div>
         <Link
-          to="/resumes"
+          to="/talents"
           className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-[var(--color-text-primary)] text-white text-sm font-medium hover:opacity-90 transition-opacity font-body"
         >
           <FileText className="w-4 h-4" />
-          去简历库出题
+          去人才库出题
         </Link>
       </div>
 
@@ -126,7 +126,7 @@ export function QuestionSets() {
             description={
               q
                 ? "试试别的关键词,或清除搜索看全部。"
-                : "去 简历库 选一份简历, 点「生成面试题」按钮"
+                : "去 人才库 选一位候选人的简历, 点「生成面试题」按钮"
             }
           />
         ) : (

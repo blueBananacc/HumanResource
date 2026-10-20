@@ -597,7 +597,7 @@ function StartInterviewModal({
       <div className="flex flex-col gap-4 py-2">
         <Field label="候选人">
           {candidates.length === 0 ? (
-            <EmptyHint>暂无候选人。请先在简历库上传简历。</EmptyHint>
+            <EmptyHint>暂无候选人。请先在人才库上传简历。</EmptyHint>
           ) : (
             <Select
               value={candidateId}

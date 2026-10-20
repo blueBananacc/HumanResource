@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Ban,
@@ -13,6 +13,7 @@ import {
   Plus,
   Sparkles,
   Tag,
+  Trash2,
   Users,
   Video,
   X,
@@ -23,7 +24,14 @@ import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm";
 import { ApiError, fetchJSON } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { formatRelative } from "@/lib/format";
+import { formatBytes, formatRelative } from "@/lib/format";
+import {
+  ParseStatusChip,
+  useDeleteResume,
+  type Resume,
+} from "@/components/resume/shared";
+
+type ResumeParseStatus = Resume["parse_status"];
 
 type TalentDetail = {
   id: string;
@@ -49,6 +57,7 @@ type TalentDetail = {
 type ResumeRow = {
   id: string;
   file_name: string;
+  file_size: number;
   source: string;
   parse_status: string;
   created_at: string;
@@ -123,6 +132,8 @@ export function TalentDetail() {
     user?.role === "admin" || user?.role === "hr";
 
   const qc = useQueryClient();
+  const navigate = useNavigate();
+  const { deleteResume, deletingId } = useDeleteResume();
 
   const { data, isLoading, error } = useQuery<TalentDetail>({
     queryKey: ["talent", id],
@@ -242,32 +253,61 @@ export function TalentDetail() {
                 {c.resumes.map((r, i) => (
                   <li
                     key={r.id}
-                    className={`flex items-start gap-3 py-2.5 ${
+                    className={`flex items-center gap-4 py-3 group hover:bg-[var(--color-bg-muted)] cursor-pointer transition-colors ${
                       i === c.resumes.length - 1
                         ? ""
                         : "border-b border-[var(--color-border-row)]"
                     }`}
+                    onClick={() =>
+                      navigate(`/talents/${c.id}/resumes/${r.id}`)
+                    }
                   >
-                    <div className="flex-1 flex flex-col gap-0.5 min-w-0">
-                      <span className="font-medium text-sm text-[var(--color-text-primary)]">
-                        {r.file_name}
-                      </span>
-                      <span className="text-[11px] text-[var(--color-text-tertiary)]">
-                        {r.source} · {formatRelative(r.created_at)} · {r.parse_status}
-                      </span>
-                      {r.skills.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {r.skills.slice(0, 8).map((s) => (
-                            <span
-                              key={s}
-                              className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--color-bg-subtle)] text-[var(--color-text-secondary)]"
-                            >
-                              {s}
-                            </span>
-                          ))}
-                        </div>
-                      )}
+                    <div className="w-9 h-9 rounded-full bg-[var(--color-bg-subtle)] flex items-center justify-center shrink-0">
+                      <FileText className="w-4 h-4 text-[var(--color-text-secondary)]" />
                     </div>
+                    <div className="flex flex-col flex-1 min-w-0 gap-1">
+                      <div className="flex items-center gap-2.5">
+                        <span className="font-medium text-sm text-[var(--color-text-primary)] font-body truncate">
+                          {r.file_name}
+                        </span>
+                        <ParseStatusChip
+                          status={r.parse_status as ResumeParseStatus}
+                        />
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 items-center">
+                        {r.skills.slice(0, 6).map((s) => (
+                          <span
+                            key={s}
+                            className="px-2 py-0.5 rounded-md bg-[var(--color-bg-subtle)] text-[11px] text-[var(--color-text-secondary)] font-mono"
+                          >
+                            {s}
+                          </span>
+                        ))}
+                        <span className="text-[11px] text-[var(--color-text-tertiary)] font-body truncate">
+                          {formatBytes(r.file_size)} · {r.source}
+                        </span>
+                      </div>
+                    </div>
+                    <span className="text-xs text-[var(--color-text-tertiary)] font-mono shrink-0">
+                      {formatRelative(r.created_at)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteResume({
+                          resumeId: r.id,
+                          fileName: r.file_name,
+                          candidateId: c.id,
+                          isLast: c.resumes.length === 1,
+                        });
+                      }}
+                      disabled={deletingId === r.id}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--color-text-tertiary)] hover:text-[var(--color-danger)] p-1"
+                      aria-label="删除"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </li>
                 ))}
               </ul>

@@ -544,3 +544,219 @@ def test_group_crud_and_members(db_session):
         assert all(item["id"] != gid for item in res.json())
     finally:
         _cleanup(db_session, t)
+
+
+# ============ 删除简历 ============
+
+
+def _make_resume(db, t, c, hr, key) -> Resume:
+    r = Resume(
+        tenant_id=t.id,
+        candidate_id=c.id,
+        file_name=f"{key}.pdf",
+        file_size=10,
+        file_mime="application/pdf",
+        storage_key=key,
+        source="upload",
+        parse_status="done",
+        uploaded_by=hr.id,
+    )
+    db.add(r)
+    db.commit()
+    db.refresh(r)
+    return r
+
+
+def test_delete_non_last_resume_keeps_candidate(db_session):
+    t = _make_tenant(db_session)
+    hr = _make_user(db_session, t)
+    c = _make_candidate(db_session, t)
+    r1 = _make_resume(db_session, t, c, hr, "del-a")
+    _make_resume(db_session, t, c, hr, "del-b")
+    try:
+        client = TestClient(app)
+        res = client.delete(f"/api/resumes/{r1.id}", headers=_hdr(hr))
+        assert res.status_code == 204
+        res = client.get(f"/api/talents/{c.id}", headers=_hdr(hr))
+        assert res.status_code == 200
+        resumes = res.json()["resumes"]
+        assert len(resumes) == 1
+        assert resumes[0]["file_size"] == 10
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_delete_last_resume_deletes_candidate_and_dependents(db_session):
+    t = _make_tenant(db_session)
+    hr = _make_user(db_session, t)
+    c = _make_candidate(db_session, t)
+    r1 = _make_resume(db_session, t, c, hr, "del-last")
+    job = Job(tenant_id=t.id, title="后端", level="intermediate", created_by=hr.id)
+    group = CandidateGroup(tenant_id=t.id, name=f"g-{uuid.uuid4().hex[:6]}")
+    db_session.add_all([job, group])
+    db_session.commit()
+    iv = Interview(
+        tenant_id=t.id,
+        job_id=job.id,
+        candidate_id=c.id,
+        mode="remote",
+        modality="text",
+        status="done",
+        delivery="link",
+        created_by=hr.id,
+    )
+    db_session.add_all(
+        [
+            iv,
+            CandidateGroupMember(group_id=group.id, candidate_id=c.id),
+            CandidateNote(
+                tenant_id=t.id,
+                candidate_id=c.id,
+                author_id=hr.id,
+                author_email=hr.email,
+                content="n",
+            ),
+        ]
+    )
+    db_session.commit()
+    cid, iid = c.id, iv.id
+    try:
+        client = TestClient(app)
+        res = client.delete(f"/api/resumes/{r1.id}", headers=_hdr(hr))
+        assert res.status_code == 204
+        assert (
+            client.get(f"/api/talents/{cid}", headers=_hdr(hr)).status_code == 404
+        )
+        db_session.expire_all()
+        assert db_session.get(Interview, iid) is None
+        assert (
+            db_session.query(CandidateNote)
+            .filter(CandidateNote.candidate_id == cid)
+            .count()
+            == 0
+        )
+        assert (
+            db_session.query(CandidateGroupMember)
+            .filter(CandidateGroupMember.candidate_id == cid)
+            .count()
+            == 0
+        )
+    finally:
+        _cleanup(db_session, t)
+
+
+# ============ 删除候选人 ============
+
+
+def test_delete_candidate_cascades_dependents(db_session):
+    """DELETE /api/talents/{id} 删除候选人 + 简历 / 面试 / 备注 / 分组成员。"""
+    t = _make_tenant(db_session)
+    hr = _make_user(db_session, t)
+    c = _make_candidate(db_session, t)
+    _make_resume(db_session, t, c, hr, "cdel-a")
+    _make_resume(db_session, t, c, hr, "cdel-b")
+    job = Job(tenant_id=t.id, title="后端", level="intermediate", created_by=hr.id)
+    group = CandidateGroup(tenant_id=t.id, name=f"g-{uuid.uuid4().hex[:6]}")
+    db_session.add_all([job, group])
+    db_session.commit()
+    iv = Interview(
+        tenant_id=t.id,
+        job_id=job.id,
+        candidate_id=c.id,
+        mode="remote",
+        modality="text",
+        status="done",
+        delivery="link",
+        created_by=hr.id,
+    )
+    db_session.add_all(
+        [
+            iv,
+            CandidateGroupMember(group_id=group.id, candidate_id=c.id),
+            CandidateNote(
+                tenant_id=t.id,
+                candidate_id=c.id,
+                author_id=hr.id,
+                author_email=hr.email,
+                content="n",
+            ),
+        ]
+    )
+    db_session.commit()
+    cid, iid = c.id, iv.id
+    try:
+        client = TestClient(app)
+        # 删除前详情 200
+        assert client.get(f"/api/talents/{cid}", headers=_hdr(hr)).status_code == 200
+        res = client.delete(f"/api/talents/{cid}", headers=_hdr(hr))
+        assert res.status_code == 204
+        # 删除后详情 404
+        assert (
+            client.get(f"/api/talents/{cid}", headers=_hdr(hr)).status_code == 404
+        )
+        db_session.expire_all()
+        assert db_session.get(Candidate, cid) is None
+        assert (
+            db_session.query(Resume).filter(Resume.candidate_id == cid).count() == 0
+        )
+        assert db_session.get(Interview, iid) is None
+        assert (
+            db_session.query(CandidateNote)
+            .filter(CandidateNote.candidate_id == cid)
+            .count()
+            == 0
+        )
+        assert (
+            db_session.query(CandidateGroupMember)
+            .filter(CandidateGroupMember.candidate_id == cid)
+            .count()
+            == 0
+        )
+        # 分组本身还在(只清成员关系)
+        assert db_session.get(CandidateGroup, group.id) is not None
+        # 审计:candidate.delete
+        cnt = (
+            db_session.query(AuditLog)
+            .filter(
+                AuditLog.tenant_id == t.id,
+                AuditLog.entity_type == "candidate",
+                AuditLog.entity_id == cid,
+                AuditLog.action == "delete",
+            )
+            .count()
+        )
+        assert cnt == 1
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_delete_candidate_viewer_forbidden(db_session):
+    t = _make_tenant(db_session)
+    viewer = _make_user(db_session, t, role="viewer")
+    c = _make_candidate(db_session, t)
+    try:
+        client = TestClient(app)
+        res = client.delete(f"/api/talents/{c.id}", headers=_hdr(viewer))
+        assert res.status_code == 403
+        # 候选人未被删除
+        assert (
+            client.get(f"/api/talents/{c.id}", headers=_hdr(viewer)).status_code
+            == 200
+        )
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_delete_candidate_cross_tenant_404(db_session):
+    a = _make_tenant(db_session, "ta")
+    b = _make_tenant(db_session, "tb")
+    hr_b = _make_user(db_session, b)
+    c_a = _make_candidate(db_session, a)
+    try:
+        client = TestClient(app)
+        res = client.delete(f"/api/talents/{c_a.id}", headers=_hdr(hr_b))
+        assert res.status_code == 404
+        # a 的候选人仍在
+        assert db_session.get(Candidate, c_a.id) is not None
+    finally:
+        _cleanup(db_session, a, b)

@@ -3,6 +3,7 @@
 接口分组:
 - ``GET  /talents``                  — 候选人列表(以 Candidate 为粒度)
 - ``GET  /talents/{id}``             — 主档案聚合(简历 / 面试 / 匹配 / 标签 / 分组 / 最近备注)
+- ``DELETE /talents/{id}``           — 删除候选人及全部依赖(简历 / 面试 / 备注 / 分组关系)
 - ``GET  /talents/{id}/timeline``    — 统一时间线
 - ``PUT  /talents/{id}/tags``        — 整体覆盖标签数组
 - ``POST /talents/{id}/blacklist``   — 加入黑名单
@@ -32,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, apply_q_ilike, count_total, paginate_params
 from app.api.auth import get_current_user
+from app.api.resumes import delete_candidate_with_dependents
 from app.domain.models import (
     Candidate,
     CandidateGroup,
@@ -46,6 +48,7 @@ from app.domain.models import (
 from app.infra.db import get_db
 from app.services.audit import write_audit
 from app.services.permissions import (
+    PERM_DELETE_RESUMES,
     PERM_VIEW_REPORTS,
     PERM_WRITE_RESUMES,
     apply_org_filter,
@@ -198,6 +201,7 @@ def _serialize_resume(r: Resume) -> dict[str, Any]:
     return {
         "id": r.id,
         "file_name": r.file_name,
+        "file_size": r.file_size,
         "source": r.source,
         "parse_status": r.parse_status,
         "created_at": r.created_at,
@@ -448,7 +452,7 @@ def get_talent(
     job_ids.update(m.job_id for m, _ in matches)
     titles = _bulk_job_titles(db, job_ids)
 
-    group_rows = db.execute(
+    group_rows = db.scalars(
         select(CandidateGroup)
         .join(
             CandidateGroupMember,
@@ -503,6 +507,34 @@ def get_talent(
         ],
         recent_notes=[_serialize_note(n) for n in notes],
     )
+
+
+# ============ 删除 ============
+
+
+@router.delete(
+    "/{candidate_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission(PERM_DELETE_RESUMES))],
+)
+async def delete_talent(
+    candidate_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> None:
+    """删除候选人及其全部依赖数据。
+
+    权限与简历删除同级(``delete_resumes``):候选人档案本质上由简历聚合而来。
+    DB 层 ``ondelete=CASCADE`` 连带删 resumes / interviews / notes /
+    group members;对象存储里的简历原文件与面试音频由
+    ``app.api.resumes.delete_candidate_with_dependents`` 尽力清理。
+    """
+    c = _get_candidate(db, candidate_id=candidate_id, current=current)
+    await delete_candidate_with_dependents(
+        db, c, actor=current, request=request, reason="manual_delete"
+    )
+    db.commit()
 
 
 # ============ 时间线 ============

@@ -335,7 +335,7 @@ export function JobFormModal({
       description={
         isEdit
           ? "修改后,该岗位的 AI 匹配评分会基于新 JD 自动重投评估。"
-          : "保存后可在简历库中按岗位过滤候选人, 并发起 AI 文本面试。"
+          : "保存后可在人才库中查看候选人, 并发起 AI 文本面试。"
       }
       width={560}
       footer={

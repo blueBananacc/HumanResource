@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -7,9 +7,15 @@ import {
   Folder,
   Plus,
   Trash2,
+  Upload,
   Users,
   X,
 } from "lucide-react";
+import {
+  ResumeUpload,
+  type ResumeUploadHandle,
+} from "@/components/resume/ResumeUpload";
+import { useDeleteCandidate } from "@/components/resume/shared";
 import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
 import { Empty } from "@/components/ui/empty";
@@ -59,6 +65,7 @@ export function TalentPool() {
   const [blacklistOnly, setBlacklistOnly] = useState<string>("");
   const [groupFilter, setGroupFilter] = useState<string>("");
   const [openGroups, setOpenGroups] = useState(false);
+  const uploadRef = useRef<ResumeUploadHandle>(null);
 
   const params = {
     blacklisted: blacklistOnly || undefined,
@@ -87,6 +94,8 @@ export function TalentPool() {
     queryFn: () => fetchJSON<Group[]>("/api/talent-groups"),
   });
 
+  const { deleteCandidate, deletingId } = useDeleteCandidate();
+
   const items = data?.items ?? [];
 
   return (
@@ -100,11 +109,15 @@ export function TalentPool() {
             以候选人为主视角的人才档案。聚合简历版本、面试历史、岗位匹配,并支持标签、分组、黑名单与备注。
           </p>
         </div>
-        <Button variant="secondary" onClick={() => setOpenGroups(true)}>
-          <Folder className="w-4 h-4" />
-          人才分组
-        </Button>
+        <div className="flex items-center gap-2 shrink-0">
+          <Button onClick={() => uploadRef.current?.open()}>
+            <Upload className="w-4 h-4" />
+            上传简历
+          </Button>
+        </div>
       </div>
+
+      <ResumeUpload ref={uploadRef} />
 
       <section className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
         <div className="px-6 py-4 border-b border-[var(--color-border-subtle)] flex flex-wrap items-center gap-3">
@@ -142,6 +155,10 @@ export function TalentPool() {
               })),
             ]}
           />
+          <Button variant="secondary" onClick={() => setOpenGroups(true)}>
+            <Folder className="w-4 h-4" />
+            人才分组
+          </Button>
           {(blacklistOnly || groupFilter || q) && (
             <button
               type="button"
@@ -170,7 +187,7 @@ export function TalentPool() {
           <Empty
             icon={Users}
             title="还没有候选人"
-            description="先在简历库上传简历,候选人会自动沉淀到这里。"
+            description="上传第一份简历后,系统会自动解析并按候选人沉淀到这里。"
           />
         ) : (
           <>
@@ -183,13 +200,14 @@ export function TalentPool() {
                   <th className="text-left px-4 py-2.5 font-medium">简历 / 面试</th>
                   <th className="text-left px-4 py-2.5 font-medium">最高匹配</th>
                   <th className="text-left px-4 py-2.5 font-medium">状态</th>
+                  <th className="w-12 px-4 py-2.5 font-medium" />
                 </tr>
               </thead>
               <tbody>
                 {items.map((t) => (
                   <tr
                     key={t.id}
-                    className="border-t border-[var(--color-border-row)] hover:bg-[var(--color-bg-muted)]"
+                    className="group border-t border-[var(--color-border-row)] hover:bg-[var(--color-bg-muted)]"
                   >
                     <td className="px-6 py-3">
                       <Link
@@ -264,6 +282,24 @@ export function TalentPool() {
                           活跃
                         </span>
                       )}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteCandidate({
+                            candidateId: t.id,
+                            name: t.name,
+                          });
+                        }}
+                        disabled={deletingId === t.id}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--color-text-tertiary)] hover:text-[var(--color-danger)] p-1"
+                        aria-label="删除候选人"
+                        title="删除候选人"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </td>
                   </tr>
                 ))}

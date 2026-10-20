@@ -187,7 +187,7 @@ function RecentResumes({ resumes }: { resumes: Resume[] }) {
           <span className="text-[13px] text-[var(--color-text-secondary)] font-body">
             还没有简历
           </span>
-          <Link to="/resumes">
+          <Link to="/talents">
             <Button variant="secondary">去上传</Button>
           </Link>
         </div>
@@ -197,9 +197,10 @@ function RecentResumes({ resumes }: { resumes: Resume[] }) {
           if (r.candidate.display_email) sub.push(r.candidate.display_email);
           if (r.candidate.display_phone) sub.push(r.candidate.display_phone);
           return (
-            <div
+            <Link
               key={r.id}
-              className={`flex items-center gap-3 px-3 py-3 rounded-lg ${
+              to={`/talents/${r.candidate.id}`}
+              className={`flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-[var(--color-bg-muted)] transition-colors ${
                 i < resumes.length - 1
                   ? "border-b border-[var(--color-border-row)]"
                   : ""
@@ -216,13 +217,13 @@ function RecentResumes({ resumes }: { resumes: Resume[] }) {
               <span className="text-xs text-[var(--color-text-tertiary)] font-mono shrink-0">
                 {formatRelative(r.created_at)}
               </span>
-            </div>
+            </Link>
           );
         })
       )}
       </div>
       <Link
-        to="/resumes"
+        to="/talents"
         className="block text-center py-3 border-t border-[var(--color-border-row)] text-[13px] font-bold text-[var(--color-text-primary)] font-body hover:text-[var(--color-accent)] transition-colors"
       >
         查看全部

@@ -7,7 +7,7 @@ import { EmailSettings } from "@/pages/EmailSettings";
 import { Jobs } from "@/pages/Jobs";
 import { JobDetail } from "@/pages/JobDetail";
 import { JobMatches } from "@/pages/JobMatches";
-import { ResumeLibrary } from "@/pages/ResumeLibrary";
+import { ResumeDetail } from "@/pages/ResumeDetail";
 import { Interviews } from "@/pages/Interviews";
 import { InterviewReport } from "@/pages/InterviewReport";
 import { Reports } from "@/pages/Reports";
@@ -40,9 +40,9 @@ export const router = createBrowserRouter([
     element: <AppShell />,
     children: [
       { index: true, element: <Dashboard /> },
-      { path: "resumes", element: <ResumeLibrary /> },
       { path: "talents", element: <TalentPool /> },
       { path: "talents/:id", element: <TalentDetail /> },
+      { path: "talents/:id/resumes/:resumeId", element: <ResumeDetail /> },
       { path: "jobs", element: <Jobs /> },
       { path: "jobs/:id", element: <JobDetail /> },
       { path: "jobs/:id/matches", element: <JobMatches /> },

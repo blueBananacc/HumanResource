@@ -23,13 +23,13 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, apply_q_ilike, count_total, paginate_params
 from app.api.auth import get_current_user
 from app.api.license import require_within_quota
-from app.domain.models import Candidate, Resume, User
+from app.domain.models import Candidate, Interview, InterviewTurn, Resume, User
 from app.infra.db import get_db
 from app.infra.storage import ObjectNotFoundError, build_object_store
 from app.services.audit import write_audit
@@ -542,4 +542,79 @@ async def delete_resume(
         request=request,
     )
     db.delete(r)
+    db.flush()
+    if c is not None:
+        remaining = db.scalar(
+            select(func.count()).select_from(Resume).where(Resume.candidate_id == c.id)
+        )
+        if not remaining:
+            await delete_candidate_with_dependents(
+                db, c, actor=current, request=request, reason="last_resume_deleted"
+            )
     db.commit()
+
+
+async def delete_candidate_with_dependents(
+    db: Session,
+    c: Candidate,
+    *,
+    actor: User,
+    request: Request,
+    reason: str,
+) -> None:
+    """删除候选人的全部存储对象并落 ``candidate.delete`` 审计,最后 ``db.delete(c)``。
+
+    调用方负责 commit。DB 层 ``ondelete=CASCADE`` 会连带删 resumes /
+    interviews / interview_turns / notes / group members / matches 行;
+    这里负责 DB 管不到的对象存储(简历原文件 + 面试音频)与审计。
+
+    复用方:
+    - ``DELETE /resumes/{id}`` — 最后一份简历删完后收尾候选人
+    - ``DELETE /talents/{id}`` — 人工删除候选人(``reason="manual_delete"``)
+    """
+    store = build_object_store()
+    for key in db.scalars(
+        select(Resume.storage_key).where(Resume.candidate_id == c.id)
+    ):
+        try:
+            await store.delete(key)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("删除简历存储对象失败,继续删候选人: %s", e)
+    await _delete_interview_audio(db, c.id)
+    write_audit(
+        db,
+        actor=actor,
+        entity_type="candidate",
+        entity_id=c.id,
+        action="delete",
+        detail={"reason": reason, "name": c.name},
+        request=request,
+    )
+    db.delete(c)
+
+
+async def _delete_interview_audio(db: Session, candidate_id: str) -> None:
+    keys: list[str] = []
+    for full_key, interview_id in db.execute(
+        select(Interview.full_audio_storage_key, Interview.id).where(
+            Interview.candidate_id == candidate_id
+        )
+    ):
+        if full_key:
+            keys.append(full_key)
+        keys.extend(
+            k
+            for k in db.scalars(
+                select(InterviewTurn.audio_storage_key).where(
+                    InterviewTurn.interview_id == interview_id,
+                    InterviewTurn.audio_storage_key.is_not(None),
+                )
+            )
+            if k
+        )
+    store = build_object_store()
+    for key in keys:
+        try:
+            await store.delete(key)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("删除面试音频失败,继续: %s", e)

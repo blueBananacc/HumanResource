@@ -5,7 +5,6 @@ import { useAuth } from "@/lib/auth";
 
 const TITLE_BY_PATH: Record<string, string> = {
   "/": "概览",
-  "/resumes": "简历库",
   "/talents": "人才库",
   "/jobs": "岗位",
   "/interviews": "面试",
@@ -48,6 +47,8 @@ export function AppShell() {
   } else if (loc.pathname.startsWith("/jobs/")) {
     // /jobs/:id → 岗位详情;/jobs/:id/matches → 岗位匹配候选人
     title = loc.pathname.endsWith("/matches") ? "岗位匹配" : "岗位详情";
+  } else if (/^\/talents\/[^/]+\/resumes\/[^/]+$/.test(loc.pathname)) {
+    title = "简历详情";
   } else if (loc.pathname.startsWith("/talents/")) {
     title = "候选人档案";
   } else if (loc.pathname.startsWith("/question-sets/")) {
