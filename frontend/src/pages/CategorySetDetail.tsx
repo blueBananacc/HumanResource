@@ -16,11 +16,14 @@ import {
   KIND_LABEL,
   QuestionRow,
   RegenerateDialog,
+  SelectionBar,
   categorySetPath,
+  deleteLibraryItems,
   diffOptions,
   invalidateQuestions,
   kindOptions,
   questionText,
+  useSelection,
   type LibraryItem,
 } from "@/components/questions/shared";
 
@@ -54,6 +57,31 @@ export function CategorySetDetail() {
     mutationFn: (id: string) => fetchJSON(`/api/question-library/${id}`, { method: "DELETE" }),
     onSuccess: () => invalidateQuestions(qc),
   });
+
+  const allIds = (data?.items ?? []).map((q) => q.id);
+  const sel = useSelection(allIds);
+  const [batchDeleting, setBatchDeleting] = useState(false);
+  const delMany = async () => {
+    const ids = [...sel.selected];
+    const remaining = allIds.length - ids.length;
+    if (
+      await confirm({
+        title: `批量删除 ${ids.length} 道题?`,
+        description:
+          remaining > 0 && remaining < 2
+            ? `删除后这个分类只剩 ${remaining} 道题，题集会自动解散。操作不可恢复。`
+            : "选中的题目会全部删除，操作不可恢复。",
+        tone: "danger",
+        confirmLabel: "删除",
+      })
+    ) {
+      setBatchDeleting(true);
+      await deleteLibraryItems(ids);
+      setBatchDeleting(false);
+      sel.clear();
+      invalidateQuestions(qc);
+    }
+  };
   const delAll = useMutation({
     mutationFn: () =>
       fetchJSON("/api/question-library/categories/delete", {
@@ -182,6 +210,15 @@ export function CategorySetDetail() {
             </Button>
           </div>
           <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
+            <SelectionBar
+              allChecked={sel.allChecked}
+              onToggleAll={sel.toggleAll}
+              count={sel.selected.size}
+              unit="道题"
+              deleting={batchDeleting}
+              onDelete={delMany}
+              onClear={sel.clear}
+            />
             {shown.length === 0 ? (
               <div className="p-10 text-center text-sm text-[var(--color-text-tertiary)] font-body">没有符合筛选条件的题目</div>
             ) : (
@@ -193,6 +230,8 @@ export function CategorySetDetail() {
                   showSet={false}
                   expanded
                   isLast={i === shown.length - 1}
+                  selected={sel.selected.has(q.id)}
+                  onSelect={(v) => sel.toggle(q.id, v)}
                   onEdit={() => setEditing(q)}
                   onRegenerate={() => setRegenItem(q)}
                   onDelete={async () => {

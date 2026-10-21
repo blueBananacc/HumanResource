@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
@@ -117,6 +117,99 @@ export function questionText(it: LibraryItem) {
   );
 }
 
+/** 列表批量选择:selected 随可见项变化自动剪掉已不存在的 id。 */
+export function useSelection(allIds: string[]) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((id) => allIds.includes(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [allIds]);
+  const toggle = (id: string, checked: boolean) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  const toggleAll = (checked: boolean) =>
+    setSelected(checked ? new Set(allIds) : new Set());
+  return {
+    selected,
+    clear: () => setSelected(new Set()),
+    toggle,
+    toggleAll,
+    allChecked: allIds.length > 0 && allIds.every((id) => selected.has(id)),
+  };
+}
+
+/** 逐条调单删接口的批量删除;返回失败条数。 */
+export async function deleteLibraryItems(ids: string[]) {
+  const results = await Promise.allSettled(
+    ids.map((id) => fetchJSON(`/api/question-library/${id}`, { method: "DELETE" })),
+  );
+  return results.filter((r) => r.status === "rejected").length;
+}
+
+/**
+ * 卡片顶部的批量选择条:全选当前可见项;有选中时显示计数 + 批量删除 + 清除。
+ */
+export function SelectionBar({
+  allChecked,
+  onToggleAll,
+  count,
+  unit,
+  deleting,
+  onDelete,
+  onClear,
+}: {
+  allChecked: boolean;
+  onToggleAll: (checked: boolean) => void;
+  count: number;
+  unit: string;
+  deleting: boolean;
+  onDelete: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 px-6 py-2.5 border-b border-[var(--color-border-row)] bg-[var(--color-bg-muted)]/60">
+      <input
+        type="checkbox"
+        checked={allChecked}
+        onChange={(e) => onToggleAll(e.target.checked)}
+        className="w-4 h-4 rounded border-[var(--color-border-subtle)] cursor-pointer"
+        aria-label="全选"
+      />
+      {count > 0 ? (
+        <>
+          <span className="text-[12px] font-body text-[var(--color-text-secondary)]">
+            已选 <span className="font-mono font-semibold text-[var(--color-text-primary)]">{count}</span> {unit}
+          </span>
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={deleting}
+            className="flex items-center gap-1 text-[12px] font-body font-bold text-[var(--color-danger)] hover:underline disabled:opacity-50"
+          >
+            {deleting && <Loader2 className="w-3 h-3 animate-spin" />}
+            批量删除
+          </button>
+          <button
+            type="button"
+            onClick={onClear}
+            className="text-[12px] font-body text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+          >
+            清除选择
+          </button>
+        </>
+      ) : (
+        <span className="text-[12px] font-body text-[var(--color-text-tertiary)]">全选当前列表</span>
+      )}
+    </div>
+  );
+}
+
 const chip =
   "inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium font-body";
 
@@ -162,6 +255,8 @@ export function QuestionRow({
   showSet = true,
   expanded = false,
   isLast,
+  selected,
+  onSelect,
   onEdit,
   onRegenerate,
   onDelete,
@@ -171,6 +266,9 @@ export function QuestionRow({
   showSet?: boolean;
   expanded?: boolean;
   isLast: boolean;
+  /** 传入即开启行首复选框(批量删除) */
+  selected?: boolean;
+  onSelect?: (checked: boolean) => void;
   onEdit: () => void;
   onRegenerate: () => void;
   onDelete: () => void;
@@ -191,6 +289,16 @@ export function QuestionRow({
       )}
     >
       <div className="flex items-start justify-between gap-4">
+        {onSelect && (
+          <input
+            type="checkbox"
+            checked={!!selected}
+            onChange={(e) => onSelect(e.target.checked)}
+            onClick={(e) => e.stopPropagation()}
+            className="mt-1 w-4 h-4 rounded border-[var(--color-border-subtle)] shrink-0 cursor-pointer"
+            aria-label="选择题目"
+          />
+        )}
         <div className="flex flex-col flex-1 min-w-0 gap-2">
           <div className="flex items-center gap-2 flex-wrap">
             {index !== undefined && (

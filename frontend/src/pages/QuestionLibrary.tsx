@@ -20,13 +20,16 @@ import {
   ItemDrawer,
   QuestionRow,
   RegenerateDialog,
+  SelectionBar,
   KIND_LABEL,
   StatusChip,
   categorySetPath,
+  deleteLibraryItems,
   diffOptions,
   invalidateQuestions,
   isInflight,
   kindOptions,
+  useSelection,
   type CategorySet,
   type LibraryItem,
   type QuestionSetSummary,
@@ -130,12 +133,36 @@ function QuestionsView() {
   useEffect(() => setInputQ(q), [q]);
   const items = data?.items ?? [];
   const filtered = !!(q || filterKind || filterDifficulty);
+  const sel = useSelection(items.map((i) => i.id));
+  const [batchDeleting, setBatchDeleting] = useState(false);
 
   const del = useMutation({
     mutationFn: (id: string) => fetchJSON(`/api/question-library/${id}`, { method: "DELETE" }),
     onSuccess: () => invalidateQuestions(qc),
     onError: (e: unknown) => setError(e instanceof Error ? e.message : "删除失败"),
   });
+
+  const delMany = async () => {
+    const ids = [...sel.selected];
+    const inSet = items.filter((i) => ids.includes(i.id) && i.question_set_id).length;
+    if (
+      await confirm({
+        title: `批量删除 ${ids.length} 道题?`,
+        description: inSet
+          ? `其中 ${inSet} 道属于题集，会一并从题集中移除。操作不可恢复。`
+          : "选中的题目会全部删除，操作不可恢复。",
+        tone: "danger",
+        confirmLabel: "删除",
+      })
+    ) {
+      setBatchDeleting(true);
+      const failed = await deleteLibraryItems(ids);
+      setBatchDeleting(false);
+      sel.clear();
+      invalidateQuestions(qc);
+      setError(failed ? `${failed} 道题删除失败，其余已删除` : null);
+    }
+  };
 
   return (
     <>
@@ -173,11 +200,22 @@ function QuestionsView() {
           />
         ) : (
           <>
+            <SelectionBar
+              allChecked={sel.allChecked}
+              onToggleAll={sel.toggleAll}
+              count={sel.selected.size}
+              unit="道题"
+              deleting={batchDeleting}
+              onDelete={delMany}
+              onClear={sel.clear}
+            />
             {items.map((it, i) => (
               <QuestionRow
                 key={it.id}
                 item={it}
                 isLast={i === items.length - 1}
+                selected={sel.selected.has(it.id)}
+                onSelect={(v) => sel.toggle(it.id, v)}
                 onEdit={() => setEditing(it)}
                 onRegenerate={() => setRegenItem(it)}
                 onDelete={async () => {
@@ -250,6 +288,61 @@ function SetsView() {
     onError: (e: unknown) => setError(e instanceof Error ? e.message : "删除失败"),
   });
 
+  const selCat = useSelection(categories.map((c) => c.category));
+  const selSet = useSelection(items.map((s) => s.id));
+  const [batchDeleting, setBatchDeleting] = useState<"cat" | "set" | null>(null);
+
+  const delManyCats = async () => {
+    const names = [...selCat.selected];
+    const nq = categories.filter((c) => selCat.selected.has(c.category)).reduce((a, c) => a + c.question_count, 0);
+    if (
+      await confirm({
+        title: `批量删除 ${names.length} 个分类题集?`,
+        description: `其中的 ${nq} 道题会全部删除，操作不可恢复。`,
+        tone: "danger",
+        confirmLabel: "删除",
+      })
+    ) {
+      setBatchDeleting("cat");
+      const results = await Promise.allSettled(
+        names.map((category) =>
+          fetchJSON("/api/question-library/categories/delete", {
+            method: "POST",
+            body: JSON.stringify({ category }),
+          }),
+        ),
+      );
+      setBatchDeleting(null);
+      selCat.clear();
+      invalidateQuestions(qc);
+      const failed = results.filter((r) => r.status === "rejected").length;
+      setError(failed ? `${failed} 个分类题集删除失败，其余已删除` : null);
+    }
+  };
+
+  const delManySets = async () => {
+    const ids = [...selSet.selected];
+    const nq = items.filter((s) => selSet.selected.has(s.id)).reduce((a, s) => a + s.question_count, 0);
+    if (
+      await confirm({
+        title: `批量删除 ${ids.length} 个简历题集?`,
+        description: `其中的 ${nq} 道题会全部删除，操作不可恢复。`,
+        tone: "danger",
+        confirmLabel: "删除",
+      })
+    ) {
+      setBatchDeleting("set");
+      const results = await Promise.allSettled(
+        ids.map((id) => fetchJSON(`/api/question-sets/${id}`, { method: "DELETE" })),
+      );
+      setBatchDeleting(null);
+      selSet.clear();
+      invalidateQuestions(qc);
+      const failed = results.filter((r) => r.status === "rejected").length;
+      setError(failed ? `${failed} 个题集删除失败，其余已删除` : null);
+    }
+  };
+
   return (
     <>
       <div className="flex items-center gap-3">
@@ -280,11 +373,23 @@ function SetsView() {
             {q ? "没有匹配的分类题集" : "新增题目时填写相同的分类标签，满 2 道就会出现在这里"}
           </div>
         ) : (
-          categories.map((c, i) => (
+          <>
+            <SelectionBar
+              allChecked={selCat.allChecked}
+              onToggleAll={selCat.toggleAll}
+              count={selCat.selected.size}
+              unit="个题集"
+              deleting={batchDeleting === "cat"}
+              onDelete={delManyCats}
+              onClear={selCat.clear}
+            />
+          {categories.map((c, i) => (
             <CategoryRow
               key={c.category}
               cat={c}
               isLast={i === categories.length - 1}
+              selected={selCat.selected.has(c.category)}
+              onSelect={(v) => selCat.toggle(c.category, v)}
               onDelete={async () => {
                 if (
                   await confirm({
@@ -297,7 +402,8 @@ function SetsView() {
                   delCategory.mutate(c.category);
               }}
             />
-          ))
+          ))}
+          </>
         )}
       </div>
 
@@ -315,11 +421,22 @@ function SetsView() {
           />
         ) : (
           <>
+            <SelectionBar
+              allChecked={selSet.allChecked}
+              onToggleAll={selSet.toggleAll}
+              count={selSet.selected.size}
+              unit="个题集"
+              deleting={batchDeleting === "set"}
+              onDelete={delManySets}
+              onClear={selSet.clear}
+            />
             {items.map((qs, i) => (
               <SetRow
                 key={qs.id}
                 qs={qs}
                 isLast={i === items.length - 1}
+                selected={selSet.selected.has(qs.id)}
+                onSelect={(v) => selSet.toggle(qs.id, v)}
                 onDelete={async () => {
                   if (
                     await confirm({
@@ -348,7 +465,19 @@ function SetsView() {
   );
 }
 
-function SetRow({ qs, isLast, onDelete }: { qs: QuestionSetSummary; isLast: boolean; onDelete: () => void }) {
+function SetRow({
+  qs,
+  isLast,
+  selected,
+  onSelect,
+  onDelete,
+}: {
+  qs: QuestionSetSummary;
+  isLast: boolean;
+  selected?: boolean;
+  onSelect?: (checked: boolean) => void;
+  onDelete: () => void;
+}) {
   return (
     <Link
       to={`/question-library/sets/${qs.id}`}
@@ -357,6 +486,19 @@ function SetRow({ qs, isLast, onDelete }: { qs: QuestionSetSummary; isLast: bool
         !isLast && "border-b border-[var(--color-border-row)]",
       )}
     >
+      {onSelect && (
+        <input
+          type="checkbox"
+          checked={!!selected}
+          onChange={(e) => onSelect(e.target.checked)}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          className="w-4 h-4 rounded border-[var(--color-border-subtle)] shrink-0 cursor-pointer"
+          aria-label="选择题集"
+        />
+      )}
       <div className="w-9 h-9 rounded-full bg-[var(--color-accent-soft)] flex items-center justify-center shrink-0">
         <Layers className="w-4 h-4 text-[var(--color-accent)]" />
       </div>
@@ -403,7 +545,19 @@ function SectionTitle({ title, hint, count }: { title: string; hint: string; cou
   );
 }
 
-function CategoryRow({ cat, isLast, onDelete }: { cat: CategorySet; isLast: boolean; onDelete: () => void }) {
+function CategoryRow({
+  cat,
+  isLast,
+  selected,
+  onSelect,
+  onDelete,
+}: {
+  cat: CategorySet;
+  isLast: boolean;
+  selected?: boolean;
+  onSelect?: (checked: boolean) => void;
+  onDelete: () => void;
+}) {
   return (
     <Link
       to={categorySetPath(cat.category)}
@@ -412,6 +566,19 @@ function CategoryRow({ cat, isLast, onDelete }: { cat: CategorySet; isLast: bool
         !isLast && "border-b border-[var(--color-border-row)]",
       )}
     >
+      {onSelect && (
+        <input
+          type="checkbox"
+          checked={!!selected}
+          onChange={(e) => onSelect(e.target.checked)}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          className="w-4 h-4 rounded border-[var(--color-border-subtle)] shrink-0 cursor-pointer"
+          aria-label="选择分类题集"
+        />
+      )}
       <div className="w-9 h-9 rounded-full bg-[var(--color-orange-tint)]/60 flex items-center justify-center shrink-0">
         <Tag className="w-4 h-4 text-[var(--color-text-primary)]" />
       </div>

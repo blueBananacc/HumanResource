@@ -11,12 +11,15 @@ import {
   ItemDrawer,
   QuestionRow,
   RegenerateDialog,
+  SelectionBar,
   StatusChip,
+  deleteLibraryItems,
   diffOptions,
   invalidateQuestions,
   isInflight,
   kindOptions,
   questionText,
+  useSelection,
   type LibraryItem,
   type QuestionSetSummary,
 } from "@/components/questions/shared";
@@ -71,6 +74,27 @@ export function QuestionSetDetail() {
     mutationFn: (itemId: string) => fetchJSON(`/api/question-library/${itemId}`, { method: "DELETE" }),
     onSuccess: () => invalidateQuestions(qc),
   });
+
+  const allIds = (data?.questions ?? []).map((q) => q.id);
+  const sel = useSelection(allIds);
+  const [batchDeleting, setBatchDeleting] = useState(false);
+  const delMany = async () => {
+    const ids = [...sel.selected];
+    if (
+      await confirm({
+        title: `批量删除 ${ids.length} 道题?`,
+        description: "选中的题目会从这个题集和题库中删除，操作不可恢复。",
+        tone: "danger",
+        confirmLabel: "删除",
+      })
+    ) {
+      setBatchDeleting(true);
+      await deleteLibraryItems(ids);
+      setBatchDeleting(false);
+      sel.clear();
+      invalidateQuestions(qc);
+    }
+  };
 
   if (isLoading || !data) {
     return (
@@ -212,6 +236,15 @@ export function QuestionSetDetail() {
             </Button>
           </div>
           <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
+            <SelectionBar
+              allChecked={sel.allChecked}
+              onToggleAll={sel.toggleAll}
+              count={sel.selected.size}
+              unit="道题"
+              deleting={batchDeleting}
+              onDelete={delMany}
+              onClear={sel.clear}
+            />
             {shown.length === 0 ? (
               <div className="p-10 text-center text-sm text-[var(--color-text-tertiary)] font-body">没有符合筛选条件的题目</div>
             ) : (
@@ -223,6 +256,8 @@ export function QuestionSetDetail() {
                   showSet={false}
                   expanded
                   isLast={i === shown.length - 1}
+                  selected={sel.selected.has(q.id)}
+                  onSelect={(v) => sel.toggle(q.id, v)}
                   onEdit={() => setEditing(q)}
                   onRegenerate={() => setRegenItem(q)}
                   onDelete={async () => {
