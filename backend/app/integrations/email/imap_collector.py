@@ -81,11 +81,15 @@ def _open_mailbox(*, host: str, port: int, ssl: bool, email: str, password: str)
     cls = MailBox if ssl else MailBoxUnencrypted
     try:
         mb = cls(host, port=port)
+        # 163 官方接入要求连接建立后立刻 ID 自报身份(登录前也接受);
+        # 登录前发一次保底, 失败不影响登录。
+        _send_imap_id(mb)
         # initial_folder=None 跳过 login() 内部的自动 SELECT:
         # 163 要求先发 ID 再 SELECT, 文件夹由调用方在 ID 之后 set
         mb.login(email, password, initial_folder=None)
     except Exception as e:  # noqa: BLE001 — imap_tools 抛多种异常
         raise EmailFetchError(f"IMAP 登录失败: {e}") from e
+    # 登录后补发一次(163 要求 SELECT 前会话内存在有效 ID)
     _send_imap_id(mb)
     return mb
 
