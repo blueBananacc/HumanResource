@@ -1,0 +1,16 @@
+# 本地开发 override —— `docker compose up` 会自动与本文件合并。
+#
+# 作用:把宿主机 backend/ 源码挂进容器的 /app,配合 Dockerfile.backend
+# CMD 里的 `uvicorn --reload` 实现后端代码热更新;worker 挂同样路径,
+# 改 app/workers/ 后 `docker compose restart worker` 即可生效。
+#
+# 生产部署:在服务器上显式指定 `docker compose -f docker-compose.yml ...`,
+# 显式 -f 时本文件不会被自动加载,生产镜像仍用镜像内 COPY 的代码。
+services:
+  backend:
+    volumes:
+      - ../backend:/app
+
+  worker:
+    volumes:
+      - ../backend:/app

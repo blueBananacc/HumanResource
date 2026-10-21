@@ -1,0 +1,40 @@
+name: deploy
+
+# 推送到 main 即自动部署到生产服务器;也可在 Actions 页手动触发。
+# 需要在仓库 Secrets 中配置: DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY
+# (值由服务器上 deploy/bootstrap.sh 的运行输出给出)
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+    steps:
+      - name: 未配置 secrets 时跳过
+        env:
+          H: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          if [ -z "$H" ]; then
+            echo "DEPLOY_* secrets 未配置,跳过部署(先在仓库 Settings → Secrets 配置)"
+            exit 0
+          fi
+
+      - name: SSH 部署
+        uses: appleboy/ssh-action@v1.2.0
+        if: ${{ env.DEPLOY_HOST != '' }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/hronfire
+            git pull --ff-only
+            cd deploy
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+            sleep 10
+            curl -fsS --retry 6 --retry-delay 5 http://127.0.0.1/api/healthz
