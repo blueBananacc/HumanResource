@@ -36,6 +36,9 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          # ECS 带宽小,全量装依赖可能 >10min(ssh-action 默认超时),放宽到 30min。
+          # 有 BuildKit 缓存挂载后,日常代码变更的重建远达不到这个值。
+          timeout: 30m
           script: |
             set -e
             cd /opt/hronfire
