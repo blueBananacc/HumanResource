@@ -125,6 +125,9 @@ services:
         # 阿里云内网源(ECS 免流量);非阿里云环境可换成 mirrors.aliyun.com
         APT_MIRROR: "mirrors.cloud.aliyuncs.com"
         PIP_INDEX: "https://mirrors.aliyun.com/pypi/simple/"
+    # 追加在 .env.example 之后,同名变量以 .env 为准
+    env_file:
+      - ../backend/.env
     environment:
       DATABASE_URL: postgresql+psycopg://freehire:$PGPW@postgres:5432/freehire
       MACHINE_FINGERPRINT_OVERRIDE: "$MACHINE_FP"
@@ -133,6 +136,8 @@ services:
       args:
         APT_MIRROR: "mirrors.cloud.aliyuncs.com"
         PIP_INDEX: "https://mirrors.aliyun.com/pypi/simple/"
+    env_file:
+      - ../backend/.env
     environment:
       DATABASE_URL: postgresql+psycopg://freehire:$PGPW@postgres:5432/freehire
       MACHINE_FINGERPRINT_OVERRIDE: "$MACHINE_FP"
@@ -160,6 +165,28 @@ for i in $(seq 1 60); do
 done
 [ -n "$ok" ] || { echo "健康检查超时,最近后端日志:"; $COMPOSE -f docker-compose.yml -f docker-compose.prod.yml logs --tail 40 backend; exit 1; }
 curl -fsS http://127.0.0.1/api/healthz; echo
+
+# 同步 admin 密码为本次生成的值 —— admin 只在首个用户创建时用
+# BOOTSTRAP_ADMIN_PASSWORD 初始化,重跑脚本或升级后密码不会自动变,
+# 这里显式同步,保证下方打印的密码一定可用。
+ADMIN_EMAIL=$(grep -oP '^BOOTSTRAP_ADMIN_EMAIL=\K.*' ../backend/.env 2>/dev/null || echo "admin@example.com")
+ADMIN_EMAIL=${ADMIN_EMAIL:-admin@example.com}
+$COMPOSE -f docker-compose.yml -f docker-compose.prod.yml exec -T \
+  -e ADMIN_PW="$ADMIN_PW" -e ADMIN_EMAIL="$ADMIN_EMAIL" \
+  backend python - <<'PY'
+import os
+from app.infra.db import SessionLocal
+from app.infra.security import hash_password
+from app.domain.models import User
+s = SessionLocal()
+u = s.query(User).filter(User.email == os.environ["ADMIN_EMAIL"]).first()
+if u:
+    u.password_hash = hash_password(os.environ["ADMIN_PW"])
+    s.commit()
+    print("admin 密码已同步")
+else:
+    print("未找到 admin 用户,沿用启动时初始化的凭据")
+PY
 
 # GitHub Actions 自动部署用的 SSH 密钥(公钥进 authorized_keys,私钥打印出来让你配 secret)
 mkdir -p /root/.ssh && chmod 700 /root/.ssh
