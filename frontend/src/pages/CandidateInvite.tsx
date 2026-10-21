@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Sparkles, Lock, Clock, Mic } from "lucide-react";
+import { Sparkles, Clock, Mic } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ApiError, fetchJSON } from "@/lib/api";
 import { setCandidateSession } from "@/lib/candidate-session";
@@ -13,7 +13,7 @@ import { levelLabel } from "@/lib/format";
  * 流程:
  * 1. 拉 ``GET /api/i/{token}`` — 410 表示链接失效 / 过期 / 已撤销
  * 2. 展示岗位 + 规则 + (语音模式)PIPL 录音同意
- * 3. 总是调 ``POST /verify`` 取 session token —— 需要末 4 位时也得对上。
+ * 3. 点"开始面试"调 ``POST /verify`` 取 session token(链接即凭证,无额外核对)。
  *    ok=true 后把 ``session_token`` 写进 sessionStorage,后续每个候选人接口
  *    都带 ``X-Candidate-Session`` header(``<audio>`` 走 ``?session=``)。
  * 4. 进入 ``/i/{token}/session`` 答题页(modality='voice' 时走全屏录音 UI)
@@ -26,7 +26,6 @@ type Intro = {
   question_count: number;
   kinds: string[];
   expires_at: string;
-  need_verify: boolean;
   state: "invited" | "in_progress" | "done" | "expired";
   modality: "text" | "voice";
   single_turn_seconds: number;
@@ -44,7 +43,6 @@ const KIND_LABELS: Record<string, string> = {
 export function CandidateInvite() {
   const { token = "" } = useParams<{ token: string }>();
   const navigate = useNavigate();
-  const [phone4, setPhone4] = useState("");
   const [verifyError, setVerifyError] = useState<string | null>(null);
   // 语音面试需要候选人显式同意录音(PIPL 合规);文本面试不需要勾这个。
   const [voiceConsent, setVoiceConsent] = useState(false);
@@ -59,20 +57,13 @@ export function CandidateInvite() {
     mutationFn: () =>
       fetchJSON<VerifyResponse>(`/api/i/${token}/verify`, {
         method: "POST",
-        body: JSON.stringify(
-          data?.need_verify ? { phone_last4: phone4 } : {},
-        ),
       }),
     onSuccess: (res) => {
       if (res.ok && res.session_token) {
         setCandidateSession(token, res.session_token);
         navigate(`/i/${token}/session`);
       } else {
-        setVerifyError(
-          data?.need_verify
-            ? "信息不匹配,请联系发送邀请的 HR 确认"
-            : "无法开始面试,请稍后重试或联系 HR",
-        );
+        setVerifyError("无法开始面试,请稍后重试或联系 HR");
       }
     },
     onError: (e) =>
@@ -87,11 +78,7 @@ export function CandidateInvite() {
       setVerifyError("请先勾选录音同意");
       return;
     }
-    if (data?.need_verify && phone4.length !== 4) {
-      setVerifyError("请填写完整 4 位");
-      return;
-    }
-    // 不再有"跳过 verify"分支 —— 后端必须签发 session token,即便不需要末 4 位也要走一次
+    // verify 即"取 session token"— 链接本身是凭证,不再做手机末 4 位核对
     verify.mutate();
   }
 
@@ -171,34 +158,7 @@ export function CandidateInvite() {
             </div>
           )}
 
-          {data.need_verify && (
-            <div className="flex flex-col gap-2 bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-5">
-              <div className="flex items-center gap-2 text-[13px] font-medium text-[var(--color-text-primary)] font-body">
-                <Lock className="w-4 h-4 text-[var(--color-text-secondary)]" />
-                身份核对
-              </div>
-              <div className="text-[12px] text-[var(--color-text-tertiary)] font-body">
-                为防止链接被误转发,请输入你简历上手机号的<b>后 4 位</b>:
-              </div>
-              <input
-                inputMode="numeric"
-                maxLength={4}
-                value={phone4}
-                onChange={(e) =>
-                  setPhone4(e.target.value.replace(/\D/g, "").slice(0, 4))
-                }
-                placeholder="0000"
-                className="h-11 px-3 rounded-lg bg-white border border-[var(--color-border-subtle)] text-base font-mono w-32 tracking-[0.3em] text-center focus:outline-none focus:border-[var(--color-text-primary)]"
-              />
-              {verifyError && (
-                <div className="text-[12px] text-[var(--color-danger)] font-body">
-                  {verifyError}
-                </div>
-              )}
-            </div>
-          )}
-
-          {!data.need_verify && verifyError && (
+          {verifyError && (
             <div className="text-[12px] text-[var(--color-danger)] font-body">
               {verifyError}
             </div>
@@ -209,7 +169,7 @@ export function CandidateInvite() {
             disabled={verify.isPending || !consentOk}
             fullWidth
           >
-            {verify.isPending ? "校验中…" : "开始面试"}
+            {verify.isPending ? "进入中…" : "开始面试"}
           </Button>
 
           <div className="text-[11px] text-[var(--color-text-tertiary)] font-body text-center">

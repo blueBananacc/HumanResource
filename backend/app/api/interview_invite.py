@@ -10,8 +10,8 @@
 **不走** :func:`app.api.auth.get_current_user`,候选人没有账号。
 
 接口列表:
-- GET  /api/i/{token}                              元信息 + 是否需要末 4 位手机验证
-- POST /api/i/{token}/verify                       校验末 4 位手机号,返回 ok/false
+- GET  /api/i/{token}                              元信息(岗位 / 题数 / 截止时间)
+- POST /api/i/{token}/verify                       签发候选人 session token(无额外校验)
 - POST /api/i/{token}/start                        首次进入触发 lazy 出第 1 题(幂等)
 - GET  /api/i/{token}/state                        候选人侧拉当前 turns(屏蔽 scores / evidence)
 - POST /api/i/{token}/answer                       文本面试:提交文本答案
@@ -23,9 +23,10 @@
 
 License 校验:与 HR 侧一致,``interview.text`` 关闭时所有候选人侧接口 402。
 
-身份验证(P0):/verify 通过后签发短期 HMAC session token(``X-Candidate-Session``
-header 或 ``?session=`` query),/start /state /answer /audio /tts 都强校验,
-防止知道链接的人绕过末 4 位手机验证。详见 :mod:`app.infra.interview_session`。
+身份验证(P0):/verify 直接签发短期 HMAC session token(``X-Candidate-Session``
+header 或 ``?session=`` query),/start /state /answer /audio /tts 都强校验。
+链接本身就是唯一凭证(token 只存 sha256),不再要求候选人输手机末 4 位。
+详见 :mod:`app.infra.interview_session`。
 """
 from __future__ import annotations
 
@@ -96,7 +97,6 @@ class CandidateTurnOut(BaseModel):
 class IntroOut(BaseModel):
     """候选人首次访问链接拿到的元信息。
 
-    - ``need_verify``=True 时,候选人必须先调 ``/verify`` 提交手机末 4 位
     - ``state``:'invited' (未开始) / 'in_progress' (已开始未交卷) / 'done' / 'expired'
     - ``modality``:'text' 走打字答题页 / 'voice' 走录音答题页(M6)
     - ``single_turn_seconds``:语音面试单题时长上限(秒),给前端做倒计时
@@ -108,16 +108,9 @@ class IntroOut(BaseModel):
     question_count: int
     kinds: list[str]
     expires_at: datetime
-    need_verify: bool
     state: str
     modality: str = "text"
     single_turn_seconds: int = 90
-
-
-class VerifyRequest(BaseModel):
-    # 不需要末 4 位验证时(``verify_phone_last4`` 为空),客户端可传 None / 不传。
-    # 强制要求时,服务端会 detect 长度并与库内对比。
-    phone_last4: str | None = Field(default=None, max_length=4)
 
 
 class VerifyResponse(BaseModel):
@@ -279,7 +272,7 @@ def intro(
     token: str,
     db: Session = Depends(get_db),
 ) -> IntroOut:
-    """候选人初次打开链接 — 展示规则与是否要验证手机。"""
+    """候选人初次打开链接 — 展示岗位与规则。"""
     interview = _resolve_interview(db, token, allow_done=True)
     job = db.get(Job, interview.job_id)
     cand = db.get(Candidate, interview.candidate_id)
@@ -297,7 +290,6 @@ def intro(
         question_count=interview.question_count,
         kinds=list(interview.kinds or []),
         expires_at=interview.expires_at or _utcnow_naive(),
-        need_verify=bool(interview.verify_phone_last4),
         state=_candidate_state(interview, turns),
         modality=interview.modality,
         single_turn_seconds=interview.single_turn_seconds,
@@ -311,15 +303,12 @@ def intro(
 )
 def verify(
     token: str,
-    body: VerifyRequest,
     db: Session = Depends(get_db),
 ) -> VerifyResponse:
-    """校验手机末 4 位 → 签发 session token。**始终 200**(避免暴露 token 是否有效)。
+    """签发候选人 session token。**始终 200**(避免暴露 token 是否有效)。
 
     - token 失效 / 过期 / 已 abandoned:返回 ``ok=False, session_token=None``
-    - 未配置 ``verify_phone_last4`` 的 interview:跳过电话比对,直接签发 session
-    - ``phone_last4`` 不匹配:返回 ``ok=False, session_token=None``
-    - 匹配:返回 ``ok=True, session_token=<HMAC>``,前端存 sessionStorage,
+    - 否则返回 ``ok=True, session_token=<HMAC>``,前端存 sessionStorage,
       后续接口走 ``X-Candidate-Session`` header(``<audio>`` 这类没法挂 header
       的场景走 ``?session=``)
     """
@@ -328,11 +317,6 @@ def verify(
     except HTTPException:
         # 不区分 token 失效与验证失败,统一假装"验证未通过"
         return VerifyResponse(ok=False)
-    expected = (interview.verify_phone_last4 or "").strip()
-    submitted = "".join(ch for ch in (body.phone_last4 or "") if ch.isdigit())
-    if expected and submitted != expected:
-        return VerifyResponse(ok=False)
-    # expected 为空(未要求手机验证)→ 直接签发;否则必须 submitted == expected
     assert interview.invite_token_hash  # _resolve_interview 保证非空
     token_str = issue_session_token(
         interview_id=interview.id,

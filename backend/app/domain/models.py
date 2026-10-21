@@ -343,13 +343,12 @@ class Interview(Base):
     kinds: Mapped[list[str]] = mapped_column(
         JSON, nullable=False, default=lambda: ["tech", "project", "scenario", "soft"]
     )
-    # remote 模式独有 — token + expires_at + 验证后 4 位手机号 + 候选人通知邮箱。
+    # remote 模式独有 — token + expires_at + 候选人通知邮箱。
     # token 用 sha256(token_urlsafe(32)) 存,明文只发给 HR 一次。
     invite_token_hash: Mapped[str | None] = mapped_column(
         String(64), nullable=True, unique=True, index=True
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    verify_phone_last4: Mapped[str | None] = mapped_column(String(4), nullable=True)
     notify_email: Mapped[str | None] = mapped_column(String(256), nullable=True)
     delivery: Mapped[str] = mapped_column(String(16), nullable=False, default="link")
     # 候选人首次打开链接时间 — 区分"已邀请未答" / "已开始"

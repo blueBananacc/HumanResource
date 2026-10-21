@@ -255,21 +255,6 @@ def _full_out(db: Session, interview: Interview) -> InterviewOut:
     )
 
 
-def _resolve_phone_last4(db: Session, candidate: Candidate) -> str | None:
-    """从 candidate.display_phone 取末 4 位,作为远程邀请的轻验证锚点。
-
-    候选人首次打开链接需要填这 4 位才能开始答题 — 防止链接被误转发。
-    没有手机号时返回 None,候选人侧验证步骤会被跳过(纯 token 鉴权)。
-    """
-    raw = (candidate.display_phone or "").strip()
-    if not raw:
-        return None
-    digits = "".join(ch for ch in raw if ch.isdigit())
-    if len(digits) < 4:
-        return None
-    return digits[-4:]
-
-
 def _make_invite_url(token: str) -> str:
     """前端候选人入口路径 — 由前端 router 渲染。
 
@@ -340,7 +325,6 @@ def start(
         kinds=kinds,
         invite_token_hash=hash_invite_token(plaintext),
         expires_at=expires_at,
-        verify_phone_last4=_resolve_phone_last4(db, cand),
         notify_email=notify_email,
         delivery=body.delivery,
         created_by=current.id,

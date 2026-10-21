@@ -6,7 +6,7 @@ fixture 风格,直接打真 PG / 真 Redis(CI 起 services,本地起 docker comp
 覆盖:
 1. happy path: HR 发起 remote → 候选人 intro → verify → start → 答题循环 → done
 2. token 鉴权 — 错误 token / 已撤销 / 已过期 → 410
-3. verify — 错误手机末 4 位返回 ok=False(不暴露 token 是否有效)
+3. verify — 无效 token 返回 ok=False;有效 token 直接签发 session(无额外核对)
 4. resend-invite — 旧 token 立刻失效,新 token 生效
 5. cancel-invite — token 失效,interview 状态 abandoned
 6. self_test 已下线 — 老 client 传 mode 字段会被忽略,服务端固定走 remote
@@ -116,7 +116,7 @@ def job_and_candidate(db_session, tenant):
         tenant_id=tenant.id,
         name="测试候选人",
         display_email="cand@example.com",
-        display_phone="13800001234",  # 末 4 位 1234
+        display_phone="13800001234",
     )
     db_session.add_all([job, cand])
     db_session.commit()
@@ -174,17 +174,10 @@ def test_happy_path_remote_invite_full_loop(
     intro = r.json()
     assert intro["job_title"] == "Python 后端工程师"
     assert intro["question_count"] == 3
-    assert intro["need_verify"] is True
     assert intro["state"] == "invited"
 
-    # 验证手机末 4 位 — 错的(不签发 session)
-    r = client.post(f"/api/i/{invite_token}/verify", json={"phone_last4": "9999"})
-    assert r.status_code == 200
-    assert r.json()["ok"] is False
-    assert r.json().get("session_token") in (None, "")
-
-    # 验证手机末 4 位 — 对的(签发 session)
-    r = client.post(f"/api/i/{invite_token}/verify", json={"phone_last4": "1234"})
+    # verify 直接签发 session(链接即凭证,无手机末 4 位核对)
+    r = client.post(f"/api/i/{invite_token}/verify")
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
@@ -380,10 +373,8 @@ def test_remote_mode_blocks_hr_answer_endpoint(
 # ---------------------------- candidate session 强校验 ----------------------------
 
 
-def _verify_and_get_session(client, invite_token: str, *, phone4: str = "1234") -> str:
-    r = client.post(
-        f"/api/i/{invite_token}/verify", json={"phone_last4": phone4}
-    )
+def _verify_and_get_session(client, invite_token: str) -> str:
+    r = client.post(f"/api/i/{invite_token}/verify")
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True, body
@@ -417,19 +408,9 @@ def test_start_without_session_token_returns_401(
     assert r.status_code == 401
 
 
-def test_verify_with_wrong_phone_does_not_issue_session(
-    client, admin_and_token, job_and_candidate
-):
-    """末 4 位不匹配 → ok=false 且没有 session_token。"""
-    _admin, token = admin_and_token
-    job, cand = job_and_candidate
-
-    resp = _start_remote(client, token, job_id=job.id, candidate_id=cand.id)
-    invite_token = resp.json()["invite"]["token"]
-
-    r = client.post(
-        f"/api/i/{invite_token}/verify", json={"phone_last4": "0000"}
-    )
+def test_verify_with_invalid_token_returns_not_ok(client):
+    """无效 token → ok=false 且没有 session_token(不暴露失效原因)。"""
+    r = client.post("/api/i/this-is-not-a-real-token-xxxxxxxxxx/verify")
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is False

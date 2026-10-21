@@ -377,10 +377,8 @@ def test_hr_done_email_sent_after_finish(
     invite_token = r.json()["invite"]["token"]
 
     # 候选人答完 3 题 → _finish 触发 hr done email
-    # 候选人侧 /start /answer 现在强校验 X-Candidate-Session,先走 verify 拿 session
-    vresp = client.post(
-        f"/api/i/{invite_token}/verify", json={"phone_last4": "5678"}
-    )
+    # 候选人侧 /start /answer 强校验 X-Candidate-Session,先走 verify 拿 session
+    vresp = client.post(f"/api/i/{invite_token}/verify")
     assert vresp.status_code == 200 and vresp.json()["ok"] is True
     sess_h = {"X-Candidate-Session": vresp.json()["session_token"]}
     client.post(f"/api/i/{invite_token}/start", headers=sess_h)
