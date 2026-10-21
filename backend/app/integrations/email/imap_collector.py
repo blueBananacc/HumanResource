@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import imaplib
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -70,6 +71,10 @@ def _send_imap_id(mb) -> None:
     服务器不支持 ID 最多回 BAD, 记日志不抛, 对后续操作无副作用。
     """
     try:
+        # imaplib.Commands 命令表没有 'ID'(扩展命令), _simple_command 查表
+        # 直接 KeyError('ID') — 先注册再发, 这是 imaplib 发 ID 的通用解法。
+        if "ID" not in imaplib.Commands:
+            imaplib.Commands["ID"] = ("NONAUTH", "AUTH", "SELECTED", "LOGOUT")
         mb.client._simple_command("ID", _IMAP_ID_ARGS)  # noqa: SLF001
         # 读掉 untagged 响应, 避免污染下一条命令的响应队列
         mb.client._untagged_response("OK", [None], "ID")  # noqa: SLF001
