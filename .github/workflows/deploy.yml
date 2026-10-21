@@ -8,6 +8,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# 同一时刻只允许一个部署运行:连续 push 时后到的排队,
+# 避免两个 run 并发 git pull / compose build 互相踩踏。
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
