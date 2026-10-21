@@ -16,8 +16,9 @@ export function Login() {
   const { user, login } = useAuth();
   const navigate = useNavigate();
   const loc = useLocation();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  // 演示环境:预填默认管理员凭据,一键登录(生产部署请移除)
+  const [email, setEmail] = useState("admin@example.com");
+  const [password, setPassword] = useState("admin123456");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [sso, setSso] = useState<SsoPublic | null>(null);
