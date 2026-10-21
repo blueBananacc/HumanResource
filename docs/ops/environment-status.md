@@ -52,6 +52,8 @@ cd frontend; $env:VITE_API_PROXY="http://localhost"; npm run dev
 2. **服务器访问 GitHub 受限**：`raw.githubusercontent.com` 直连会被 reset；clone/pull 走 `ghfast.top` 镜像。bootstrap 内已做镜像源容错（apt/pip/npm 走阿里云源）。
 3. **本机出站网络受限**：开发机不能直连服务器 SSH（出站被拦），服务器侧操作需在阿里云控制台「远程命令/Cloud Assistant」或 VNC 里执行；但 Actions → 服务器方向是通的。
 4. **部署 IP 与控制台显示不一致**：元数据探测 `120.55.125.13`（以此为准），控制台截图曾显示 `120.55.123.13`。
+6. **后端测试会清空本地开发库**：`pytest` 直接连本地 Docker 的同一个 Postgres，`tests/test_sso.py` 会执行 `query(Tenant).delete()`，级联删掉所有候选人/简历/题集等业务数据（admin 账号会被启动流程重建）。只跑相关测试文件（如 `pytest tests/test_question_sets.py`），需要全量跑前先 `pg_dump` 备份，或改造测试使用独立数据库。
+7. **Celery worker 不热重载**：改了 `app/workers/**` 或被 worker 调用的 service 后需 `docker compose restart worker`。
 5. **登录页预填演示凭据**：`frontend/src/pages/Login.tsx` 预填了 admin 账号密码方便访客一键登录——仅适合演示，正式使用需移除或换密码。
 
 ## 四、CI/CD 自动部署

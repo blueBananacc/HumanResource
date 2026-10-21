@@ -54,7 +54,7 @@ export function QuestionSetsForResume({ resumeId }: { resumeId: string }) {
           {items.map((q) => (
             <Link
               key={q.id}
-              to={`/question-sets/${q.id}`}
+              to={`/question-library/sets/${q.id}`}
               className="flex items-center justify-between px-3 py-2 rounded-lg bg-[var(--color-bg-canvas)] border border-[var(--color-border-subtle)] hover:bg-[var(--color-bg-muted)] transition-colors"
             >
               <div className="flex items-center gap-2 min-w-0">
@@ -84,7 +84,7 @@ export function QuestionSetsForResume({ resumeId }: { resumeId: string }) {
             qc.invalidateQueries({
               queryKey: ["question-sets-by-resume", resumeId],
             });
-            navigate(`/question-sets/${id}`);
+            navigate(`/question-library/sets/${id}`);
           }}
         />
       ) : (
@@ -111,7 +111,13 @@ function GenerateQSForm({
   >("intermediate");
   const [count, setCount] = useState(5);
   const [kinds, setKinds] = useState<string[]>([]);
+  const [jobId, setJobId] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  const jobsQ = useQuery({
+    queryKey: ["jobs-for-question-set"],
+    queryFn: () => fetchJSON<Page<{ id: string; title: string }>>("/api/jobs/?limit=100&offset=0"),
+  });
 
   const create = useMutation({
     mutationFn: () =>
@@ -119,6 +125,7 @@ function GenerateQSForm({
         method: "POST",
         body: JSON.stringify({
           resume_id: resumeId,
+          job_id: jobId || null,
           level,
           count,
           kinds,
@@ -131,6 +138,16 @@ function GenerateQSForm({
 
   return (
     <div className="flex flex-col gap-3 p-3 rounded-lg bg-[var(--color-bg-canvas)] border border-[var(--color-border-subtle)]">
+      <Field label="目标岗位(可选,选择后结合岗位要求出题)">
+        <Select
+          value={jobId}
+          onChange={setJobId}
+          options={[
+            { value: "", label: "不指定岗位(纯按简历出题)" },
+            ...(jobsQ.data?.items ?? []).map((j) => ({ value: j.id, label: j.title })),
+          ]}
+        />
+      </Field>
       <div className="grid grid-cols-2 gap-3">
         <Field label="难度">
           <Select

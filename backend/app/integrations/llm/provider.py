@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import zlib
 from typing import TypedDict
 
 from sqlalchemy.orm import Session
@@ -155,7 +156,7 @@ def _mock_chat(messages: list[Message], *, response_json: bool) -> str:
             return _mock_summary_json(last)
         # 出题场景:返回 {questions: [...]} 包装
         if "出" in sys_prompt and ("题" in sys_prompt or "questions" in sys_prompt.lower()):
-            return _mock_questions_json(sys_prompt)
+            return _mock_questions_json(sys_prompt, last)
         return '{"text": "mock"}'
 
     # 出题场景:返回一个合理的开放问题
@@ -180,11 +181,12 @@ def _mock_question(context: str) -> str:
     return bank[(n - 1) % len(bank)]
 
 
-def _mock_questions_json(sys_prompt: str) -> str:
+def _mock_questions_json(sys_prompt: str, last: str = "") -> str:
     """出题场景 mock:返回 {"questions": [...]} 结构。
 
     试图从 sys_prompt 里抓"产出 N 道"的 N,默认 5 道。
     每题用一个固定模板,answer_points 给 3-4 条,follow_up 给追问。
+    单题重新生成时按 user message 的哈希从题库轮换,避免每次都返回同一题。
     """
     n = 5
     m = re.search(r"产出\s*\*?\*?(\d+)\s*\*?\*?\s*道", sys_prompt)
@@ -241,6 +243,9 @@ def _mock_questions_json(sys_prompt: str) -> str:
             "follow_up": "如果发现实际跟期待不一样,你会怎么处理?",
         },
     ]
+    if "重新生成单题" in sys_prompt:
+        pick = bank[zlib.crc32(last.encode()) % len(bank)]
+        return json.dumps({"questions": [pick]}, ensure_ascii=False)
     out = bank[: max(1, n)] if n <= len(bank) else bank + bank[: n - len(bank)]
     return json.dumps({"questions": out}, ensure_ascii=False)
 

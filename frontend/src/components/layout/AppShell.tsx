@@ -13,7 +13,7 @@ const TITLE_BY_PATH: Record<string, string> = {
   "/talents": "人才库",
   "/jobs": "岗位",
   "/interviews": "面试",
-  "/question-sets": "面试题集",
+  "/question-library": "题库",
   "/reports": "报告",
   "/settings/llm": "LLM 配置",
   "/settings/email": "邮箱拉取",
@@ -62,7 +62,7 @@ export function AppShell() {
     title = "简历详情";
   } else if (loc.pathname.startsWith("/talents/")) {
     title = "候选人档案";
-  } else if (loc.pathname.startsWith("/question-sets/")) {
+  } else if (/^\/question-library\/(sets|categories)\//.test(loc.pathname)) {
     title = "题集详情";
   }
   return (

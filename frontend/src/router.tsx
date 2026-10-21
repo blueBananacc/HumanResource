@@ -17,9 +17,9 @@ import { SsoCallback } from "@/pages/SsoCallback";
 import { SsoSettings } from "@/pages/SsoSettings";
 import { TalentPool } from "@/pages/TalentPool";
 import { TalentDetail } from "@/pages/TalentDetail";
-import { QuestionSets } from "@/pages/QuestionSets";
-import { QuestionSetDetail } from "@/pages/QuestionSetDetail";
+import { LegacyQuestionSetRedirect, QuestionSetDetail } from "@/pages/QuestionSetDetail";
 import { QuestionLibrary } from "@/pages/QuestionLibrary";
+import { CategorySetDetail } from "@/pages/CategorySetDetail";
 import { Analytics } from "@/pages/Analytics";
 import { CandidateInvite } from "@/pages/CandidateInvite";
 import { CandidateSession } from "@/pages/CandidateSession";
@@ -48,9 +48,12 @@ export const router = createBrowserRouter([
       { path: "jobs/:id/matches", element: <JobMatches /> },
       { path: "interviews", element: <Interviews /> },
       { path: "interviews/:id/report", element: <InterviewReport /> },
-      { path: "question-sets", element: <QuestionSets /> },
-      { path: "question-sets/:id", element: <QuestionSetDetail /> },
       { path: "question-library", element: <QuestionLibrary /> },
+      { path: "question-library/sets/:id", element: <QuestionSetDetail /> },
+      { path: "question-library/categories/:name", element: <CategorySetDetail /> },
+      // 「面试题集」已并入题库,旧地址重定向
+      { path: "question-sets", element: <Navigate to="/question-library?view=sets" replace /> },
+      { path: "question-sets/:id", element: <LegacyQuestionSetRedirect /> },
       { path: "reports", element: <Reports /> },
       { path: "analytics", element: <Analytics /> },
       { path: "settings/llm", element: <LLMSettings /> },

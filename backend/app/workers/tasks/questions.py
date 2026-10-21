@@ -3,7 +3,7 @@
 外部接口:``generate_question_set_task.delay(set_id)``。
 
 设计:
-- 任务从 DB 拉 QuestionSet 行,跑 LLM 生成,写回 questions / status
+- 任务从 DB 拉 QuestionSet 行,跑 LLM 生成,每题落为挂在题集下的题库条目,更新 status
 - 不重试:LLM 出题确定性低重试也未必更好;UI 上 HR 可以手动「重新生成」
 """
 from __future__ import annotations
@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.models import Job, QuestionSet, Resume
 from app.infra.db import SessionLocal
+from app.services.question_bank import replace_set_questions
 from app.services.question_generator import generate_questions
 from app.workers.celery_app import celery_app
 
@@ -48,11 +49,7 @@ def generate_question_set_task(self: Any, set_id: str) -> dict[str, Any]:
 
         # 已经成终态的不重做(并发投递 / 重试场景)
         if qs.status in ("done", "failed"):
-            return {
-                "set_id": set_id,
-                "status": qs.status,
-                "count": len(qs.questions or []) if qs.questions else 0,
-            }
+            return {"set_id": set_id, "status": qs.status}
 
         resume = db.get(Resume, qs.resume_id)
         if resume is None:
@@ -79,14 +76,14 @@ def generate_question_set_task(self: Any, set_id: str) -> dict[str, Any]:
             _mark_failed(db, qs, f"LLM 异常: {e}")
             return {"set_id": set_id, "status": "failed"}
 
-        qs.questions = questions
+        items = replace_set_questions(db, qs, questions)
         qs.status = "done"
         qs.finished_at = _utcnow_naive()
         db.commit()
         return {
             "set_id": set_id,
             "status": "done",
-            "count": len(questions),
+            "count": len(items),
         }
     finally:
         db.close()

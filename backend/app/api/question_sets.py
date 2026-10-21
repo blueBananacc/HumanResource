@@ -1,11 +1,13 @@
-"""面试题集 API。
+"""面试题集 API。题集只是题目的集合,题目本身是题库条目(question_set_id 指回题集)。
 
 端点:
 - POST   /api/question-sets             创建(异步入队)
 - GET    /api/question-sets             列出当前租户所有题集(可按 resume_id 过滤)
-- GET    /api/question-sets/{id}        详情(含题目列表)
-- DELETE /api/question-sets/{id}        删除
+- GET    /api/question-sets/{id}        详情(含题目列表,即该题集下的题库条目)
+- DELETE /api/question-sets/{id}        删除(连同题集下的题目)
 - POST   /api/question-sets/{id}/regen  重新生成(同 resume / job / level / count / kinds)
+
+单题的编辑 / 删除 / 重新生成走题库接口 ``/api/question-library/{id}``。
 
 权限:任何登录用户可创建 / 看自己租户的题集(viewer 只读,hr/admin 可创建)。
 """
@@ -17,11 +19,13 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, apply_q_ilike, count_total, paginate_params
 from app.api.auth import get_current_user
+from app.api.question_library import LibraryItemOut, items_to_out
 from app.domain.models import Candidate, Job, QuestionLibraryItem, QuestionSet, Resume, User
 from app.infra.db import get_db
 from app.services.question_generator import KINDS
@@ -31,14 +35,6 @@ logger = logging.getLogger(__name__)
 
 
 # ---- schemas ----
-
-
-class QuestionItem(BaseModel):
-    question: str
-    answer_points: list[str]
-    dimensions: list[str]
-    difficulty: str
-    follow_up: str | None = None
 
 
 class QuestionSetSummary(BaseModel):
@@ -58,10 +54,12 @@ class QuestionSetSummary(BaseModel):
     resume_file_name: str
     candidate_name: str
     job_title: str | None
+    # 题集当前实际题数(单题删除后会少于 count;count 是出题时请求的题量)
+    question_count: int = 0
 
 
 class QuestionSetDetail(QuestionSetSummary):
-    questions: list[QuestionItem] | None = None
+    questions: list[LibraryItemOut] | None = None
     started_at: datetime | None = None
 
 
@@ -94,7 +92,28 @@ def _get_in_tenant(db: Session, *, set_id: str, tenant_id: str) -> QuestionSet:
     return qs
 
 
-def _summary(db: Session, qs: QuestionSet) -> QuestionSetSummary:
+def _set_items(db: Session, set_id: str) -> list[QuestionLibraryItem]:
+    return list(
+        db.scalars(
+            select(QuestionLibraryItem)
+            .where(QuestionLibraryItem.question_set_id == set_id)
+            .order_by(QuestionLibraryItem.position, QuestionLibraryItem.created_at)
+        ).all()
+    )
+
+
+def _question_counts(db: Session, set_ids: list[str]) -> dict[str, int]:
+    if not set_ids:
+        return {}
+    rows = db.execute(
+        select(QuestionLibraryItem.question_set_id, func.count())
+        .where(QuestionLibraryItem.question_set_id.in_(set_ids))
+        .group_by(QuestionLibraryItem.question_set_id)
+    ).all()
+    return {sid: n for sid, n in rows}
+
+
+def _summary(db: Session, qs: QuestionSet, question_count: int | None = None) -> QuestionSetSummary:
     resume = db.get(Resume, qs.resume_id)
     cand_name = "(已删除)"
     file_name = "(已删除)"
@@ -123,18 +142,20 @@ def _summary(db: Session, qs: QuestionSet) -> QuestionSetSummary:
         resume_file_name=file_name,
         candidate_name=cand_name,
         job_title=job_title,
+        question_count=(
+            question_count
+            if question_count is not None
+            else _question_counts(db, [qs.id]).get(qs.id, 0)
+        ),
     )
 
 
 def _detail(db: Session, qs: QuestionSet) -> QuestionSetDetail:
-    s = _summary(db, qs)
+    items = _set_items(db, qs.id)
+    s = _summary(db, qs, len(items))
     return QuestionSetDetail(
         **s.model_dump(),
-        questions=[
-            QuestionItem(**q) for q in (qs.questions or []) if isinstance(q, dict)
-        ]
-        if qs.questions
-        else None,
+        questions=items_to_out(db, items) if items else None,
         started_at=qs.started_at,
     )
 
@@ -228,8 +249,9 @@ def list_sets(
     rows = db.scalars(
         stmt.order_by(QuestionSet.created_at.desc()).limit(limit).offset(offset)
     ).all()
+    counts = _question_counts(db, [r.id for r in rows])
     return PageOut[QuestionSetSummary](
-        items=[_summary(db, r) for r in rows],
+        items=[_summary(db, r, counts.get(r.id, 0)) for r in rows],
         total=total,
         limit=limit,
         offset=offset,
@@ -255,6 +277,8 @@ def delete(
     if current.role == "viewer":
         raise HTTPException(403, "viewer 不能删题集")
     qs = _get_in_tenant(db, set_id=set_id, tenant_id=current.tenant_id)
+    # 显式删题集下的题目(不依赖数据库层 FK 级联是否开启)
+    db.execute(sa_delete(QuestionLibraryItem).where(QuestionLibraryItem.question_set_id == qs.id))
     db.delete(qs)
     db.commit()
 
@@ -265,79 +289,16 @@ def regenerate(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ) -> QuestionSetDetail:
-    """重置成 pending + 重新入队跑同样配置。"""
+    """重置成 pending + 清空题集下的题目 + 重新入队跑同样配置。"""
     if current.role == "viewer":
         raise HTTPException(403, "viewer 不能重新生成")
     qs = _get_in_tenant(db, set_id=set_id, tenant_id=current.tenant_id)
+    db.execute(sa_delete(QuestionLibraryItem).where(QuestionLibraryItem.question_set_id == qs.id))
     qs.status = "pending"
     qs.error = None
-    qs.questions = None
     qs.started_at = None
     qs.finished_at = None
     db.commit()
     _enqueue_or_fallback(qs.id)
     db.refresh(qs)
     return _detail(db, qs)
-
-
-class ExportToLibraryOut(BaseModel):
-    exported: int
-
-
-@router.post("/{set_id}/export-to-library", response_model=ExportToLibraryOut)
-def export_to_library(
-    set_id: str,
-    db: Session = Depends(get_db),
-    current: User = Depends(get_current_user),
-) -> ExportToLibraryOut:
-    """将题集里所有题目批量存入题库(source=ai_generated)。已完成的题集才可导出。"""
-    if current.role == "viewer":
-        raise HTTPException(403, "viewer 不能导出题目")
-    qs = _get_in_tenant(db, set_id=set_id, tenant_id=current.tenant_id)
-    if qs.status != "done" or not qs.questions:
-        raise HTTPException(400, "题集尚未生成完成,无法导出")
-
-    job = db.get(Job, qs.job_id) if qs.job_id else None
-    category = job.title if job else ""
-
-    _KIND_MAP = {"tech": "tech", "project": "project", "scenario": "scenario", "soft": "soft"}
-    _DIFF_MAP = {"初级": "initial", "中级": "intermediate", "高级": "advanced", "专家": "expert"}
-
-    count = 0
-    for q in qs.questions:
-        if not isinstance(q, dict) or not q.get("question"):
-            continue
-        # 从 dimensions 推导 kind(取第一个可识别的维度)
-        dims = q.get("dimensions") or []
-        kind = "tech"
-        for d in dims:
-            if "技术" in d or "tech" in d.lower():
-                kind = "tech"; break
-            if "项目" in d or "project" in d.lower():
-                kind = "project"; break
-            if "场景" in d or "scenario" in d.lower() or "系统" in d:
-                kind = "scenario"; break
-            if "软" in d or "soft" in d.lower():
-                kind = "soft"; break
-
-        raw_diff = q.get("difficulty") or ""
-        difficulty = _DIFF_MAP.get(raw_diff, "intermediate")
-
-        item = QuestionLibraryItem(
-            tenant_id=current.tenant_id,
-            question=q["question"],
-            answer_points=q.get("answer_points") or [],
-            kind=kind,
-            difficulty=difficulty,
-            category=category,
-            follow_up=q.get("follow_up") or None,
-            source="ai_generated",
-            generated_from_job_id=qs.job_id,
-            created_by=current.id,
-        )
-        db.add(item)
-        count += 1
-
-    db.commit()
-    return ExportToLibraryOut(exported=count)
-

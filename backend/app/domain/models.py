@@ -738,10 +738,11 @@ class CandidateNote(Base):
 class QuestionSet(Base):
     """简历 → 面试题 题集。
 
-    HR 在某份简历上点「生成面试题」即创建一条记录,worker 调 LLM 生成
-    题目数组写入 ``questions`` 列。状态机:pending → generating → done / failed。
+    HR 在某份简历上点「生成面试题」即创建一条记录,worker 调 LLM 生成题目,
+    每道题落为一条 :class:`QuestionLibraryItem`(``question_set_id`` 指回本题集)。
+    状态机:pending → generating → done / failed。
 
-    questions 结构::
+    ``questions`` 列已废弃(0027 起题目迁入题库,该列置空,仅为降级保留)。旧结构::
 
         [{
           "question":      "题干",
@@ -925,9 +926,11 @@ class JobComment(Base):
 
 
 class QuestionLibraryItem(Base):
-    """租户级题库条目 — 可跨面试复用的问题池。
+    """租户级题库条目 — 题目是唯一实体,题集只是题目的集合。
 
-    ``source``: "manual"(HR 手工录入) / "ai_generated"(从题集导出或直接 AI 生成)。
+    ``source``: "manual"(HR 手工录入) / "ai_generated"(题集出题或直接 AI 生成)。
+    ``question_set_id``: 所属题集(为空=独立题目);题集删除时一并删除。
+    ``position``: 在题集内的顺序;``dimensions``: 出题时 LLM 给的考察维度。
     ``use_count`` / ``avg_score`` 在面试引用本题后异步更新,供区分度分析用。
     """
 
@@ -948,6 +951,14 @@ class QuestionLibraryItem(Base):
     use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     avg_score: Mapped[float | None] = mapped_column(nullable=True)
     generated_from_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    question_set_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("question_sets.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dimensions: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
