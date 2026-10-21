@@ -33,8 +33,22 @@ jobs:
           script: |
             set -e
             cd /opt/hronfire
+            BEFORE=$(git rev-parse HEAD)
             git pull --ff-only
+            CHANGED=$(git diff --name-only "$BEFORE" HEAD || true)
+            echo "changed files: $CHANGED"
             cd deploy
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-            sleep 10
+            # 按需重建:只构建代码变过的服务,没改就不构建(省流量/省时间)
+            SVC=""
+            echo "$CHANGED" | grep -Eq '^(backend|deploy)/' && SVC="$SVC backend worker" || true
+            echo "$CHANGED" | grep -Eq '^frontend/' && SVC="$SVC frontend" || true
+            COMPOSE="docker compose"; docker compose version >/dev/null 2>&1 || COMPOSE="docker-compose"
+            if [ -n "${SVC// }" ]; then
+              echo "rebuilding:$SVC"
+              $COMPOSE -f docker-compose.yml -f docker-compose.prod.yml up -d --build $SVC
+            else
+              echo "无应用代码变更,仅确保容器在线"
+              $COMPOSE -f docker-compose.yml -f docker-compose.prod.yml up -d
+            fi
+            sleep 5
             curl -fsS --retry 6 --retry-delay 5 http://127.0.0.1/api/healthz

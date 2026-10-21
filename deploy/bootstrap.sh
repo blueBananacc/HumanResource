@@ -4,6 +4,8 @@
 #   bash <(curl -fsSL https://raw.githubusercontent.com/blueBananacc/HumanResource/main/deploy/bootstrap.sh)
 # 或克隆后:bash deploy/bootstrap.sh
 # 脚本幂等,可重复执行;再次执行走增量更新(git pull + rebuild)。
+# 针对国内服务器:GitHub / Docker Hub / get.docker.com 均可能被拦,
+# 每个环节都有镜像源或 apt 源兜底,会自动试错,不需要人工干预。
 set -euo pipefail
 
 LOG=/root/hronfire-bootstrap.log
@@ -20,19 +22,66 @@ step() { echo; echo "---- $* ----"; }
 
 step "1/6 Docker"
 if ! command -v docker >/dev/null 2>&1; then
-  curl -fsSL https://get.docker.com | sh
+  if curl -fsSL --connect-timeout 15 https://get.docker.com -o /tmp/get-docker.sh; then
+    sh /tmp/get-docker.sh
+  else
+    echo "get.docker.com 不可达,改用 Ubuntu 官方源 docker.io"
+    apt-get update -qq && apt-get install -y -qq docker.io
+  fi
 fi
 systemctl enable --now docker
 docker --version
-docker compose version
+
+# compose 插件探测:优先 docker compose(v2),退化 docker-compose(v1)
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE="docker-compose"
+else
+  apt-get update -qq
+  apt-get install -y -qq docker-compose-v2 || apt-get install -y -qq docker-compose
+  if docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"; else COMPOSE="docker-compose"; fi
+fi
+echo "compose: $COMPOSE"
+$COMPOSE version
+
+# Docker Hub 拉取探测:拉不动时自动配 registry 镜像站再重试
+if ! timeout 90 docker pull hello-world >/dev/null 2>&1; then
+  echo "Docker Hub 直连失败,配置 registry mirrors 后重试"
+  mkdir -p /etc/docker
+  cat > /etc/docker/daemon.json <<'EOF'
+{
+  "registry-mirrors": [
+    "https://docker.1ms.run",
+    "https://docker.m.daocloud.io",
+    "https://docker.xuanyuan.me",
+    "https://hub.rat.dev"
+  ]
+}
+EOF
+  systemctl restart docker
+  sleep 3
+  timeout 90 docker pull hello-world >/dev/null 2>&1 \
+    && echo "镜像源可用" || echo "警告: 镜像源仍不可用,后续构建可能拉镜像失败"
+fi
 
 step "2/6 拉取代码"
 apt-get update -qq && apt-get install -y -qq git curl ca-certificates >/dev/null
 mkdir -p "$(dirname "$APP_DIR")"
-if [ ! -d "$APP_DIR/.git" ]; then
-  git clone "$REPO" "$APP_DIR"
+if [ -d "$APP_DIR/.git" ]; then
+  git -C "$APP_DIR" pull --ff-only || echo "git pull 失败,沿用当前代码继续部署"
 else
-  git -C "$APP_DIR" pull --ff-only
+  cloned=""
+  for src in \
+    "$REPO" \
+    "https://ghfast.top/$REPO" \
+    "https://gh-proxy.com/$REPO" \
+    "https://mirror.ghproxy.com/$REPO" ; do
+    echo "尝试克隆: $src"
+    if git clone --depth 1 "$src" "$APP_DIR"; then cloned=1; break; fi
+    rm -rf "$APP_DIR"
+  done
+  [ -n "$cloned" ] || { echo "所有 GitHub 源均不可达"; exit 1; }
 fi
 cd "$APP_DIR"
 
@@ -78,12 +127,16 @@ services:
       DATABASE_URL: postgresql+psycopg://freehire:$PGPW@postgres:5432/freehire
       MACHINE_FINGERPRINT_OVERRIDE: "$MACHINE_FP"
 EOF
-grep -q "docker-compose.prod.yml" .gitignore 2>/dev/null \
+grep -q "docker-compose.prod.yml" .git/info/exclude 2>/dev/null \
   || echo "deploy/docker-compose.prod.yml" >> .git/info/exclude
+# .bootstrap-secrets / .env 同理,防误提交
+for f in "deploy/.bootstrap-secrets" "backend/.env"; do
+  grep -qxF "$f" .git/info/exclude 2>/dev/null || echo "$f" >> .git/info/exclude
+done
 
 step "5/6 构建并启动(首次构建约 5~15 分钟)"
 cd deploy
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+$COMPOSE -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 
 step "6/6 健康检查"
 ok=""
@@ -91,7 +144,7 @@ for i in $(seq 1 60); do
   if curl -fsS --max-time 5 http://127.0.0.1/api/healthz >/dev/null 2>&1; then ok=1; break; fi
   sleep 5
 done
-[ -n "$ok" ] || { echo "健康检查超时,最近后端日志:"; docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail 40 backend; exit 1; }
+[ -n "$ok" ] || { echo "健康检查超时,最近后端日志:"; $COMPOSE -f docker-compose.yml -f docker-compose.prod.yml logs --tail 40 backend; exit 1; }
 curl -fsS http://127.0.0.1/api/healthz; echo
 
 # GitHub Actions 自动部署用的 SSH 密钥(公钥进 authorized_keys,私钥打印出来让你配 secret)
@@ -99,7 +152,8 @@ mkdir -p /root/.ssh && chmod 700 /root/.ssh
 if [ ! -f /root/.ssh/github_deploy ]; then
   ssh-keygen -t ed25519 -f /root/.ssh/github_deploy -N "" -C github-deploy -q
 fi
-grep -q "github-deploy" /root/.ssh/authorized_keys 2>/dev/null \
+touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
+grep -q "github-deploy" /root/.ssh/authorized_keys \
   || cat /root/.ssh/github_deploy.pub >> /root/.ssh/authorized_keys
 
 echo
