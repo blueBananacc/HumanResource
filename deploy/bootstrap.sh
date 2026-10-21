@@ -9,8 +9,9 @@
 set -euo pipefail
 
 LOG=/root/hronfire-bootstrap.log
+echo "=== HROnfire bootstrap $(date -Is) ===" > "$LOG"
 exec > >(tee -a "$LOG") 2>&1
-echo "=== HROnfire bootstrap $(date -Is) ==="
+echo "script pid $$ starting"
 
 APP_DIR=/opt/hronfire
 REPO=https://github.com/blueBananacc/HumanResource.git
@@ -111,21 +112,34 @@ sed -i \
   backend/.env
 grep -q "^JWT_SECRET=dev" backend/.env && { echo "JWT_SECRET 未替换成功"; exit 1; } || true
 
-step "4/6 生产 compose 覆盖文件(含随机数据库密码,不入库)"
+step "4/6 生产 compose 覆盖文件(含随机数据库密码 + 国内构建镜像源,不入库)"
 cat > deploy/docker-compose.prod.yml <<EOF
-# 由 bootstrap.sh 生成,含生产密钥 —— 不要提交到 git
+# 由 bootstrap.sh 生成,含生产密钥与国内构建镜像源 —— 不要提交到 git
 services:
   postgres:
     environment:
       POSTGRES_PASSWORD: "$PGPW"
   backend:
+    build:
+      args:
+        # 阿里云内网源(ECS 免流量);非阿里云环境可换成 mirrors.aliyun.com
+        APT_MIRROR: "mirrors.cloud.aliyuncs.com"
+        PIP_INDEX: "https://mirrors.aliyun.com/pypi/simple/"
     environment:
       DATABASE_URL: postgresql+psycopg://freehire:$PGPW@postgres:5432/freehire
       MACHINE_FINGERPRINT_OVERRIDE: "$MACHINE_FP"
   worker:
+    build:
+      args:
+        APT_MIRROR: "mirrors.cloud.aliyuncs.com"
+        PIP_INDEX: "https://mirrors.aliyun.com/pypi/simple/"
     environment:
       DATABASE_URL: postgresql+psycopg://freehire:$PGPW@postgres:5432/freehire
       MACHINE_FINGERPRINT_OVERRIDE: "$MACHINE_FP"
+  frontend:
+    build:
+      args:
+        NPM_REGISTRY: "https://registry.npmmirror.com"
 EOF
 grep -q "docker-compose.prod.yml" .git/info/exclude 2>/dev/null \
   || echo "deploy/docker-compose.prod.yml" >> .git/info/exclude
