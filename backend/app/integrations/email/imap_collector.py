@@ -65,20 +65,10 @@ def _send_imap_id(mb) -> None:
     拒绝并返回 ``SELECT Unsafe Login. Please contact kefu@188.com for help``。
     QQ/Gmail/Outlook 等忽略此命令, 无副作用。
 
-    仅在服务器 capability 中宣告 ID 时发送, 出错只记日志不抛 — 即便
-    服务器拒绝 ID, 后续 SELECT 还可能正常(只对 163 致命)。
+    无条件发送:imaplib 的 ``client.capabilities`` 需主动发 CAPABILITY
+    命令才填充, 默认是空元组 — 按 capability 判断会永远跳过。
+    服务器不支持 ID 最多回 BAD, 记日志不抛, 对后续操作无副作用。
     """
-    try:
-        capabilities = getattr(mb.client, "capabilities", ()) or ()
-        # imaplib 的 capabilities 是 bytes 元组, 统一转成 str 再比对
-        capabilities = {
-            c.decode("ascii", "ignore").upper() if isinstance(c, bytes) else str(c).upper()
-            for c in capabilities
-        }
-    except Exception:  # noqa: BLE001
-        return
-    if "ID" not in capabilities:
-        return
     try:
         mb.client._simple_command("ID", _IMAP_ID_ARGS)  # noqa: SLF001
         # 读掉 untagged 响应, 避免污染下一条命令的响应队列

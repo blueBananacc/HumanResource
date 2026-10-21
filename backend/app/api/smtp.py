@@ -246,7 +246,8 @@ def send_test_email(
     cfg = _account_to_config(a)
     if cfg is None:
         return TestResult(ok=False, message="无法解密密码 (KEY 可能已变更)")
-    target = (body.to or current.email).strip()
+    # 默认发到发件人邮箱(给自己发一封最直观),其次登录账号
+    target = (body.to or a.from_email or current.email).strip()
     try:
         send_email(
             cfg,
