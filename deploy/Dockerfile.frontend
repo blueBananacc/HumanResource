@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Frontend Dockerfile —— 多阶段:Node 构建 → Nginx 静态托管。
 # 私有化交付时整个产物就是静态文件,反代到 backend。
 
@@ -8,7 +9,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 # 国内构建机可传 --build-arg NPM_REGISTRY=https://registry.npmmirror.com
 ARG NPM_REGISTRY=""
-RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi \
+# cache mount:层失效后 npm 下载仍命中本机缓存,不必重新拉 tarball。
+RUN --mount=type=cache,target=/root/.npm \
+    if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi \
  && npm ci --no-audit --no-fund
 
 COPY tsconfig.json tsconfig.node.json vite.config.ts index.html ./

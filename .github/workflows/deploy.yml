@@ -40,8 +40,9 @@ jobs:
             cd deploy
             # 按需重建:只构建代码变过的服务,没改就不构建(省流量/省时间)
             SVC=""
+            # deploy/ 下是 Dockerfile/compose/启动脚本,影响全部服务 → 全量重建
             echo "$CHANGED" | grep -Eq '^(backend|deploy)/' && SVC="$SVC backend worker" || true
-            echo "$CHANGED" | grep -Eq '^frontend/' && SVC="$SVC frontend" || true
+            echo "$CHANGED" | grep -Eq '^(frontend|deploy)/' && SVC="$SVC frontend" || true
             COMPOSE="docker compose"; docker compose version >/dev/null 2>&1 || COMPOSE="docker-compose"
             if [ -n "${SVC// }" ]; then
               echo "rebuilding:$SVC"

@@ -1,9 +1,9 @@
+# syntax=docker/dockerfile:1
 # Backend Dockerfile —— M0 单阶段镜像,M1 优化为多阶段并裁剪。
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
@@ -32,7 +32,10 @@ COPY pyproject.toml ./
 # 国内 pypi 常超时,build 时可指定:
 #   --build-arg PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG PIP_INDEX=""
-RUN pip install --upgrade pip ${PIP_INDEX:+--index-url $PIP_INDEX} \
+# cache mount:即使构建层失效(pyproject.toml 或上游变化),
+# 已下载的 wheel 仍留在 BuildKit 缓存卷里,重装不再走网络。
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip ${PIP_INDEX:+--index-url $PIP_INDEX} \
  && pip install -e ".[dev]" ${PIP_INDEX:+--index-url $PIP_INDEX}
 
 COPY app ./app
