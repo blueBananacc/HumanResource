@@ -14,6 +14,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Drawer } from "@/components/ui/drawer";
@@ -172,36 +173,47 @@ export function SelectionBar({
   onDelete: () => void;
   onClear: () => void;
 }) {
+  const active = count > 0;
   return (
-    <div className="flex items-center gap-3 px-6 py-2.5 border-b border-[var(--color-border-row)] bg-[var(--color-bg-muted)]/60">
-      <input
-        type="checkbox"
+    <div
+      className={cn(
+        "flex items-center gap-3 px-6 h-11 border-b border-[var(--color-border-row)] transition-colors duration-200",
+        active ? "bg-[var(--color-accent-soft)]/50" : "bg-[var(--color-bg-muted)]/40",
+      )}
+    >
+      <Checkbox
         checked={allChecked}
-        onChange={(e) => onToggleAll(e.target.checked)}
-        className="w-4 h-4 rounded border-[var(--color-border-subtle)] cursor-pointer"
-        aria-label="全选"
+        indeterminate={active && !allChecked}
+        onToggle={() => onToggleAll(!allChecked)}
+        label="全选"
       />
-      {count > 0 ? (
+      {active ? (
         <>
           <span className="text-[12px] font-body text-[var(--color-text-secondary)]">
-            已选 <span className="font-mono font-semibold text-[var(--color-text-primary)]">{count}</span> {unit}
+            已选{" "}
+            <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-[var(--color-orange)] text-white text-[11px] font-mono font-semibold align-middle">
+              {count}
+            </span>{" "}
+            {unit}
           </span>
-          <button
-            type="button"
-            onClick={onDelete}
-            disabled={deleting}
-            className="flex items-center gap-1 text-[12px] font-body font-bold text-[var(--color-danger)] hover:underline disabled:opacity-50"
-          >
-            {deleting && <Loader2 className="w-3 h-3 animate-spin" />}
-            批量删除
-          </button>
-          <button
-            type="button"
-            onClick={onClear}
-            className="text-[12px] font-body text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-          >
-            清除选择
-          </button>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClear}
+              className="px-3 py-1 rounded-md text-[12px] font-body font-bold text-[var(--color-text-secondary)] hover:bg-white/70 hover:text-[var(--color-text-primary)] transition-colors"
+            >
+              清除
+            </button>
+            <button
+              type="button"
+              onClick={onDelete}
+              disabled={deleting}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-md text-[12px] font-body font-bold text-[var(--color-danger)] border border-[var(--color-danger)]/40 bg-white hover:bg-[var(--color-danger)] hover:text-white hover:border-[var(--color-danger)] transition-all duration-150 disabled:opacity-50"
+            >
+              {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+              删除
+            </button>
+          </div>
         </>
       ) : (
         <span className="text-[12px] font-body text-[var(--color-text-tertiary)]">全选当前列表</span>
@@ -284,20 +296,14 @@ export function QuestionRow({
   return (
     <div
       className={cn(
-        "px-6 py-4 group hover:bg-[var(--color-bg-muted)] transition-colors",
+        "px-6 py-4 group transition-colors",
+        selected ? "bg-[var(--color-accent-soft)]/40" : "hover:bg-[var(--color-bg-muted)]",
         !isLast && "border-b border-[var(--color-border-row)]",
       )}
     >
       <div className="flex items-start justify-between gap-4">
         {onSelect && (
-          <input
-            type="checkbox"
-            checked={!!selected}
-            onChange={(e) => onSelect(e.target.checked)}
-            onClick={(e) => e.stopPropagation()}
-            className="mt-1 w-4 h-4 rounded border-[var(--color-border-subtle)] shrink-0 cursor-pointer"
-            aria-label="选择题目"
-          />
+          <Checkbox checked={!!selected} onToggle={() => onSelect(!selected)} label="选择题目" className="mt-1" />
         )}
         <div className="flex flex-col flex-1 min-w-0 gap-2">
           <div className="flex items-center gap-2 flex-wrap">

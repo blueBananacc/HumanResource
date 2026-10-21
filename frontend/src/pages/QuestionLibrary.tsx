@@ -5,6 +5,7 @@ import { BookOpen, ChevronRight, FileText, Layers, List, Loader2, Plus, Sparkles
 import { Empty } from "@/components/ui/empty";
 import { useConfirm } from "@/components/ui/confirm";
 import { SearchInput } from "@/components/ui/search-input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Pagination } from "@/components/ui/pagination";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -482,22 +483,15 @@ function SetRow({
     <Link
       to={`/question-library/sets/${qs.id}`}
       className={cn(
-        "flex items-center gap-4 px-6 py-4 group hover:bg-[var(--color-bg-muted)] transition-colors",
+        "flex items-center gap-4 px-6 py-4 group transition-colors",
+        selected ? "bg-[var(--color-accent-soft)]/40" : "hover:bg-[var(--color-bg-muted)]",
         !isLast && "border-b border-[var(--color-border-row)]",
       )}
     >
       {onSelect && (
-        <input
-          type="checkbox"
-          checked={!!selected}
-          onChange={(e) => onSelect(e.target.checked)}
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-          className="w-4 h-4 rounded border-[var(--color-border-subtle)] shrink-0 cursor-pointer"
-          aria-label="选择题集"
-        />
+        <span onClick={(e) => e.preventDefault()}>
+          <Checkbox checked={!!selected} onToggle={() => onSelect(!selected)} label="选择题集" />
+        </span>
       )}
       <div className="w-9 h-9 rounded-full bg-[var(--color-accent-soft)] flex items-center justify-center shrink-0">
         <Layers className="w-4 h-4 text-[var(--color-accent)]" />
@@ -562,22 +556,15 @@ function CategoryRow({
     <Link
       to={categorySetPath(cat.category)}
       className={cn(
-        "flex items-center gap-4 px-6 py-4 group hover:bg-[var(--color-bg-muted)] transition-colors",
+        "flex items-center gap-4 px-6 py-4 group transition-colors",
+        selected ? "bg-[var(--color-accent-soft)]/40" : "hover:bg-[var(--color-bg-muted)]",
         !isLast && "border-b border-[var(--color-border-row)]",
       )}
     >
       {onSelect && (
-        <input
-          type="checkbox"
-          checked={!!selected}
-          onChange={(e) => onSelect(e.target.checked)}
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-          className="w-4 h-4 rounded border-[var(--color-border-subtle)] shrink-0 cursor-pointer"
-          aria-label="选择分类题集"
-        />
+        <span onClick={(e) => e.preventDefault()}>
+          <Checkbox checked={!!selected} onToggle={() => onSelect(!selected)} label="选择分类题集" />
+        </span>
       )}
       <div className="w-9 h-9 rounded-full bg-[var(--color-orange-tint)]/60 flex items-center justify-center shrink-0">
         <Tag className="w-4 h-4 text-[var(--color-text-primary)]" />
