@@ -184,7 +184,7 @@ export function LicenseSettings() {
                 ? `Trial · 等同 Professional 全功能 · ${data.days_remaining} 天剩余`
                 : data?.edition === "community"
                   ? "开源社区版 · 限量使用"
-                  : "Free-Hire 商业版"}
+                  : "HROnfire 商业版"}
             </span>
           </div>
           <div className="flex items-baseline gap-2.5">

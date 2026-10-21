@@ -41,7 +41,7 @@ export function AppShell() {
   }
 
   // 面试详情/报告也归到"面试"标签下,不为每个 id 写一行
-  let title = TITLE_BY_PATH[loc.pathname] ?? "Free-Hire";
+  let title = TITLE_BY_PATH[loc.pathname] ?? "HROnfire";
   if (loc.pathname.startsWith("/interviews/")) {
     title = loc.pathname.endsWith("/report") ? "面试报告" : "面试进行中";
   } else if (loc.pathname.startsWith("/jobs/")) {

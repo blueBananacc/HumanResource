@@ -251,11 +251,11 @@ def send_test_email(
         send_email(
             cfg,
             to=target,
-            subject="[Free-Hire] SMTP 测试邮件",
+            subject="[HROnfire] SMTP 测试邮件",
             text=(
                 "这是一封测试邮件。\n\n"
                 f"如果你收到了它,说明 SMTP 配置 ({cfg.host}:{cfg.port}) 可正常发件。\n"
-                "本邮件由 Free-Hire 私有化部署系统发出,请忽略。\n"
+                "本邮件由 HROnfire 私有化部署系统发出,请忽略。\n"
             ),
         )
     except SMTPSendError as e:

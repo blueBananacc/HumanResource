@@ -51,10 +51,10 @@ class Attachment:
 
 
 _IMAP_ID_ARGS = (
-    '("name" "free-hire" '
+    '("name" "hronfire" '
     '"version" "1.0" '
-    '"vendor" "free-hire" '
-    '"contact" "noreply@free-hire.local")'
+    '"vendor" "hronfire" '
+    '"contact" "noreply@hronfire.local")'
 )
 
 
@@ -70,6 +70,11 @@ def _send_imap_id(mb) -> None:
     """
     try:
         capabilities = getattr(mb.client, "capabilities", ()) or ()
+        # imaplib 的 capabilities 是 bytes 元组, 统一转成 str 再比对
+        capabilities = {
+            c.decode("ascii", "ignore").upper() if isinstance(c, bytes) else str(c).upper()
+            for c in capabilities
+        }
     except Exception:  # noqa: BLE001
         return
     if "ID" not in capabilities:
@@ -86,7 +91,9 @@ def _open_mailbox(*, host: str, port: int, ssl: bool, email: str, password: str)
     cls = MailBox if ssl else MailBoxUnencrypted
     try:
         mb = cls(host, port=port)
-        mb.login(email, password)
+        # initial_folder=None 跳过 login() 内部的自动 SELECT:
+        # 163 要求先发 ID 再 SELECT, 文件夹由调用方在 ID 之后 set
+        mb.login(email, password, initial_folder=None)
     except Exception as e:  # noqa: BLE001 — imap_tools 抛多种异常
         raise EmailFetchError(f"IMAP 登录失败: {e}") from e
     _send_imap_id(mb)

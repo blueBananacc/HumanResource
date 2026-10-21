@@ -73,7 +73,7 @@ def _format_invite_text(
         f"如有疑问,请回复本邮件联系 HR。\n"
         f"祝顺利。\n"
         f"\n"
-        f"— {sender_name or 'Free-Hire 招聘小组'}\n"
+        f"— {sender_name or 'HROnfire 招聘小组'}\n"
     )
 
 
@@ -104,7 +104,7 @@ def _format_invite_html(
         f"<p>提交后 AI 将自动评分,结果由 HR 审阅,我们会尽快与你联系。</p>"
         f"<p style='color:#6B7280;font-size:12px;border-top:1px solid #E5E7EB;"
         f"padding-top:12px;margin-top:24px;'>"
-        f"— {sender_name or 'Free-Hire 招聘小组'}</p>"
+        f"— {sender_name or 'HROnfire 招聘小组'}</p>"
         "</div>"
     )
 
@@ -127,7 +127,7 @@ def _format_done_text(
         f"查看完整报告:\n"
         f"{report_url}\n"
         f"\n"
-        f"— Free-Hire 自动通知\n"
+        f"— HROnfire 自动通知\n"
     )
 
 
@@ -157,7 +157,7 @@ def _format_done_html(
         f"padding:8px 16px;border-radius:8px;text-decoration:none;'>"
         f"查看报告</a></p>"
         f"<p style='color:#6B7280;font-size:12px;border-top:1px solid #E5E7EB;"
-        f"padding-top:12px;margin-top:24px;'>— Free-Hire 自动通知</p>"
+        f"padding-top:12px;margin-top:24px;'>— HROnfire 自动通知</p>"
         "</div>"
     )
 

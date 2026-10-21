@@ -145,7 +145,7 @@ def test_smtp_crud_upsert(client, admin_and_token):
             "username": "noreply@example.com",
             "password": "secret-password",
             "from_email": "noreply@example.com",
-            "from_name": "Free-Hire 测试",
+            "from_name": "HROnfire 测试",
             "is_enabled": True,
         },
     )
