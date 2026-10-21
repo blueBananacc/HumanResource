@@ -96,11 +96,17 @@ Tints & shades：`#BB1141`（Cherry 深，hover）、`#9C2443`、`#F36488`、`#F
 | 布局（顶栏全宽 + 左导航 + 右工作区） | `components/layout/AppShell.tsx` |
 | 首页横幅与卡片头部 | `pages/Dashboard.tsx` |
 | 登录页品牌背景 | `pages/Login.tsx` |
+| 字体大小设置（14 标准 / 16 大 / 18 特大，zoom 等比缩放，存 localStorage `hronfire.ui.fontSize`） | `lib/fontSize.ts`、`components/layout/SettingsModal.tsx`（入口：帮助与支持 → 设置） |
+| 导航定义（侧栏与全局搜索共用） | `components/layout/nav.ts` |
+| 顶栏全局搜索（功能页 + 候选人，Ctrl/⌘+K） | `components/layout/GlobalSearch.tsx` |
+| 右侧工具栏（顶部 AI 助手，底部帮助与支持） | `components/layout/RightRail.tsx` |
+| AI 助手面板（浮动可拖动 / 拖到右缘或点按钮贴边；后端未接入，占位回复） | `components/layout/AiAssistant.tsx`（HiBubble 气泡头像 `AiAvatar`） |
 
 ## 10. 待办 / 已知取舍
 
 - 白字配 Cherry `#EE164F` 对比度约 4:1，低于 WCAG AA 小字 4.5:1；如需达标，可把按钮色加深（如 `#D9123F` 或使用 `#BB1141`）。
-- 尚未实现：Bob 风格 tab、页面内状态标签统一、搜索/个人入口并入左侧菜单（当前保留顶栏）。
+- 尚未实现：Bob 风格 tab、页面内状态标签统一、个人入口并入左侧菜单（当前保留顶栏）。
+- 搜索参照 Bob 真实产品放在顶栏居中（“Search for people or features”），而非改版博文所说的左侧菜单。
 - 动效参照 Motion Guidelines 未获取，现仅使用 200–300ms 缓动过渡与按下缩放。
 
 ## 11. 本地预览

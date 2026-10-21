@@ -11,6 +11,10 @@ import "./index.css";
 import { router } from "./router";
 import { AuthProvider } from "./lib/auth";
 import { ConfirmProvider } from "./components/ui/confirm";
+import { applyFontSize, getFontSize } from "./lib/fontSize";
+
+// 渲染前应用字号偏好,避免首屏闪一下默认大小
+applyFontSize(getFontSize());
 
 const queryClient = new QueryClient({
   defaultOptions: {

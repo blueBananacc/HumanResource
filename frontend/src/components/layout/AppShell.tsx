@@ -1,7 +1,12 @@
+import { useState } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
+import { RightRail } from "./RightRail";
+import { AiAssistant } from "./AiAssistant";
 import { useAuth } from "@/lib/auth";
+
+const AI_DOCK_KEY = "hronfire.ai.docked";
 
 const TITLE_BY_PATH: Record<string, string> = {
   "/": "概览",
@@ -28,6 +33,12 @@ const TITLE_BY_PATH: Record<string, string> = {
 export function AppShell() {
   const { user, loading } = useAuth();
   const loc = useLocation();
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiDocked, setAiDocked] = useState(() => localStorage.getItem(AI_DOCK_KEY) === "1");
+  const changeDock = (v: boolean) => {
+    localStorage.setItem(AI_DOCK_KEY, v ? "1" : "0");
+    setAiDocked(v);
+  };
 
   if (loading) {
     return (
@@ -62,6 +73,13 @@ export function AppShell() {
         <div className="flex-1 overflow-auto min-w-0">
           <Outlet />
         </div>
+        <RightRail aiOpen={aiOpen} onToggleAi={() => setAiOpen((v) => !v)} />
+        <AiAssistant
+          open={aiOpen}
+          docked={aiDocked}
+          onClose={() => setAiOpen(false)}
+          onDockChange={changeDock}
+        />
       </div>
     </div>
   );

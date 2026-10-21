@@ -3,12 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { Bell, LogOut } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { formatRoleLabel } from "@/lib/roles";
+import { GlobalSearch } from "./GlobalSearch";
 
 /**
- * 顶栏:页标题 + 通知 + 用户菜单。
+ * 顶栏:页标题 + 全局搜索 + 通知 + 用户菜单。
  *
- * 搜索已下放到各个有列表的模块自身 (简历库 / 岗位 / 面试 / 题集),
- * 顶栏不再承担搜索入口,避免"看着是全局搜索、行为只搜简历库"的预期错位。
+ * 全局搜索只做"快速跳转":功能页 + 候选人;列表内的筛选仍由各模块自身的搜索框负责。
  *
  * - 通知:占位下拉,真实通知后端待 M6 实装,这里先反馈"暂无新通知"避免控件像坏的
  * - 用户菜单:展示邮箱 + 角色 + 登出。Sidebar 底部用同一交互逻辑
@@ -21,7 +21,10 @@ export function Topbar({ title }: { title: string }) {
   const initials = user?.email.slice(0, 2).toUpperCase() ?? "—";
 
   return (
-    <header className="h-14 bg-[var(--color-brand-deep)] flex items-center justify-between px-4 gap-4 shrink-0 relative z-20">
+    <header className="h-14 bg-[var(--color-brand-deep)] flex items-center justify-between px-4 gap-4 shrink-0 relative z-40">
+      <div className="absolute left-1/2 -translate-x-1/2 w-[min(440px,40vw)] z-10">
+        <GlobalSearch />
+      </div>
       <div className="flex items-center gap-3 min-w-0">
         <div className="w-8 h-8 rounded-[12px_12px_12px_3px] bg-[var(--color-accent)] text-white font-body font-bold text-sm flex items-center justify-center shrink-0">
           Hi
