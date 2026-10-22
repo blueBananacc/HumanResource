@@ -4,7 +4,6 @@ import {
   FileText,
   History,
   Mail,
-  MessageSquare,
   PanelRight,
   PictureInPicture2,
   Plus,
@@ -52,7 +51,6 @@ const DEFAULT_PROMPTS = [
 ];
 
 type Msg = { role: "user" | "assistant"; text: string };
-type Mode = "agent" | "chat";
 
 const PANEL_W = 400;
 const RAIL_W = 48;
@@ -208,7 +206,6 @@ function ChatPanel({
 }) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
-  const [mode, setMode] = useState<Mode>("agent");
   const [cap, setCap] = useState<Capability | null>(null);
   const [pending, setPending] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
@@ -229,7 +226,7 @@ function ChatPanel({
         ...m,
         {
           role: "assistant",
-          text: `AI 助手的后端能力还在建设中，暂时无法处理「${t}」。接入后我会以${mode === "agent" ? " Agent 模式直接帮你执行操作" : "对话模式回答问题"}。`,
+          text: `AI 助手的后端能力还在建设中，暂时无法处理「${t}」。接入后即可直接帮你执行操作或回答问题。`,
         },
       ]);
       setPending(false);
@@ -371,29 +368,7 @@ function ChatPanel({
             placeholder="有什么可以帮你？Enter 发送，Shift+Enter 换行"
             className="w-full resize-none bg-transparent px-3 pt-2.5 text-[13px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] outline-none focus-visible:outline-none"
           />
-          <div className="flex items-center justify-between px-2 pb-2">
-            <div className="flex items-center rounded-full bg-[var(--color-bg-muted)] p-0.5">
-              {([
-                ["agent", "Agent", Sparkles],
-                ["chat", "Chat", MessageSquare],
-              ] as const).map(([v, label, Icon]) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); setMode(v); }}
-                  title={v === "agent" ? "Agent：帮你直接执行操作" : "Chat：只回答问题"}
-                  className={cn(
-                    "flex items-center gap-1 rounded-full px-2.5 py-1 text-[12px] font-bold transition-all duration-200",
-                    mode === v
-                      ? "bg-white text-[var(--color-accent)] shadow-[var(--shadow-card)]"
-                      : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
-                  )}
-                >
-                  <Icon className="w-3.5 h-3.5" />
-                  {label}
-                </button>
-              ))}
-            </div>
+          <div className="flex items-center justify-end px-2 pb-2">
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); send(); }}
