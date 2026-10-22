@@ -3,7 +3,8 @@ export type AppRole =
   | "hr"
   | "interviewer"
   | "hiring_manager"
-  | "viewer";
+  | "viewer"
+  | "employee";
 
 export const ROLE_LABEL: Record<AppRole, string> = {
   admin: "管理员",
@@ -11,14 +12,16 @@ export const ROLE_LABEL: Record<AppRole, string> = {
   interviewer: "面试官",
   hiring_manager: "用人经理",
   viewer: "只读",
+  employee: "员工",
 };
 
 export const ROLE_HINT: Record<AppRole, string> = {
   admin: "完全权限",
-  hr: "简历 / 面试 / 报告",
+  hr: "简历 / 面试 / 报告 / 员工管理",
   interviewer: "参与面试与查看相关结果",
-  hiring_manager: "查看岗位与候选人结论",
+  hiring_manager: "查看岗位与候选人结论 / 审批下属",
   viewer: "仅查看",
+  employee: "员工自助(我的请假/考勤/工资条)",
 };
 
 export function formatRoleLabel(role: AppRole | string | null | undefined) {
@@ -42,6 +45,17 @@ export const PERM = {
   OVERRIDE_SCORE: "override_score",
   VIEW_REPORTS: "view_reports",
   EXPORT_DATA: "export_data",
+  MANAGE_EMPLOYEES: "manage_employees",
+  MANAGE_LEAVE: "manage_leave",
+  APPROVE_LEAVE: "approve_leave",
+  MANAGE_ATTENDANCE: "manage_attendance",
+  MANAGE_LIFECYCLE: "manage_lifecycle",
+  WRITE_REQUISITIONS: "write_requisitions",
+  APPROVE_REQUISITIONS: "approve_requisitions",
+  MANAGE_OFFERS: "manage_offers",
+  MANAGE_PERFORMANCE: "manage_performance",
+  MANAGE_EXPENSES: "manage_expenses",
+  MANAGE_PAYROLL: "manage_payroll",
 } as const;
 
 export type AppPermission = (typeof PERM)[keyof typeof PERM];

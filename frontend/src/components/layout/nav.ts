@@ -1,19 +1,29 @@
 import {
-  LayoutDashboard,
+  Banknote,
   Briefcase,
-  Video,
+  CalendarDays,
+  Clock,
+  Goal,
+  Home,
   KeyRound,
+  LayoutDashboard,
   Mail,
   Mic,
+  Network,
   Plug,
+  Receipt,
   Send,
   Settings,
   ShieldCheck,
   Shuffle,
   TrendingUp,
   Users,
+  Video,
+  Wallet,
   type LucideIcon,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { fetchJSON } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { PERM, type AppPermission } from "@/lib/roles";
 
@@ -41,6 +51,8 @@ export type NavItem = {
   adminOnly?: boolean;
   /** 需要该权限位才显示。优先级低于 adminOnly。 */
   permission?: AppPermission;
+  /** 需要 license 功能位(如 'hr.suite');未激活时整项隐藏。 */
+  feature?: string;
   /** 规划中:置灰、不可点、不进搜索 */
   soon?: boolean;
   /** 自定义激活判断;缺省为 pathname 等于或以 `to` 的路径为前缀 */
@@ -60,12 +72,31 @@ export type NavModule = {
   groups?: NavGroup[];
   /** 额外归属的路径前缀(详情页等不在面板里的页面,也让本模块保持激活) */
   alsoActive?: string[];
+  /** 模块级 license 功能位;未激活时整个模块隐藏 */
+  feature?: string;
 };
 
 const pathOf = (to: string) => to.split("?")[0];
 
 export const mainModules: NavModule[] = [
   { key: "home", label: "概览", icon: LayoutDashboard, to: "/", keywords: "首页 dashboard home" },
+  {
+    key: "org",
+    label: "组织",
+    icon: Network,
+    feature: "hr.suite",
+    alsoActive: ["/employees/", "/org-chart", "/lifecycle"],
+    groups: [
+      {
+        label: "员工",
+        items: [
+          { to: "/employees", label: "员工列表", keywords: "员工 employee 花名册" },
+          { to: "/org-chart", label: "组织架构图", keywords: "汇报线 架构 org" },
+          { to: "/lifecycle", label: "生命周期", keywords: "入职 离职 调动 晋升 onboarding" },
+        ],
+      },
+    ],
+  },
   {
     key: "talent",
     label: "人才",
@@ -96,7 +127,8 @@ export const mainModules: NavModule[] = [
         label: "岗位",
         items: [
           { to: "/jobs", label: "岗位列表", keywords: "职位 job 匹配" },
-          { to: "/jobs/requisitions", label: "招聘需求审批", soon: true },
+          { to: "/requisitions", label: "招聘需求审批", permission: PERM.WRITE_REQUISITIONS, feature: "hr.suite", keywords: "编制 headcount 需求 requisition" },
+          { to: "/offers", label: "Offer 管理", permission: PERM.MANAGE_OFFERS, feature: "hr.suite", keywords: "offer 录用 通知书" },
         ],
       },
       {
@@ -135,6 +167,70 @@ export const mainModules: NavModule[] = [
       {
         label: "规划中",
         items: [{ to: "/interviews/schedule", label: "面试官排期", soon: true, permission: PERM.VIEW_REPORTS }],
+      },
+    ],
+  },
+  {
+    key: "timeoff",
+    label: "假勤",
+    icon: CalendarDays,
+    feature: "hr.suite",
+    groups: [
+      {
+        label: "请假",
+        items: [
+          { to: "/leave", label: "请假审批", permission: PERM.APPROVE_LEAVE, keywords: "请假 审批 leave" },
+          { to: "/leave/balances", label: "假期额度", permission: PERM.MANAGE_LEAVE, keywords: "额度 余额 年假" },
+          { to: "/leave/types", label: "假期类型", permission: PERM.MANAGE_LEAVE, keywords: "类型 设置" },
+        ],
+      },
+      {
+        label: "考勤",
+        items: [
+          { to: "/attendance", label: "考勤记录", permission: PERM.VIEW_REPORTS, keywords: "出勤 考勤 attendance" },
+          { to: "/attendance/checkins", label: "打卡流水", permission: PERM.VIEW_REPORTS, keywords: "打卡 签到 checkin" },
+        ],
+      },
+    ],
+  },
+  {
+    key: "perf",
+    label: "绩效",
+    icon: Goal,
+    feature: "hr.suite",
+    groups: [
+      {
+        items: [
+          { to: "/performance", label: "目标", permission: PERM.VIEW_REPORTS, keywords: "目标 goal okr" },
+          { to: "/performance/cycles", label: "考核", permission: PERM.MANAGE_PERFORMANCE, keywords: "绩效考核 appraisal 评分" },
+        ],
+      },
+    ],
+  },
+  {
+    key: "expense",
+    label: "费用",
+    icon: Receipt,
+    feature: "hr.suite",
+    groups: [
+      {
+        items: [
+          { to: "/expenses", label: "报销审批", permission: PERM.VIEW_REPORTS, keywords: "报销 费用 expense" },
+          { to: "/expenses/types", label: "报销类型", permission: PERM.MANAGE_EXPENSES, keywords: "报销类型" },
+        ],
+      },
+    ],
+  },
+  {
+    key: "payroll",
+    label: "薪酬",
+    icon: Banknote,
+    feature: "hr.suite",
+    groups: [
+      {
+        items: [
+          { to: "/payroll", label: "工资条", permission: PERM.MANAGE_PAYROLL, keywords: "工资 薪资 工资条 salary" },
+        ],
       },
     ],
   },
@@ -195,6 +291,20 @@ export const bottomModules: NavModule[] = [
   },
 ];
 
+/**
+ * 员工自助(ESS)导航 — role=employee 登录后整个侧栏换成这套,
+ * 对应后端 /api/me/*。直达式,不用二级面板。
+ */
+export const essModules: NavModule[] = [
+  { key: "me-home", label: "我的工作台", icon: Home, to: "/me", keywords: "员工 自助 ess" },
+  { key: "me-leave", label: "请假", icon: CalendarDays, to: "/me/leave", keywords: "请假 年假 休假" },
+  { key: "me-attend", label: "考勤", icon: Clock, to: "/me/attendance", keywords: "打卡 考勤 出勤" },
+  { key: "me-payslips", label: "工资条", icon: Wallet, to: "/me/payslips", keywords: "工资 薪资 工资条" },
+  { key: "me-expenses", label: "报销", icon: Receipt, to: "/me/expenses", keywords: "报销 费用" },
+  { key: "me-goals", label: "目标", icon: Goal, to: "/me/goals", keywords: "目标 绩效 okr" },
+  { key: "me-profile", label: "我的资料", icon: Users, to: "/me/profile", keywords: "档案 资料 个人信息" },
+];
+
 export function isItemActive(it: NavItem, pathname: string, search: URLSearchParams) {
   if (it.soon) return false;
   if (it.activeWhen) return it.activeWhen(pathname, search);
@@ -225,13 +335,23 @@ export type FlatPage = { to: string; label: string; icon: LucideIcon; keywords?:
 export function useVisibleNav() {
   const { user, hasPermission } = useAuth();
   const isAdmin = user?.role === "admin";
+  const isEmployee = user?.role === "employee";
+  // license 功能位:hris 模块挂在 hr.suite 上
+  const { data: lic } = useQuery<{ features: Record<string, boolean> }>({
+    queryKey: ["license-status"],
+    queryFn: () => fetchJSON("/api/license/status"),
+    staleTime: 60_000,
+  });
+  const featureOn = (f?: string) => !f || (lic?.features?.[f] ?? true);
   const allowed = (it: NavItem) => {
+    if (!featureOn(it.feature)) return false;
     if (it.adminOnly) return isAdmin;
     if (it.permission) return hasPermission(it.permission);
     return true;
   };
   const filter = (mods: NavModule[]): NavModule[] =>
     mods.flatMap((m) => {
+      if (!featureOn(m.feature)) return [];
       if (m.to) return [m];
       const groups = (m.groups ?? [])
         .map((g) => ({ ...g, items: g.items.filter(allowed) }))
@@ -240,8 +360,9 @@ export function useVisibleNav() {
       if (!groups.some((g) => g.items.some((it) => !it.soon))) return [];
       return [{ ...m, groups }];
     });
-  const main = filter(mainModules);
-  const bottom = filter(bottomModules);
+  // 员工账号:整组换 ESS 导航
+  const main = isEmployee ? essModules : filter(mainModules);
+  const bottom = isEmployee ? [] : filter(bottomModules);
   const pages: FlatPage[] = [...main, ...bottom].flatMap((m) =>
     m.to
       ? [{ to: m.to, label: m.label, icon: m.icon, keywords: m.keywords, module: m.label }]

@@ -27,6 +27,47 @@ import { CandidateDone } from "@/pages/CandidateDone";
 import { SmtpSettings } from "@/pages/SmtpSettings";
 import { VoiceSettings } from "@/pages/VoiceSettings";
 import { AppShell } from "@/components/layout/AppShell";
+import { useAuth } from "@/lib/auth";
+import type { ReactNode } from "react";
+// HRIS 模块(hr.suite)
+import { Employees } from "@/pages/hris/Employees";
+import { EmployeeDetail } from "@/pages/hris/EmployeeDetail";
+import { OrgChart } from "@/pages/hris/OrgChart";
+import { Lifecycle } from "@/pages/hris/Lifecycle";
+import { LeaveAdmin } from "@/pages/hris/LeaveAdmin";
+import { LeaveBalances } from "@/pages/hris/LeaveBalances";
+import { LeaveTypes } from "@/pages/hris/LeaveTypes";
+import { AttendanceAdmin } from "@/pages/hris/AttendanceAdmin";
+import { Checkins } from "@/pages/hris/Checkins";
+import { Requisitions } from "@/pages/hris/Requisitions";
+import { Offers } from "@/pages/hris/Offers";
+import { Performance } from "@/pages/hris/Performance";
+import { AppraisalCycles } from "@/pages/hris/AppraisalCycles";
+import { Expenses } from "@/pages/hris/Expenses";
+import { ExpenseTypes } from "@/pages/hris/ExpenseTypes";
+import { Payroll } from "@/pages/hris/Payroll";
+// 员工自助(ESS)
+import { MeDashboard } from "@/pages/me/MeDashboard";
+import { MyLeave } from "@/pages/me/MyLeave";
+import { MyAttendance } from "@/pages/me/MyAttendance";
+import { MyPayslips } from "@/pages/me/MyPayslips";
+import { MyExpenses } from "@/pages/me/MyExpenses";
+import { MyGoals } from "@/pages/me/MyGoals";
+import { MyProfile } from "@/pages/me/MyProfile";
+
+/** employee 角色进 / 时去自助工作台;其他角色看招聘 Dashboard */
+function IndexByRole() {
+  const { user } = useAuth();
+  if (user?.role === "employee") return <Navigate to="/me" replace />;
+  return <Dashboard />;
+}
+
+/** 员工自助路由守卫:非员工角色访问 /me/* 一律回首页 */
+function MeGuard({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  if (user && user.role !== "employee") return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
 
 export const router = createBrowserRouter([
   { path: "/login", element: <Login /> },
@@ -39,7 +80,36 @@ export const router = createBrowserRouter([
     path: "/",
     element: <AppShell />,
     children: [
-      { index: true, element: <Dashboard /> },
+      { index: true, element: <IndexByRole /> },
+      // ── HRIS 组织 ──
+      { path: "employees", element: <Employees /> },
+      { path: "employees/:id", element: <EmployeeDetail /> },
+      { path: "org-chart", element: <OrgChart /> },
+      { path: "lifecycle", element: <Lifecycle /> },
+      // ── HRIS 假勤 ──
+      { path: "leave", element: <LeaveAdmin /> },
+      { path: "leave/balances", element: <LeaveBalances /> },
+      { path: "leave/types", element: <LeaveTypes /> },
+      { path: "attendance", element: <AttendanceAdmin /> },
+      { path: "attendance/checkins", element: <Checkins /> },
+      // ── HRIS 招聘扩展 ──
+      { path: "requisitions", element: <Requisitions /> },
+      { path: "offers", element: <Offers /> },
+      // ── HRIS 绩效/费用/薪酬 ──
+      { path: "performance", element: <Performance /> },
+      { path: "performance/cycles", element: <AppraisalCycles /> },
+      { path: "expenses", element: <Expenses /> },
+      { path: "expenses/types", element: <ExpenseTypes /> },
+      { path: "payroll", element: <Payroll /> },
+      // ── 员工自助(ESS) ──
+      { path: "me", element: <MeGuard><MeDashboard /></MeGuard> },
+      { path: "me/leave", element: <MeGuard><MyLeave /></MeGuard> },
+      { path: "me/attendance", element: <MeGuard><MyAttendance /></MeGuard> },
+      { path: "me/payslips", element: <MeGuard><MyPayslips /></MeGuard> },
+      { path: "me/expenses", element: <MeGuard><MyExpenses /></MeGuard> },
+      { path: "me/goals", element: <MeGuard><MyGoals /></MeGuard> },
+      { path: "me/profile", element: <MeGuard><MyProfile /></MeGuard> },
+      // ── 招聘 ──
       { path: "talents", element: <TalentPool /> },
       { path: "talents/:id", element: <TalentDetail /> },
       { path: "talents/:id/resumes/:resumeId", element: <ResumeDetail /> },

@@ -22,6 +22,28 @@ const TITLE_BY_PATH: Record<string, string> = {
   "/settings/team": "团队与组织",
   "/settings/sso": "SSO 接入",
   "/settings/audit": "审计中心",
+  "/employees": "员工列表",
+  "/org-chart": "组织架构图",
+  "/lifecycle": "生命周期",
+  "/leave": "请假审批",
+  "/leave/balances": "假期额度",
+  "/leave/types": "假期类型",
+  "/attendance": "考勤记录",
+  "/attendance/checkins": "打卡流水",
+  "/requisitions": "招聘需求审批",
+  "/offers": "Offer 管理",
+  "/performance": "目标管理",
+  "/performance/cycles": "绩效考核",
+  "/expenses": "报销审批",
+  "/expenses/types": "报销类型",
+  "/payroll": "工资条",
+  "/me": "我的工作台",
+  "/me/leave": "我的请假",
+  "/me/attendance": "我的考勤",
+  "/me/payslips": "我的工资条",
+  "/me/expenses": "我的报销",
+  "/me/goals": "我的目标",
+  "/me/profile": "我的资料",
 };
 
 /**
@@ -50,6 +72,14 @@ export function AppShell() {
   if (!user) {
     return <Navigate to="/login" state={{ from: loc.pathname }} replace />;
   }
+  // 员工自助账号只能待在 /me 区域 — 其他页面后端也会 403,前端直接挡
+  if (user.role === "employee" && !loc.pathname.startsWith("/me")) {
+    return <Navigate to="/me" replace />;
+  }
+  // 非员工角色反过来也别进 /me(后端 /api/me 只对绑定了员工的账号开放)
+  if (user.role !== "employee" && loc.pathname.startsWith("/me")) {
+    return <Navigate to="/" replace />;
+  }
 
   // 面试详情/报告也归到"面试"标签下,不为每个 id 写一行
   let title = TITLE_BY_PATH[loc.pathname] ?? "HROnfire";
@@ -58,6 +88,8 @@ export function AppShell() {
   } else if (loc.pathname.startsWith("/jobs/")) {
     // /jobs/:id → 岗位详情;/jobs/:id/matches → 岗位匹配候选人
     title = loc.pathname.endsWith("/matches") ? "岗位匹配" : "岗位详情";
+  } else if (loc.pathname.startsWith("/employees/")) {
+    title = "员工详情";
   } else if (/^\/talents\/[^/]+\/resumes\/[^/]+$/.test(loc.pathname)) {
     title = "简历详情";
   } else if (loc.pathname.startsWith("/talents/")) {
