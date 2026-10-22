@@ -268,6 +268,7 @@ export function QuestionRow({
   expanded = false,
   isLast,
   selected,
+  selectionActive,
   onSelect,
   onEdit,
   onRegenerate,
@@ -276,17 +277,22 @@ export function QuestionRow({
   item: LibraryItem;
   index?: number;
   showSet?: boolean;
+  /** 初始即展开(详情页等需要全文的场景);默认收起,行内可再展开/收起 */
   expanded?: boolean;
   isLast: boolean;
   /** 传入即开启行首复选框(批量删除) */
   selected?: boolean;
+  /** 列表已有任意选中项 → 复选框常驻;否则 hover 行才浮现 */
+  selectionActive?: boolean;
   onSelect?: (checked: boolean) => void;
   onEdit: () => void;
   onRegenerate: () => void;
   onDelete: () => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const points = expanded ? item.answer_points : item.answer_points.slice(0, 3);
+  const [open, setOpen] = useState(!!expanded);
+  const points = open ? item.answer_points : item.answer_points.slice(0, 3);
+  const collapsible = item.answer_points.length > 3 || !!item.follow_up;
   const copy = () =>
     navigator.clipboard.writeText(questionText(item)).then(() => {
       setCopied(true);
@@ -303,7 +309,9 @@ export function QuestionRow({
     >
       <div className="flex items-start justify-between gap-4">
         {onSelect && (
-          <Checkbox checked={!!selected} onToggle={() => onSelect(!selected)} label="选择题目" className="mt-1" />
+          <span className={cn("row-check shrink-0", (selected || selectionActive) && "show")}>
+            <Checkbox checked={!!selected} onToggle={() => onSelect(!selected)} label="选择题目" className="mt-1" />
+          </span>
         )}
         <div className="flex flex-col flex-1 min-w-0 gap-2">
           <div className="flex items-center gap-2 flex-wrap">
@@ -341,12 +349,24 @@ export function QuestionRow({
               {points.map((p, i) => (
                 <li key={i}>{p}</li>
               ))}
-              {!expanded && item.answer_points.length > 3 && (
-                <li className="text-[var(--color-text-tertiary)]">…还有 {item.answer_points.length - 3} 条</li>
+              {collapsible && (
+                <li className="list-none">
+                  <button
+                    type="button"
+                    onClick={() => setOpen(!open)}
+                    className="text-[var(--color-accent)] hover:underline font-medium"
+                  >
+                    {open
+                      ? "收起"
+                      : item.answer_points.length > 3
+                        ? `…还有 ${item.answer_points.length - 3} 条,展开全部`
+                        : "展开追问"}
+                  </button>
+                </li>
               )}
             </ul>
           )}
-          {expanded && item.follow_up && (
+          {open && item.follow_up && (
             <div className="text-[12px] text-[var(--color-text-secondary)] font-body">
               <span className="text-[var(--color-text-tertiary)]">追问:</span>
               <span className="italic">{item.follow_up}</span>

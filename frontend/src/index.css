@@ -108,6 +108,23 @@
   }
 }
 
+/*
+ * 行内复选框的"悬停才出现"交互。
+ * 不用 Tailwind 的 group-hover:opacity 是因为 v4 会给 hover 变体
+ * 套上嵌套在样式规则里的 @media (hover:hover),部分 Chromium 版本
+ * 不解析这种嵌套媒体查询,导致规则整条例外。这里用纯 CSS 写法兜底,
+ * 三态:默认隐藏 / 行悬停或聚焦时出现 / .show 时(已有选中项)常驻。
+ */
+.row-check {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.group:hover .row-check,
+.row-check:focus-within,
+.row-check.show {
+  opacity: 1;
+}
+
 /* 复选框勾选时的对勾弹入(bob 的轻快反馈) */
 @keyframes check-pop {
   0% {

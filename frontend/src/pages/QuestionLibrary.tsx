@@ -216,6 +216,7 @@ function QuestionsView() {
                 item={it}
                 isLast={i === items.length - 1}
                 selected={sel.selected.has(it.id)}
+                selectionActive={sel.selected.size > 0}
                 onSelect={(v) => sel.toggle(it.id, v)}
                 onEdit={() => setEditing(it)}
                 onRegenerate={() => setRegenItem(it)}
@@ -390,6 +391,7 @@ function SetsView() {
               cat={c}
               isLast={i === categories.length - 1}
               selected={selCat.selected.has(c.category)}
+              selectionActive={selCat.selected.size > 0}
               onSelect={(v) => selCat.toggle(c.category, v)}
               onDelete={async () => {
                 if (
@@ -437,6 +439,7 @@ function SetsView() {
                 qs={qs}
                 isLast={i === items.length - 1}
                 selected={selSet.selected.has(qs.id)}
+                selectionActive={selSet.selected.size > 0}
                 onSelect={(v) => selSet.toggle(qs.id, v)}
                 onDelete={async () => {
                   if (
@@ -470,12 +473,14 @@ function SetRow({
   qs,
   isLast,
   selected,
+  selectionActive,
   onSelect,
   onDelete,
 }: {
   qs: QuestionSetSummary;
   isLast: boolean;
   selected?: boolean;
+  selectionActive?: boolean;
   onSelect?: (checked: boolean) => void;
   onDelete: () => void;
 }) {
@@ -489,7 +494,13 @@ function SetRow({
       )}
     >
       {onSelect && (
-        <span onClick={(e) => e.preventDefault()}>
+        <span
+          onClick={(e) => e.preventDefault()}
+          className={cn(
+            "transition-opacity duration-150",
+            selected || selectionActive ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-within:opacity-100",
+          )}
+        >
           <Checkbox checked={!!selected} onToggle={() => onSelect(!selected)} label="选择题集" />
         </span>
       )}
@@ -543,12 +554,14 @@ function CategoryRow({
   cat,
   isLast,
   selected,
+  selectionActive,
   onSelect,
   onDelete,
 }: {
   cat: CategorySet;
   isLast: boolean;
   selected?: boolean;
+  selectionActive?: boolean;
   onSelect?: (checked: boolean) => void;
   onDelete: () => void;
 }) {
@@ -562,7 +575,13 @@ function CategoryRow({
       )}
     >
       {onSelect && (
-        <span onClick={(e) => e.preventDefault()}>
+        <span
+          onClick={(e) => e.preventDefault()}
+          className={cn(
+            "transition-opacity duration-150",
+            selected || selectionActive ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-within:opacity-100",
+          )}
+        >
           <Checkbox checked={!!selected} onToggle={() => onSelect(!selected)} label="选择分类题集" />
         </span>
       )}

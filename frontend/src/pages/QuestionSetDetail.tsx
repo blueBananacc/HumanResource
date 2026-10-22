@@ -254,9 +254,9 @@ export function QuestionSetDetail() {
                   item={q}
                   index={idx}
                   showSet={false}
-                  expanded
                   isLast={i === shown.length - 1}
                   selected={sel.selected.has(q.id)}
+                  selectionActive={sel.selected.size > 0}
                   onSelect={(v) => sel.toggle(q.id, v)}
                   onEdit={() => setEditing(q)}
                   onRegenerate={() => setRegenItem(q)}
