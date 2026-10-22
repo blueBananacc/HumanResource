@@ -17,7 +17,7 @@ export function GlobalSearch() {
   const navigate = useNavigate();
   const { hasPermission } = useAuth();
   const canSeeTalents = hasPermission(PERM.VIEW_REPORTS);
-  const { main, sys } = useVisibleNav();
+  const { pages: navPages } = useVisibleNav();
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
   const [open, setOpen] = useState(false);
@@ -52,10 +52,17 @@ export function GlobalSearch() {
 
   const items = useMemo<Item[]>(() => {
     const kw = q.trim().toLowerCase();
-    const pages = [...main, ...sys]
+    const pages = navPages
       .filter((n) => !kw || `${n.label} ${n.keywords ?? ""}`.toLowerCase().includes(kw))
       .slice(0, kw ? 6 : 8)
-      .map<Item>((n) => ({ key: `p:${n.to}`, icon: n.icon, label: n.label, to: n.to, group: "功能" }));
+      .map<Item>((n) => ({
+        key: `p:${n.to}`,
+        icon: n.icon,
+        label: n.label,
+        sub: n.module !== n.label ? n.module : undefined,
+        to: n.to,
+        group: "功能",
+      }));
     const people =
       kw && canSeeTalents
         ? (talents?.items ?? []).map<Item>((t) => ({
@@ -68,7 +75,7 @@ export function GlobalSearch() {
           }))
         : [];
     return [...pages, ...people];
-  }, [q, main, sys, talents, canSeeTalents]);
+  }, [q, navPages, talents, canSeeTalents]);
 
   // 列表末尾的"在人才库中搜索"作为额外一项,参与键盘导航
   const showMore = canSeeTalents && q.trim().length > 0;

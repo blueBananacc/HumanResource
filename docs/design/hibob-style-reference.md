@@ -73,6 +73,33 @@ Tints & shades：`#BB1141`（Cherry 深，hover）、`#9C2443`、`#F36488`、`#F
 8. 目标符合 WCAG 2.2；提供低视力友好的调色板。
 9. 白标：Bob style / Pop style 两套调色板；超过 50% 客户启用了白标。
 
+### 7.1 多层级导航规则（HROnfire 定稿）
+
+参照 bob 真实产品截图（peoplemanagingpeople.com 的 HiBob 评测页 "Employee Management" 图）：bob 不做菜单内的树形缩进展开，而是 **深色一级栏 + 紧贴的浅色二级面板**。
+
+| 规则 | 说明 |
+|---|---|
+| 层级上限 | 一级模块 → 分组（仅标题，不可点）→ 页面，最多三层；再细放到页面内 tab |
+| 一级栏 | 深酒红 `--color-brand`，图标+文字，可收起为纯图标（`hronfire.sidebar.collapsed`）；分上区（业务模块）与栏底区（设置等低频入口） |
+| 模块两种 | 直达页面（如概览，无二级面板）或带分组（右侧显示 `›`，点击打开二级面板），二者互斥 |
+| 点击行为 | 点未激活模块 → 跳到其第一个可用页面并展开面板；点已激活模块 → 收起/展开面板 |
+| 二级面板 | 白底、右侧细边框，宽 208px；顶部衬线模块名 + 收起按钮；分组标题小号灰字；状态存 `hronfire.sidebar.panel` |
+| 选中态 | 一级：半透明白底 + 左侧橙色竖条；二级：暖米色 `--color-bg-muted` 底 + 左侧 Cherry 竖条 + 加粗 |
+| 权限 | 只标在页面上；分组/模块内无可见页面时整体隐藏；只剩"规划"项的模块也隐藏 |
+| 规划项 | `soon: true`：置灰 + "规划"胶囊，不可点，不进全局搜索 |
+| 图标 | 同一模块内的页面要么全带图标要么全不带（条目多需要扫视时才加，如设置） |
+| 详情页 | 不进面板，用模块 `alsoActive` 前缀保持所属模块高亮（如 `/jobs/:id` → 招聘 › 岗位列表） |
+| 搜索 | 全局搜索使用同一份定义，结果副标题显示所属模块（"题集 / 招聘"） |
+
+当前模块草案（`components/layout/nav.ts`，可随时调整）：
+
+- **概览**（直达）
+- **人才**：人才库；规划中：人才标签、重复候选人合并
+- **招聘**：岗位〔岗位列表、招聘需求审批(规划)〕；题库〔题目、题集〕
+- **面试**：面试安排、面试报告；规划中：面试官排期
+- **分析**：招聘数据；规划中：自定义报表
+- **设置**（栏底）：AI 与语音〔LLM 配置、语音〕；邮件〔邮箱拉取、SMTP 发件〕；组织与安全〔团队、SSO、审计〕；授权〔License〕
+
 ## 8. 产品界面细节（来自截图与 PDF）
 
 - 侧栏窄、图标式、单色渐进色块；顶栏白色，右侧：搜索、铃铛（橙色计数徽章）、头像、全屏按钮。
@@ -92,12 +119,12 @@ Tints & shades：`#BB1141`（Cherry 深，hover）、`#9C2443`、`#F36488`、`#F
 | 三级按钮 | `frontend/src/components/ui/button.tsx` |
 | 卡片（12px 圆角 + `--shadow-card`） | `components/ui/card.tsx` 及各页面内联卡片 |
 | 顶栏 | `components/layout/Topbar.tsx` |
-| 可折叠侧栏（状态存 localStorage `hronfire.sidebar.collapsed`） | `components/layout/Sidebar.tsx` |
+| 两级侧栏：深色一级栏（可折叠，`hronfire.sidebar.collapsed`）+ 浅色二级面板（`hronfire.sidebar.panel`），规则见 §7.1 | `components/layout/Sidebar.tsx` |
 | 布局（顶栏全宽 + 左导航 + 右工作区） | `components/layout/AppShell.tsx` |
 | 首页横幅与卡片头部 | `pages/Dashboard.tsx` |
 | 登录页品牌背景 | `pages/Login.tsx` |
 | 字体大小设置（14 标准 / 16 大 / 18 特大，zoom 等比缩放，存 localStorage `hronfire.ui.fontSize`） | `lib/fontSize.ts`、`components/layout/SettingsModal.tsx`（入口：帮助与支持 → 设置） |
-| 导航定义（侧栏与全局搜索共用） | `components/layout/nav.ts` |
+| 导航定义（三层树：模块 → 分组 → 页面；侧栏与全局搜索共用） | `components/layout/nav.ts` |
 | 顶栏全局搜索（功能页 + 候选人，Ctrl/⌘+K） | `components/layout/GlobalSearch.tsx` |
 | 右侧工具栏（顶部 AI 助手，底部帮助与支持） | `components/layout/RightRail.tsx` |
 | AI 助手面板（浮动可拖动 / 拖到右缘或点按钮贴边；后端未接入，占位回复） | `components/layout/AiAssistant.tsx`（HiBubble 气泡头像 `AiAvatar`） |

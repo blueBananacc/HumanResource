@@ -112,7 +112,7 @@ grep MACHINE_FINGERPRINT_OVERRIDE .env
 
 1. 打开 `http://localhost`
 2. 用 `BOOTSTRAP_ADMIN_*` 登录
-3. 进入 **系统 → License 设置**
+3. 进入 **设置 → License 设置**
 4. 上传 `.lic`
 
 如果暂时没有 `.lic`，系统仍可进入 30 天试用期。
@@ -135,7 +135,7 @@ grep MACHINE_FINGERPRINT_OVERRIDE .env
 
 ### 4.1 LLM 配置
 
-进入 **系统 → LLM 配置**。
+进入 **设置 → LLM 配置**。
 
 常见配置方式：
 
@@ -150,7 +150,7 @@ grep MACHINE_FINGERPRINT_OVERRIDE .env
 
 ### 4.2 IMAP 邮箱拉取
 
-进入 **系统 → 邮箱拉取**。
+进入 **设置 → 邮箱拉取**。
 
 可配置招聘邮箱，让系统定时自动抓取附件简历入库。
 
@@ -164,7 +164,7 @@ grep MACHINE_FINGERPRINT_OVERRIDE .env
 
 ### 4.3 SMTP 发件
 
-进入 **系统 → SMTP 发件**。
+进入 **设置 → SMTP 发件**。
 
 配置后，HR 在发起远程面试时可直接选择：
 
@@ -174,7 +174,7 @@ grep MACHINE_FINGERPRINT_OVERRIDE .env
 
 ### 4.4 语音 STT/TTS
 
-进入 **系统 → 语音 STT/TTS**。
+进入 **设置 → 语音 STT/TTS**。
 
 语音面试依赖这部分配置：
 
@@ -185,7 +185,7 @@ grep MACHINE_FINGERPRINT_OVERRIDE .env
 
 ### 4.5 团队管理
 
-进入 **系统 → 团队**。
+进入 **设置 → 团队**。
 
 常见操作：
 
@@ -203,7 +203,7 @@ grep MACHINE_FINGERPRINT_OVERRIDE .env
 
 ### 4.6 SSO 接入
 
-进入 **系统 → SSO 接入**，仅 `admin` 可见。
+进入 **设置 → SSO 接入**，仅 `admin` 可见。
 
 当前支持 OIDC / OAuth2 风格配置，主要字段包括：
 
@@ -224,7 +224,7 @@ grep MACHINE_FINGERPRINT_OVERRIDE .env
 
 ### 4.7 审计中心
 
-进入 **系统 → 审计中心**，仅 `admin` 可见。
+进入 **设置 → 审计中心**，仅 `admin` 可见。
 
 可按对象、动作、结果、操作人、对象 ID 进行检索。典型留痕包括：
 
@@ -618,7 +618,7 @@ EXPOSE_OPERATIONAL_DIAGNOSTICS=true
 
 ### 7.3 查看当前状态
 
-进入 **系统 → License 设置** 可看到：
+进入 **设置 → License 设置** 可看到：
 
 - 当前 edition
 - 是否试用 / 已激活 / 已过期
@@ -654,7 +654,7 @@ EXPOSE_OPERATIONAL_DIAGNOSTICS=true
 |---|---|
 | 前端打开是 502 | 先看 `docker compose ps`，通常是 backend 未启动成功 |
 | 简历一直停在 `pending` 或 `parsing` | 查看 `docker compose logs -f worker`，确认 worker 和 broker 状态 |
-| LLM 调用超时 | 检查 `系统 → LLM 配置` 中 base URL 是否可达 |
+| LLM 调用超时 | 检查 `设置 → LLM 配置` 中 base URL 是否可达 |
 | 发起语音面试返回 402 | 当前 license 未启用 `interview.voice` |
 | 报告导出失败或按钮不可用 | 检查 license 是否启用 `report.export` |
 | 候选人链接无法继续答题 | 邀请过期、被重发、被取消，或 session 过期；重新验证或重新发送邀请 |

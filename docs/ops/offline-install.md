@@ -62,7 +62,7 @@ grep MACHINE_FINGERPRINT_OVERRIDE .env
 
 1. 浏览器打开 `http://localhost`
 2. 用 `BOOTSTRAP_ADMIN_*` 账号登录
-3. 左侧 `系统 → License 设置` → 上传 `.lic`
+3. 左侧 `设置 → License 设置` → 上传 `.lic`
 4. 状态栏显示"已激活 · 至 yyyy-mm-dd"
 
 License 不上传也能跑 30 天试用期(等同 Professional 全功能,过期降级 Community 4 项 + 配额受限)。
@@ -71,7 +71,7 @@ License 不上传也能跑 30 天试用期(等同 Professional 全功能,过期�
 
 LLM 调用走部署方自己配置的 provider,可按你的网络边界要求运行。
 
-1. 浏览器 → `系统 → LLM 配置`
+1. 浏览器 → `设置 → LLM 配置`
 2. 点 **添加 Provider**:
    - 数据留在内网:Base URL 指向你部署的 vLLM / Ollama / 任何 OpenAI 兼容服务,`model` 填 `openai/<内网模型名>`
    - 用 Azure OpenAI:点表单上方"Azure OpenAI"快速填充,Base URL 改成自家 tenant 地址,`model` 填 `azure/<deployment>`
@@ -165,8 +165,8 @@ Redis 分布式锁会自动接管去重(M2 Step B 已落地)。
 | backend 启动后立刻退出 | `docker compose logs backend`,检查 `JWT_SECRET` 是否还是默认占位(prod 拒绝启动)|
 | 前端打开是 502 | backend 没起来,先看 `docker compose ps` 状态 |
 | `.lic` 上传时报"机器指纹不匹配" | 当前 `MACHINE_FINGERPRINT_OVERRIDE` 与签发时不一致,重新申请 |
-| 邮箱拉取不工作 | `系统 → 邮箱拉取 → 测试连接`,常见是 IMAP 端口被防火墙挡 |
-| LLM 调用超时 | 检查 `系统 → LLM 配置` 里 base_url 在当前网络环境是否可达 |
+| 邮箱拉取不工作 | `设置 → 邮箱拉取 → 测试连接`,常见是 IMAP 端口被防火墙挡 |
+| LLM 调用超时 | 检查 `设置 → LLM 配置` 里 base_url 在当前网络环境是否可达 |
 
 ## 七、合规与责任
 
