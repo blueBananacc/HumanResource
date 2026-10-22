@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   ArrowUp,
   Check,
   ChevronLeft,
+  Copy,
   FileText,
   History,
   Loader2,
@@ -13,6 +14,8 @@ import {
   Sparkles,
   Square,
   Target,
+  ThumbsDown,
+  ThumbsUp,
   Trash2,
   TrendingUp,
   UserSearch,
@@ -22,6 +25,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fetchJSON, getToken } from "@/lib/api";
+import { MarkdownContent } from "@/components/ui/markdown";
 
 /** HiBubble 气泡形品牌头像(规范 §6:小尺寸用气泡标识)。 */
 export function AiAvatar({ size = 32 }: { size?: number }) {
@@ -72,32 +76,58 @@ type Msg = {
 type ConvMeta = { id: string; title: string; updated_at: string; message_count?: number };
 
 const PANEL_W = 400;
+const MIN_W = 360;
+const MIN_H = 420;
+const WIDE_ENTER = 720; // 浮窗宽度超过此值 → 双栏布局(会话列表 + 聊天)
+const WIDE_EXIT = 660; // 回落阈值,与进入阈值错开避免边界抖动
+const SIDEBAR_W = 224;
 const RAIL_W = 48;
 const SNAP_PX = 40;
 const POS_KEY = "hronfire.ai.pos";
+const SIZE_KEY = "hronfire.ai.size";
+const CONV_SIDEBAR_LIMIT = 20;
 
 /** 文档根上的 zoom(字体大小设置);指针坐标需换算回 CSS 像素。 */
 const zoom = () => parseFloat(document.documentElement.style.zoom || "1") || 1;
 const viewport = () => ({ w: window.innerWidth / zoom(), h: window.innerHeight / zoom() });
 const panelH = () => Math.min(680, viewport().h - 80);
 
-function clampPos(x: number, y: number) {
-  const { w, h } = viewport();
+function clampSize(w: number, h: number) {
+  const vp = viewport();
   return {
-    x: Math.min(Math.max(8, x), w - RAIL_W - PANEL_W - 8),
-    y: Math.min(Math.max(64, y), h - panelH() - 8),
+    w: Math.min(Math.max(MIN_W, w), Math.max(MIN_W, vp.w - RAIL_W - 16)),
+    h: Math.min(Math.max(MIN_H, h), Math.max(MIN_H, vp.h - 72)),
   };
 }
 
-function initialPos() {
+function clampPos(x: number, y: number, w = PANEL_W, h = panelH()) {
+  const vp = viewport();
+  return {
+    x: Math.max(8, Math.min(x, vp.w - RAIL_W - w - 8)),
+    y: Math.max(64, Math.min(y, vp.h - h - 8)),
+  };
+}
+
+function initialSize() {
   try {
-    const saved = JSON.parse(localStorage.getItem(POS_KEY) ?? "null");
-    if (saved && typeof saved.x === "number") return clampPos(saved.x, saved.y);
+    const saved = JSON.parse(localStorage.getItem(SIZE_KEY) ?? "null");
+    if (saved && typeof saved.w === "number") return clampSize(saved.w, saved.h);
   } catch {
     /* ignore */
   }
-  const { w, h } = viewport();
-  return clampPos(w - RAIL_W - PANEL_W - 16, h - panelH() - 16);
+  return clampSize(PANEL_W, panelH());
+}
+
+function initialPos() {
+  const s = initialSize();
+  try {
+    const saved = JSON.parse(localStorage.getItem(POS_KEY) ?? "null");
+    if (saved && typeof saved.x === "number") return clampPos(saved.x, saved.y, s.w, s.h);
+  } catch {
+    /* ignore */
+  }
+  const vp = viewport();
+  return clampPos(vp.w - RAIL_W - s.w - 16, vp.h - s.h - 16, s.w, s.h);
 }
 
 /** 读 SSE 流,逐帧回调 {event, data}。 */
@@ -159,15 +189,33 @@ export function AiAssistant({
   onDockChange: (docked: boolean) => void;
 }) {
   const [pos, setPos] = useState(initialPos);
+  const [size, setSize] = useState(initialSize);
   const [dragging, setDragging] = useState(false);
+  const [resizing, setResizing] = useState(false);
   const [snapHint, setSnapHint] = useState(false);
+  const [wide, setWide] = useState(() => initialSize().w >= WIDE_ENTER);
   const drag = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  // hd/vd:拖的是左(-1)/右(+1)/无(0)边、上(-1)/下(+1)/无(0)边;左/上边拖动时右/下缘锚定
+  const resizeRef = useRef<{
+    sx: number; sy: number; w: number; h: number;
+    x0: number; y0: number; right: number; bottom: number;
+    hd: -1 | 0 | 1; vd: -1 | 0 | 1;
+  } | null>(null);
   // window 监听器里读最新值
-  const live = useRef({ pos, snapHint, onDockChange });
-  live.current = { pos, snapHint, onDockChange };
+  const live = useRef({ pos, size, snapHint, onDockChange });
+  live.current = { pos, size, snapHint, onDockChange };
+
+  // 浮窗宽度跨越阈值时切换单栏/双栏
+  useEffect(() => {
+    setWide((was) => (size.w >= WIDE_ENTER ? true : size.w <= WIDE_EXIT ? false : was));
+  }, [size.w]);
 
   useEffect(() => {
-    const onResize = () => setPos((p) => clampPos(p.x, p.y));
+    const onResize = () => {
+      const s = clampSize(live.current.size.w, live.current.size.h);
+      setSize(s);
+      setPos((p) => clampPos(p.x, p.y, s.w, s.h));
+    };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
@@ -180,9 +228,10 @@ export function AiAssistant({
       if (!d) return;
       const z = zoom();
       const rawX = d.ox + (e.clientX - d.sx) / z;
-      setPos(clampPos(rawX, d.oy + (e.clientY - d.sy) / z));
+      const s = live.current.size;
+      setPos(clampPos(rawX, d.oy + (e.clientY - d.sy) / z, s.w, s.h));
       // 拖到右侧边缘附近 → 提示松手即贴边
-      setSnapHint(rawX + PANEL_W >= viewport().w - RAIL_W - SNAP_PX);
+      setSnapHint(rawX + s.w >= viewport().w - RAIL_W - SNAP_PX);
     };
     const up = () => {
       drag.current = null;
@@ -202,6 +251,39 @@ export function AiAssistant({
     };
   }, [dragging]);
 
+  // 浮窗缩放期间监听 window(同理,把手不在标题栏内但中途组件可能重渲染)
+  useEffect(() => {
+    if (!resizing) return;
+    const move = (e: PointerEvent) => {
+      const r = resizeRef.current;
+      if (!r) return;
+      const z = zoom();
+      const s = clampSize(
+        r.w + r.hd * ((e.clientX - r.sx) / z),
+        r.h + r.vd * ((e.clientY - r.sy) / z),
+      );
+      setSize(s);
+      setPos({
+        x: r.hd === -1 ? Math.max(8, r.right - s.w) : r.x0,
+        y: r.vd === -1 ? Math.max(64, r.bottom - s.h) : r.y0,
+      });
+    };
+    const up = () => {
+      resizeRef.current = null;
+      setResizing(false);
+      localStorage.setItem(SIZE_KEY, JSON.stringify(live.current.size));
+      localStorage.setItem(POS_KEY, JSON.stringify(live.current.pos));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+  }, [resizing]);
+
   const onPointerDown = (e: ReactPointerEvent) => {
     if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
     e.preventDefault();
@@ -209,7 +291,7 @@ export function AiAssistant({
     if (docked) {
       // 贴边状态下拖动标题栏 → 脱离成浮窗,窗口跟随指针
       const z = zoom();
-      origin = clampPos(e.clientX / z - PANEL_W / 2, e.clientY / z - 20);
+      origin = clampPos(e.clientX / z - size.w / 2, e.clientY / z - 20, size.w, size.h);
       setPos(origin);
       onDockChange(false);
     }
@@ -217,9 +299,22 @@ export function AiAssistant({
     setDragging(true);
   };
 
+  const onResizeStart = (hd: -1 | 0 | 1, vd: -1 | 0 | 1) => (e: ReactPointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    resizeRef.current = {
+      sx: e.clientX, sy: e.clientY, w: size.w, h: size.h,
+      x0: pos.x, y0: pos.y, right: pos.x + size.w, bottom: pos.y + size.h,
+      hd, vd,
+    };
+    setResizing(true);
+  };
+
   const panel = (
     <ChatPanel
       docked={docked}
+      wide={wide}
       onClose={onClose}
       onToggleDock={() => onDockChange(!docked)}
       onDragStart={onPointerDown}
@@ -245,13 +340,26 @@ export function AiAssistant({
             ? "h-full shrink-0 border-l border-[var(--color-border-subtle)]"
             : "fixed z-40 rounded-xl border border-[var(--color-border-subtle)]",
           !docked &&
-            (dragging
+            (dragging || resizing
               ? "shadow-[0_16px_48px_rgba(58,58,55,0.22)] select-none"
               : "shadow-[0_10px_40px_rgba(58,58,55,0.16)]"),
         )}
-        style={docked ? { width: PANEL_W } : { left: pos.x, top: pos.y, width: PANEL_W, height: panelH() }}
+        style={docked ? { width: PANEL_W } : { left: pos.x, top: pos.y, width: size.w, height: size.h }}
       >
         {panel}
+        {/* 浮窗缩放把手:四边 + 四角,贴边模式下不出现 */}
+        {!docked && (
+          <>
+            <div onPointerDown={onResizeStart(-1, 0)} className="absolute left-0 top-3 bottom-3 w-1.5 cursor-ew-resize touch-none z-10" />
+            <div onPointerDown={onResizeStart(1, 0)} className="absolute right-0 top-3 bottom-3 w-1.5 cursor-ew-resize touch-none z-10" />
+            <div onPointerDown={onResizeStart(0, -1)} className="absolute top-0 left-3 right-3 h-1.5 cursor-ns-resize touch-none z-10" />
+            <div onPointerDown={onResizeStart(0, 1)} className="absolute bottom-0 left-3 right-3 h-1.5 cursor-ns-resize touch-none z-10" />
+            <div onPointerDown={onResizeStart(-1, -1)} className="absolute left-0 top-0 w-3 h-3 cursor-nwse-resize touch-none z-10" />
+            <div onPointerDown={onResizeStart(1, -1)} className="absolute right-0 top-0 w-3 h-3 cursor-nesw-resize touch-none z-10" />
+            <div onPointerDown={onResizeStart(-1, 1)} className="absolute left-0 bottom-0 w-3 h-3 cursor-nesw-resize touch-none z-10" />
+            <div onPointerDown={onResizeStart(1, 1)} className="absolute right-0 bottom-0 w-3 h-3 cursor-nwse-resize touch-none z-10" />
+          </>
+        )}
       </div>
     </>
   );
@@ -259,12 +367,14 @@ export function AiAssistant({
 
 function ChatPanel({
   docked,
+  wide,
   onClose,
   onToggleDock,
   onDragStart,
   dragging,
 }: {
   docked: boolean;
+  wide: boolean;
   onClose: () => void;
   onToggleDock: () => void;
   onDragStart: (e: ReactPointerEvent) => void;
@@ -278,15 +388,28 @@ function ChatPanel({
   const [view, setView] = useState<"chat" | "history">("chat");
   const [convs, setConvs] = useState<ConvMeta[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  // 消息反馈(赞/踩)与复制态,先本地可点,接口后续再接
+  const [feedback, setFeedback] = useState<Record<number, "up" | "down">>({});
+  const [copiedAt, setCopiedAt] = useState<number | null>(null);
+  const copyTimer = useRef<number | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // 宽布局下左侧常驻会话列表,历史视图无意义
+  const showHistory = view === "history" && !wide;
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, pending]);
 
-  useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+      window.clearTimeout(copyTimer.current ?? undefined);
+    },
+    [],
+  );
 
   /** 就地更新最后一条 assistant 消息(流式追加)。 */
   const patchLastAssistant = (fn: (m: Msg) => Msg) => {
@@ -408,6 +531,7 @@ function ChatPanel({
       }
     } finally {
       setPending(false);
+      if (wide) void loadConvs(true);
     }
   };
 
@@ -433,17 +557,27 @@ function ChatPanel({
     }
   };
 
-  const openHistory = async () => {
-    setView("history");
-    setHistoryLoading(true);
+  // silent:宽布局下消息往返后静默刷新列表,避免每次发送都闪 loading
+  const loadConvs = useCallback(async (silent = false) => {
+    if (!silent) setHistoryLoading(true);
     try {
       const res = await fetchJSON<{ items: ConvMeta[] }>("/api/assistant/conversations");
       setConvs(res.items ?? []);
     } catch {
       setConvs([]);
     } finally {
-      setHistoryLoading(false);
+      if (!silent) setHistoryLoading(false);
     }
+  }, []);
+
+  // 进入宽布局时加载常驻会话列表
+  useEffect(() => {
+    if (wide) void loadConvs();
+  }, [wide, loadConvs]);
+
+  const openHistory = async () => {
+    setView("history");
+    await loadConvs();
   };
 
   const openConv = async (id: string) => {
@@ -453,6 +587,7 @@ function ChatPanel({
       );
       setConvId(id);
       setMessages(storedToMsgs(conv.messages ?? []));
+      setFeedback({});
       setView("chat");
     } catch {
       /* 会话可能已被删 */
@@ -478,7 +613,35 @@ function ChatPanel({
     setMessages([]);
     setCap(null);
     setPending(false);
+    setFeedback({});
     setView("chat");
+  };
+
+  const markFeedback = (i: number, v: "up" | "down") => {
+    setFeedback((f) => {
+      const next = { ...f };
+      if (next[i] === v) delete next[i];
+      else next[i] = v;
+      return next;
+    });
+  };
+
+  const copyMsg = async (i: number, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    setCopiedAt(i);
+    window.clearTimeout(copyTimer.current ?? undefined);
+    copyTimer.current = window.setTimeout(() => setCopiedAt(null), 1500);
   };
 
   const prompts = cap?.prompts ?? DEFAULT_PROMPTS;
@@ -493,20 +656,24 @@ function ChatPanel({
           dragging ? "cursor-grabbing" : "cursor-grab",
         )}
       >
-        {view === "history" ? (
+        {showHistory ? (
           <HeaderBtn icon={ChevronLeft} label="返回对话" onClick={() => setView("chat")} />
         ) : (
           <AiAvatar size={22} />
         )}
         <span className="font-heading font-semibold text-[14px] text-[var(--color-text-primary)] flex-1 truncate">
-          {view === "history" ? "历史会话" : "HROnfire AI 助手"}
+          {showHistory ? "历史会话" : "HROnfire AI 助手"}
         </span>
-        <HeaderBtn icon={Plus} label="新对话" onClick={newChat} />
-        <HeaderBtn
-          icon={History}
-          label="历史会话"
-          onClick={() => (view === "history" ? setView("chat") : openHistory())}
-        />
+        {!wide && (
+          <>
+            <HeaderBtn icon={Plus} label="新对话" onClick={newChat} />
+            <HeaderBtn
+              icon={History}
+              label="历史会话"
+              onClick={() => (view === "history" ? setView("chat") : openHistory())}
+            />
+          </>
+        )}
         <HeaderBtn
           icon={docked ? PictureInPicture2 : PanelRight}
           label={docked ? "浮动窗口" : "贴靠右侧"}
@@ -515,55 +682,54 @@ function ChatPanel({
         <HeaderBtn icon={X} label="关闭" onClick={onClose} />
       </div>
 
-      {/* 内容区 */}
-      {view === "history" ? (
-        <div className="flex-1 overflow-y-auto px-3 py-3">
-          {historyLoading ? (
-            <div className="flex justify-center pt-10">
-              <Loader2 className="w-5 h-5 animate-spin text-[var(--color-text-tertiary)]" />
+      {/* 内容区:宽布局下左侧常驻会话列表(参照云厂商助手双栏),窄布局维持单栏 */}
+      <div className="flex flex-1 min-h-0">
+        {wide && (
+          <aside
+            className="flex flex-col shrink-0 border-r border-[var(--color-border-subtle)] bg-[var(--color-bg-canvas)]"
+            style={{ width: SIDEBAR_W }}
+          >
+            <div className="px-3 pt-3 pb-2">
+              <button
+                type="button"
+                onClick={newChat}
+                className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-accent)] text-white text-[13px] font-bold hover:bg-[var(--color-accent-hover)] active:scale-[0.98] transition-all"
+              >
+                <Plus className="w-4 h-4" />
+                新建对话
+              </button>
             </div>
-          ) : convs.length === 0 ? (
-            <p className="text-center text-[12px] text-[var(--color-text-tertiary)] pt-10">
-              还没有历史会话
-            </p>
+            <div className="flex-1 overflow-y-auto px-2 pb-2">
+              <ConvList
+                convs={convs}
+                loading={historyLoading}
+                activeId={convId}
+                onOpen={openConv}
+                onRemove={removeConv}
+                limit={CONV_SIDEBAR_LIMIT}
+              />
+            </div>
+            {convs.length > CONV_SIDEBAR_LIMIT && (
+              <p className="px-3 pb-3 text-[11px] text-[var(--color-text-tertiary)]">
+                仅展示最近的 {CONV_SIDEBAR_LIMIT} 条对话
+              </p>
+            )}
+          </aside>
+        )}
+        <div className="flex-1 flex flex-col min-w-0">
+          {showHistory ? (
+            <div className="flex-1 overflow-y-auto px-3 py-3">
+              <ConvList
+                convs={convs}
+                loading={historyLoading}
+                activeId={convId}
+                onOpen={openConv}
+                onRemove={removeConv}
+              />
+            </div>
           ) : (
-            <div className="flex flex-col gap-1">
-              {convs.map((c) => (
-                <div
-                  key={c.id}
-                  className={cn(
-                    "group flex items-center gap-2 rounded-lg px-3 py-2.5 cursor-pointer hover:bg-[var(--color-bg-muted)]",
-                    convId === c.id && "bg-[var(--color-accent-soft)]",
-                  )}
-                  onClick={() => openConv(c.id)}
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[13px] text-[var(--color-text-primary)] truncate">
-                      {c.title}
-                    </div>
-                    <div className="text-[11px] text-[var(--color-text-tertiary)]">
-                      {c.updated_at.slice(0, 16).replace("T", " ")}
-                      {c.message_count != null && ` · ${c.message_count} 条消息`}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    aria-label="删除会话"
-                    className="opacity-0 group-hover:opacity-100 w-7 h-7 grid place-items-center rounded-md text-[var(--color-text-tertiary)] hover:text-[var(--color-danger,#dc2626)] hover:bg-white transition-all"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removeConv(c.id);
-                    }}
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : (
-        <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-5">
+            <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-5">
+              <div className={cn(wide && "mx-auto w-full max-w-[760px]")}>
           {messages.length === 0 ? (
             <div className="flex flex-col gap-5">
               <div className="flex items-center gap-4 pt-4 pb-2">
@@ -661,8 +827,8 @@ function ChatPanel({
                         </div>
                       )}
                       {m.text && (
-                        <div className="bg-[var(--color-bg-muted)] text-[var(--color-text-primary)] text-[13px] leading-relaxed rounded-2xl rounded-tl-sm px-3.5 py-2 whitespace-pre-wrap">
-                          {m.text}
+                        <div className="bg-[var(--color-bg-muted)] text-[var(--color-text-primary)] text-[13px] leading-relaxed rounded-2xl rounded-tl-sm px-3.5 py-2">
+                          <MarkdownContent text={m.text} />
                         </div>
                       )}
                       {/* 写操作确认卡 */}
@@ -705,6 +871,16 @@ function ChatPanel({
                           )}
                         </div>
                       ))}
+                      {/* 反馈操作:赞/踩/复制 — 先本地可点,反馈接口后续接入 */}
+                      {m.text && (!pending || i !== messages.length - 1) && (
+                        <MsgActions
+                          liked={feedback[i]}
+                          copied={copiedAt === i}
+                          onLike={() => markFeedback(i, "up")}
+                          onDislike={() => markFeedback(i, "down")}
+                          onCopy={() => void copyMsg(i, m.text)}
+                        />
+                      )}
                     </div>
                   </div>
                 ),
@@ -721,59 +897,181 @@ function ChatPanel({
               )}
             </div>
           )}
-        </div>
-      )}
+              </div>
+            </div>
+          )}
 
-      {/* 输入区 */}
-      <div className="shrink-0 px-4 pb-3 pt-1">
-        <div
-          className="rounded-xl border border-[var(--color-border-subtle)] bg-white focus-within:border-[var(--color-accent)] focus-within:shadow-[0_0_0_3px_var(--color-accent-soft)] transition-all"
-          onClick={() => inputRef.current?.focus()}
-        >
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                send();
-              }
-            }}
-            rows={2}
-            placeholder="有什么可以帮你？Enter 发送，Shift+Enter 换行"
-            className="w-full resize-none bg-transparent px-3 pt-2.5 text-[13px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] outline-none focus-visible:outline-none"
-          />
-          <div className="flex items-center justify-end gap-2 px-2 pb-2">
-            {pending && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  stop();
-                }}
-                aria-label="停止生成"
-                title="停止生成"
-                className="w-8 h-8 rounded-full grid place-items-center border border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-muted)] active:scale-[0.94] transition-all"
+          {/* 输入区 */}
+          <div className="shrink-0 px-4 pb-3 pt-1">
+            <div className={cn(wide && "mx-auto w-full max-w-[760px]")}>
+              <div
+                className="rounded-xl border border-[var(--color-border-subtle)] bg-white focus-within:border-[var(--color-accent)] focus-within:shadow-[0_0_0_3px_var(--color-accent-soft)] transition-all"
+                onClick={() => inputRef.current?.focus()}
               >
-                <Square className="w-3.5 h-3.5" />
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); send(); }}
-              disabled={!input.trim() || pending}
-              aria-label="发送"
-              className="w-8 h-8 rounded-full grid place-items-center bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] active:scale-[0.94] transition-all disabled:opacity-40 disabled:pointer-events-none"
-            >
-              <ArrowUp className="w-4 h-4" />
-            </button>
+                <textarea
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      send();
+                    }
+                  }}
+                  rows={2}
+                  placeholder="有什么可以帮你？Enter 发送，Shift+Enter 换行"
+                  className="w-full resize-none bg-transparent px-3 pt-2.5 text-[13px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] outline-none focus-visible:outline-none"
+                />
+                <div className="flex items-center justify-end gap-2 px-2 pb-2">
+                  {pending && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        stop();
+                      }}
+                      aria-label="停止生成"
+                      title="停止生成"
+                      className="w-8 h-8 rounded-full grid place-items-center border border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-muted)] active:scale-[0.94] transition-all"
+                    >
+                      <Square className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); send(); }}
+                    disabled={!input.trim() || pending}
+                    aria-label="发送"
+                    className="w-8 h-8 rounded-full grid place-items-center bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] active:scale-[0.94] transition-all disabled:opacity-40 disabled:pointer-events-none"
+                  >
+                    <ArrowUp className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+              <p className="mt-2 text-center text-[11px] text-[var(--color-text-tertiary)]">
+                内容由 AI 生成，仅供参考，请结合实际判断
+              </p>
+            </div>
           </div>
         </div>
-        <p className="mt-2 text-center text-[11px] text-[var(--color-text-tertiary)]">
-          内容由 AI 生成，仅供参考，请结合实际判断
-        </p>
       </div>
+    </div>
+  );
+}
+
+/** 会话列表:窄布局历史视图与宽布局侧边栏共用。 */
+function ConvList({
+  convs,
+  loading,
+  activeId,
+  onOpen,
+  onRemove,
+  limit,
+}: {
+  convs: ConvMeta[];
+  loading: boolean;
+  activeId: string | null;
+  onOpen: (id: string) => void;
+  onRemove: (id: string) => void;
+  limit?: number;
+}) {
+  if (loading) {
+    return (
+      <div className="flex justify-center pt-10">
+        <Loader2 className="w-5 h-5 animate-spin text-[var(--color-text-tertiary)]" />
+      </div>
+    );
+  }
+  if (convs.length === 0) {
+    return (
+      <p className="text-center text-[12px] text-[var(--color-text-tertiary)] pt-10">
+        还没有历史会话
+      </p>
+    );
+  }
+  const items = limit ? convs.slice(0, limit) : convs;
+  return (
+    <div className="flex flex-col gap-1">
+      {items.map((c) => (
+        <div
+          key={c.id}
+          className={cn(
+            "group flex items-center gap-2 rounded-lg px-3 py-2.5 cursor-pointer hover:bg-[var(--color-bg-muted)]",
+            activeId === c.id && "bg-[var(--color-accent-soft)]",
+          )}
+          onClick={() => onOpen(c.id)}
+        >
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] text-[var(--color-text-primary)] truncate">
+              {c.title}
+            </div>
+            <div className="text-[11px] text-[var(--color-text-tertiary)]">
+              {c.updated_at.slice(0, 16).replace("T", " ")}
+              {c.message_count != null && ` · ${c.message_count} 条消息`}
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="删除会话"
+            className="opacity-0 group-hover:opacity-100 w-7 h-7 grid place-items-center rounded-md text-[var(--color-text-tertiary)] hover:text-[var(--color-danger,#dc2626)] hover:bg-white transition-all"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove(c.id);
+            }}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** assistant 消息底部的赞/踩/复制操作条。 */
+function MsgActions({
+  liked,
+  copied,
+  onLike,
+  onDislike,
+  onCopy,
+}: {
+  liked?: "up" | "down";
+  copied: boolean;
+  onLike: () => void;
+  onDislike: () => void;
+  onCopy: () => void;
+}) {
+  const base =
+    "w-6 h-6 grid place-items-center rounded-md text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-muted)] hover:text-[var(--color-text-secondary)] active:scale-[0.94] transition-all";
+  return (
+    <div className="flex items-center gap-0.5 pl-1">
+      <button
+        type="button"
+        aria-label="有帮助"
+        title="有帮助"
+        onClick={onLike}
+        className={cn(base, liked === "up" && "text-[var(--color-accent)] bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)]")}
+      >
+        <ThumbsUp className={cn("w-3.5 h-3.5", liked === "up" && "fill-current")} />
+      </button>
+      <button
+        type="button"
+        aria-label="没帮助"
+        title="没帮助"
+        onClick={onDislike}
+        className={cn(base, liked === "down" && "text-[var(--color-accent)] bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)]")}
+      >
+        <ThumbsDown className={cn("w-3.5 h-3.5", liked === "down" && "fill-current")} />
+      </button>
+      <button
+        type="button"
+        aria-label="复制"
+        title={copied ? "已复制" : "复制"}
+        onClick={onCopy}
+        className={cn(base, copied && "text-[var(--color-accent)] hover:text-[var(--color-accent)]")}
+      >
+        {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+      </button>
     </div>
   );
 }
