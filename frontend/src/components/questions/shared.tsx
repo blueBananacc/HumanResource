@@ -297,7 +297,7 @@ export function QuestionRow({
     <div
       className={cn(
         "px-6 py-4 group transition-colors",
-        selected ? "bg-[var(--color-accent-soft)]/40" : "hover:bg-[var(--color-bg-muted)]",
+        selected ? "bg-[var(--color-orange-tint)]/20" : "hover:bg-[var(--color-bg-muted)]",
         !isLast && "border-b border-[var(--color-border-row)]",
       )}
     >

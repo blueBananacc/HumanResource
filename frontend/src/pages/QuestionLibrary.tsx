@@ -484,7 +484,7 @@ function SetRow({
       to={`/question-library/sets/${qs.id}`}
       className={cn(
         "flex items-center gap-4 px-6 py-4 group transition-colors",
-        selected ? "bg-[var(--color-accent-soft)]/40" : "hover:bg-[var(--color-bg-muted)]",
+        selected ? "bg-[var(--color-orange-tint)]/20" : "hover:bg-[var(--color-bg-muted)]",
         !isLast && "border-b border-[var(--color-border-row)]",
       )}
     >
@@ -557,7 +557,7 @@ function CategoryRow({
       to={categorySetPath(cat.category)}
       className={cn(
         "flex items-center gap-4 px-6 py-4 group transition-colors",
-        selected ? "bg-[var(--color-accent-soft)]/40" : "hover:bg-[var(--color-bg-muted)]",
+        selected ? "bg-[var(--color-orange-tint)]/20" : "hover:bg-[var(--color-bg-muted)]",
         !isLast && "border-b border-[var(--color-border-row)]",
       )}
     >
