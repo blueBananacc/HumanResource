@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.models import User
-from app.infra.db import get_db
+from app.infra.db import SessionLocal, get_db
 from app.infra.security import create_access_token, decode_token, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -77,21 +77,23 @@ def login(body: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse:
     return LoginResponse(access_token=token, user=_user_out(user))
 
 
-def get_current_user(
-    token: str | None = Depends(oauth2),
-    db: Session = Depends(get_db),
-) -> User:
+def get_current_user(token: str | None = Depends(oauth2)) -> User:
+    # 用短事务 Session 而非 yield 依赖:若这里 Depends(get_db),SSE 等流式
+    # 端点会把池连接持有到响应结束(/api/assistant/chat 最长 300s),
+    # 少量并发即可耗尽默认连接池。User 无 lazy 关系,expunge 后读取安全。
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未授权")
     payload = decode_token(token)
     if not payload or "sub" not in payload:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效 token")
-    user = db.get(User, payload["sub"])
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
-    # disabled 后,已签发 JWT 也立即失效
-    if user.status == "disabled":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已禁用")
+    with SessionLocal() as db:
+        user = db.get(User, payload["sub"])
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
+        # disabled 后,已签发 JWT 也立即失效
+        if user.status == "disabled":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已禁用")
+        db.expunge(user)
     return user
 
 

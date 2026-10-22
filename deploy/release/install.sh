@@ -57,7 +57,8 @@ for t in \
   "postgres-16-alpine.tar.gz" \
   "redis-7-alpine.tar.gz" \
   "free-hire-backend.tar.gz" \
-  "free-hire-frontend.tar.gz"; do
+  "free-hire-frontend.tar.gz" \
+  "free-hire-assistant.tar.gz"; do
   if [ -f "$t" ]; then
     echo "  - 加载 $t"
     docker load -i "$t" >/dev/null

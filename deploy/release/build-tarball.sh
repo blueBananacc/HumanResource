@@ -2,7 +2,7 @@
 # Free-Hire 离线发布包构建脚本(维护者本地执行)。
 #
 # 产物:deploy/release/dist/free-hire-{VERSION}.tar.gz
-#       内含 4 个 docker image tarball + docker-compose.yml + install.sh +
+#       内含 5 个 docker image tarball + docker-compose.yml + install.sh +
 #       .env.example + docs/ops/。解压后运行 ./install.sh 即可。
 #
 # 用法:
@@ -38,10 +38,24 @@ TARGET_PLATFORM="${FREEHIRE_TARGET_PLATFORM:-linux/amd64}"
 #   FREEHIRE_PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple ./build-tarball.sh
 APT_MIRROR="${FREEHIRE_APT_MIRROR:-}"
 PIP_INDEX="${FREEHIRE_PIP_INDEX:-}"
+# 国内构建机 npm install 常超时,可指定 npmmirror:
+#   FREEHIRE_NPM_REGISTRY=https://registry.npmmirror.com ./build-tarball.sh
+NPM_REGISTRY="${FREEHIRE_NPM_REGISTRY:-}"
+# assistant 基础镜像 node:22-alpine 拉不动时可换国内 mirror:
+#   FREEHIRE_ASSISTANT_BASE_IMAGE=docker.m.daocloud.io/library/node:22-alpine
+ASSISTANT_BASE_IMAGE="${FREEHIRE_ASSISTANT_BASE_IMAGE:-}"
 
 BACKEND_BUILD_ARGS=()
 [ -n "${APT_MIRROR}" ] && BACKEND_BUILD_ARGS+=(--build-arg "APT_MIRROR=${APT_MIRROR}")
 [ -n "${PIP_INDEX}" ]  && BACKEND_BUILD_ARGS+=(--build-arg "PIP_INDEX=${PIP_INDEX}")
+
+NODE_BUILD_ARGS=()
+[ -n "${NPM_REGISTRY}" ] && NODE_BUILD_ARGS+=(--build-arg "NPM_REGISTRY=${NPM_REGISTRY}")
+
+ASSISTANT_BUILD_ARGS=()
+[ -n "${NPM_REGISTRY}" ] && ASSISTANT_BUILD_ARGS+=(--build-arg "NPM_REGISTRY=${NPM_REGISTRY}")
+[ -n "${ASSISTANT_BASE_IMAGE}" ] && ASSISTANT_BUILD_ARGS+=(--build-arg "BASE_IMAGE=${ASSISTANT_BASE_IMAGE}")
+
 
 echo "==> 构建 Free-Hire 离线安装包 v${VERSION} (platform=${TARGET_PLATFORM})"
 
@@ -52,7 +66,7 @@ mkdir -p "${DIST}"
 
 # ---- 1. build images ----
 # 用 buildx --load 把跨平台镜像塞回本地 docker images,后续 docker save 才能找到。
-echo "==> [1/6] 构建 backend 镜像"
+echo "==> [1/7] 构建 backend 镜像"
 docker buildx build \
   --platform "${TARGET_PLATFORM}" \
   --load \
@@ -62,29 +76,41 @@ docker buildx build \
   -f "${REPO}/deploy/Dockerfile.backend" \
   "${REPO}/backend"
 
-echo "==> [2/6] 构建 frontend 镜像"
+echo "==> [2/7] 构建 frontend 镜像"
 docker buildx build \
   --platform "${TARGET_PLATFORM}" \
   --load \
+  ${NODE_BUILD_ARGS[@]+"${NODE_BUILD_ARGS[@]}"} \
   -t "free-hire-frontend:${VERSION}" \
   -t "free-hire-frontend:latest" \
   -f "${REPO}/deploy/Dockerfile.frontend" \
   "${REPO}/frontend"
 
+echo "==> [3/7] 构建 assistant 镜像"
+docker buildx build \
+  --platform "${TARGET_PLATFORM}" \
+  --load \
+  ${ASSISTANT_BUILD_ARGS[@]+"${ASSISTANT_BUILD_ARGS[@]}"} \
+  -t "free-hire-assistant:${VERSION}" \
+  -t "free-hire-assistant:latest" \
+  -f "${REPO}/deploy/Dockerfile.assistant" \
+  "${REPO}/assistant"
+
 # ---- 2. pull 依赖镜像(目标环境可能拿不到 Docker Hub) ----
-echo "==> [3/6] 拉取依赖镜像 (postgres / redis) [${TARGET_PLATFORM}]"
+echo "==> [4/7] 拉取依赖镜像 (postgres / redis) [${TARGET_PLATFORM}]"
 docker pull --platform "${TARGET_PLATFORM}" postgres:16-alpine
 docker pull --platform "${TARGET_PLATFORM}" redis:7-alpine
 
 # ---- 3. save tarballs ----
-echo "==> [4/6] docker save 镜像到 ${DIST}"
+echo "==> [5/7] docker save 镜像到 ${DIST}"
 docker save "free-hire-backend:${VERSION}" | gzip > "${DIST}/free-hire-backend.tar.gz"
 docker save "free-hire-frontend:${VERSION}" | gzip > "${DIST}/free-hire-frontend.tar.gz"
+docker save "free-hire-assistant:${VERSION}" | gzip > "${DIST}/free-hire-assistant.tar.gz"
 docker save "postgres:16-alpine" | gzip > "${DIST}/postgres-16-alpine.tar.gz"
 docker save "redis:7-alpine" | gzip > "${DIST}/redis-7-alpine.tar.gz"
 
 # ---- 4. 复制 compose + install + env + docs ----
-echo "==> [5/6] 复制 compose / install / env / docs"
+echo "==> [6/7] 复制 compose / install / env / docs"
 
 # 发布包里的 docker-compose.yml = 离线版
 cp "${REPO}/deploy/docker-compose.offline.yml" "${DIST}/docker-compose.yml"
@@ -117,7 +143,7 @@ echo "${VERSION}" > "${DIST}/VERSION"
 )
 
 # ---- 5. 打包整个交付目录 ----
-echo "==> [6/6] tar 整个交付目录"
+echo "==> [7/7] tar 整个交付目录"
 ( cd "${HERE}/dist" && tar czf "free-hire-${VERSION}.tar.gz" "free-hire-${VERSION}/" )
 
 OUT="${HERE}/dist/free-hire-${VERSION}.tar.gz"

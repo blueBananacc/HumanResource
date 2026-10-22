@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_default_model: str = "openai/gpt-4o-mini"
 
+    # ---- AI 助手 sidecar(pi-agent-core,Node)----
+    # docker 网内地址,不对外发布;frontend → backend /api/assistant → 这里。
+    assistant_url: str = "http://assistant:3001"
+
     # ---- STT / TTS 默认 backend(M6 语音面试) ----
     # 取值:
     # - ``mock``               出厂默认,无外部依赖,demo / CI 用

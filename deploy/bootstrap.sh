@@ -145,6 +145,13 @@ services:
     build:
       args:
         NPM_REGISTRY: "https://registry.npmmirror.com"
+  assistant:
+    build:
+      args:
+        NPM_REGISTRY: "https://registry.npmmirror.com"
+        # node:22-alpine 走 daocloud mirror;daemon.json registry-mirrors
+        # 已覆盖大多数情况,这里显式兜底防 docker.io 直连被拦。
+        BASE_IMAGE: "docker.m.daocloud.io/library/node:22-alpine"
 EOF
 grep -q "docker-compose.prod.yml" .git/info/exclude 2>/dev/null \
   || echo "deploy/docker-compose.prod.yml" >> .git/info/exclude

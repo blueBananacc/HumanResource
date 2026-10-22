@@ -45,6 +45,7 @@ ALL_FEATURES = (
     "match.evaluate",
     "report.export",
     "team.multi",
+    "assistant.agent",
 )
 
 # 三档版本预设:每档定义功能位 + 用量配额。-1 表示无限。

@@ -1,0 +1,29 @@
+# Assistant sidecar — pi-agent-core agent 引擎(Node 22.19+ 要求)。
+# 只在 docker 网内提供服务,不发布端口;backend /api/assistant/* 反代进来。
+# 国内拉不动 docker.io 时:--build-arg BASE_IMAGE=docker.m.daocloud.io/library/node:22-alpine
+ARG BASE_IMAGE=node:22-alpine
+FROM ${BASE_IMAGE}
+
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
+
+WORKDIR /app
+
+# 先装依赖 — package.json 不变时这层可复用缓存。
+# tsx 是运行时依赖(直接跑 TS),devDeps 也要装 — 不设 NODE_ENV=production。
+# 国内构建慢可加 --build-arg NPM_REGISTRY=https://registry.npmmirror.com
+ARG NPM_REGISTRY=""
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --no-audit --no-fund --include=dev ${NPM_REGISTRY:+--registry=$NPM_REGISTRY}
+
+COPY tsconfig.json ./
+COPY src ./src
+
+# tsx 直接跑 TS,省掉 build 步骤(镜像小、迭代快);
+# 会话数据挂卷持久化(DATA_DIR)。
+ENV PORT=3001 \
+    DATA_DIR=/app/data
+VOLUME ["/app/data"]
+
+EXPOSE 3001
+CMD ["npx", "tsx", "src/server.ts"]

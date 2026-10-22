@@ -1,22 +1,27 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   ArrowUp,
+  Check,
+  ChevronLeft,
   FileText,
   History,
+  Loader2,
   Mail,
   PanelRight,
   PictureInPicture2,
   Plus,
   Sparkles,
+  Square,
   Target,
+  Trash2,
   TrendingUp,
   UserSearch,
+  Wrench,
   X,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-
-// 前端交互骨架:后端 agent 接口未实现,发送后给出占位回复。
+import { fetchJSON, getToken } from "@/lib/api";
 
 /** HiBubble 气泡形品牌头像(规范 §6:小尺寸用气泡标识)。 */
 export function AiAvatar({ size = 32 }: { size?: number }) {
@@ -36,21 +41,35 @@ export function AiAvatar({ size = 32 }: { size?: number }) {
 
 type Capability = { label: string; icon: LucideIcon; prompts: string[] };
 const CAPABILITIES: Capability[] = [
-  { label: "人才筛选", icon: UserSearch, prompts: ["找出 3 年以上 Java 经验的候选人", "最近一周新增了哪些候选人？"] },
-  { label: "面试出题", icon: Sparkles, prompts: ["为前端工程师岗位生成 10 道面试题", "出几道考察沟通能力的行为面试题"] },
-  { label: "岗位匹配", icon: Target, prompts: ["哪些候选人最适合产品经理岗位？", "解释一下这位候选人的匹配分"] },
-  { label: "报告解读", icon: FileText, prompts: ["总结最近一场面试的结论", "对比两位候选人的面试表现"] },
-  { label: "招聘分析", icon: TrendingUp, prompts: ["本月招聘漏斗转化情况如何？", "哪个岗位招聘周期最长？"] },
-  { label: "撰写邮件", icon: Mail, prompts: ["写一封面试邀请邮件", "写一封委婉的拒信"] },
+  { label: "人才筛选", icon: UserSearch, prompts: ["现在人才库里有哪些候选人？", "最近新增了哪些候选人？"] },
+  { label: "面试出题", icon: Sparkles, prompts: ["为前端工程师岗位生成 5 道面试题", "出几道考察沟通能力的行为面试题"] },
+  { label: "岗位匹配", icon: Target, prompts: ["哪些候选人最适合产品经理岗位？", "看看有没有匹配分超过 90 的推荐面试"] },
+  { label: "报告解读", icon: FileText, prompts: ["总结最近一场面试的结论", "有哪些已完成的面试报告？"] },
+  { label: "招聘分析", icon: TrendingUp, prompts: ["现在有哪些进行中的面试？", "有哪些 open 的岗位？"] },
+  { label: "发起面试", icon: Mail, prompts: ["帮高分候选人发起一场面试"] },
 ];
 const DEFAULT_PROMPTS = [
-  "最近一周新增了哪些候选人？",
-  "为前端工程师岗位生成 10 道面试题",
-  "本月招聘漏斗转化情况如何？",
-  "写一封面试邀请邮件",
+  "现在人才库里有哪些候选人？",
+  "有哪些 open 的岗位？",
+  "看看有没有匹配分超过 90 的推荐面试",
+  "总结最近一场面试的结论",
 ];
 
-type Msg = { role: "user" | "assistant"; text: string };
+type ToolStep = { callId: string; label: string; status: "running" | "done" | "error" };
+type ConfirmReq = {
+  callId: string;
+  label: string;
+  name: string;
+  args: Record<string, unknown>;
+  decided?: "approved" | "rejected" | "timeout";
+};
+type Msg = {
+  role: "user" | "assistant";
+  text: string;
+  tools?: ToolStep[];
+  confirms?: ConfirmReq[];
+};
+type ConvMeta = { id: string; title: string; updated_at: string; message_count?: number };
 
 const PANEL_W = 400;
 const RAIL_W = 48;
@@ -79,6 +98,53 @@ function initialPos() {
   }
   const { w, h } = viewport();
   return clampPos(w - RAIL_W - PANEL_W - 16, h - panelH() - 16);
+}
+
+/** 读 SSE 流,逐帧回调 {event, data}。 */
+async function readSse(
+  body: ReadableStream<Uint8Array>,
+  onFrame: (event: string, data: string) => void,
+) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const frame = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      let event = "message";
+      let data = "";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (data) onFrame(event, data);
+    }
+  }
+}
+
+/** 把 sidecar 存的 pi 消息映射回 UI 气泡(user / assistant 文本)。 */
+function storedToMsgs(messages: unknown[]): Msg[] {
+  const out: Msg[] = [];
+  for (const raw of messages) {
+    const m = raw as { role?: string; content?: unknown };
+    const text = Array.isArray(m.content)
+      ? (m.content as Array<{ type?: string; text?: string }>)
+          .filter((c) => c.type === "text" && c.text)
+          .map((c) => c.text)
+          .join("")
+      : typeof m.content === "string"
+        ? m.content
+        : "";
+    if (!text) continue;
+    if (m.role === "user") out.push({ role: "user", text });
+    else if (m.role === "assistant") out.push({ role: "assistant", text });
+  }
+  return out;
 }
 
 export function AiAssistant({
@@ -208,29 +274,211 @@ function ChatPanel({
   const [input, setInput] = useState("");
   const [cap, setCap] = useState<Capability | null>(null);
   const [pending, setPending] = useState(false);
+  const [convId, setConvId] = useState<string | null>(null);
+  const [view, setView] = useState<"chat" | "history">("chat");
+  const [convs, setConvs] = useState<ConvMeta[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, pending]);
 
-  const send = (text = input) => {
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  /** 就地更新最后一条 assistant 消息(流式追加)。 */
+  const patchLastAssistant = (fn: (m: Msg) => Msg) => {
+    setMessages((msgs) => {
+      const next = [...msgs];
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].role === "assistant") {
+          next[i] = fn(next[i]);
+          break;
+        }
+      }
+      return next;
+    });
+  };
+
+  const send = async (text = input) => {
     const t = text.trim();
     if (!t || pending) return;
-    setMessages((m) => [...m, { role: "user", text: t }]);
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    setView("chat");
+    setMessages((m) => [...m, { role: "user", text: t }, { role: "assistant", text: "" }]);
     setInput("");
     setPending(true);
-    window.setTimeout(() => {
-      setMessages((m) => [
-        ...m,
-        {
-          role: "assistant",
-          text: `AI 助手的后端能力还在建设中，暂时无法处理「${t}」。接入后即可直接帮你执行操作或回答问题。`,
+
+    try {
+      const res = await fetch("/api/assistant/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${getToken() ?? ""}`,
         },
-      ]);
+        body: JSON.stringify({ message: t, conversation_id: convId }),
+        signal: ctrl.signal,
+      });
+      if (!res.ok || !res.body) {
+        let msg = `HTTP ${res.status}`;
+        try {
+          const d = (await res.json()) as { detail?: string };
+          if (d.detail) msg = d.detail;
+        } catch {
+          /* ignore */
+        }
+        patchLastAssistant((m) => ({ ...m, text: `出错了:${msg}` }));
+        return;
+      }
+      await readSse(res.body, (event, data) => {
+        const payload = JSON.parse(data) as Record<string, unknown>;
+        switch (event) {
+          case "conversation":
+            setConvId(String(payload.conversation_id));
+            break;
+          case "text_delta":
+            patchLastAssistant((m) => ({ ...m, text: m.text + String(payload.delta ?? "") }));
+            break;
+          case "tool_start":
+            patchLastAssistant((m) => ({
+              ...m,
+              tools: [
+                ...(m.tools ?? []),
+                {
+                  callId: String(payload.call_id ?? ""),
+                  label: String(payload.label ?? payload.name ?? "工具调用"),
+                  status: "running" as const,
+                },
+              ],
+            }));
+            break;
+          case "tool_end":
+            patchLastAssistant((m) => ({
+              ...m,
+              tools: (m.tools ?? []).map((s) =>
+                s.callId === String(payload.call_id ?? "")
+                  ? { ...s, status: payload.is_error ? ("error" as const) : ("done" as const) }
+                  : s,
+              ),
+            }));
+            break;
+          case "confirm_required":
+            patchLastAssistant((m) => ({
+              ...m,
+              confirms: [
+                ...(m.confirms ?? []),
+                {
+                  callId: String(payload.call_id ?? ""),
+                  label: String(payload.label ?? payload.name ?? "操作"),
+                  name: String(payload.name ?? ""),
+                  args: (payload.args ?? {}) as Record<string, unknown>,
+                },
+              ],
+            }));
+            break;
+          case "confirm_timeout":
+            patchLastAssistant((m) => ({
+              ...m,
+              confirms: (m.confirms ?? []).map((c) =>
+                c.callId === String(payload.call_id ?? "") ? { ...c, decided: "timeout" } : c,
+              ),
+            }));
+            break;
+          case "error":
+            patchLastAssistant((m) => ({
+              ...m,
+              text: m.text + (m.text ? "\n\n" : "") + `出错了:${String(payload.message ?? "未知错误")}`,
+            }));
+            break;
+          default:
+            break;
+        }
+      });
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        patchLastAssistant((m) => ({
+          ...m,
+          text: m.text + (m.text ? "\n\n" : "") + "网络中断,回复可能不完整,请重试",
+        }));
+      }
+    } finally {
       setPending(false);
-    }, 600);
+    }
+  };
+
+  const stop = () => {
+    abortRef.current?.abort();
+    setPending(false);
+  };
+
+  const decide = async (callId: string, approved: boolean) => {
+    patchLastAssistant((m) => ({
+      ...m,
+      confirms: (m.confirms ?? []).map((c) =>
+        c.callId === callId ? { ...c, decided: approved ? "approved" : "rejected" } : c,
+      ),
+    }));
+    try {
+      await fetchJSON("/api/assistant/confirm", {
+        method: "POST",
+        body: JSON.stringify({ call_id: callId, approved }),
+      });
+    } catch {
+      /* 超时/已处理 — 状态以 SSE 回流为准 */
+    }
+  };
+
+  const openHistory = async () => {
+    setView("history");
+    setHistoryLoading(true);
+    try {
+      const res = await fetchJSON<{ items: ConvMeta[] }>("/api/assistant/conversations");
+      setConvs(res.items ?? []);
+    } catch {
+      setConvs([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const openConv = async (id: string) => {
+    try {
+      const conv = await fetchJSON<{ messages?: unknown[] }>(
+        `/api/assistant/conversations/${id}`,
+      );
+      setConvId(id);
+      setMessages(storedToMsgs(conv.messages ?? []));
+      setView("chat");
+    } catch {
+      /* 会话可能已被删 */
+    }
+  };
+
+  const removeConv = async (id: string) => {
+    try {
+      await fetchJSON(`/api/assistant/conversations/${id}`, { method: "DELETE" });
+    } catch {
+      /* ignore */
+    }
+    setConvs((c) => c.filter((x) => x.id !== id));
+    if (convId === id) {
+      setConvId(null);
+      setMessages([]);
+    }
+  };
+
+  const newChat = () => {
+    abortRef.current?.abort();
+    setConvId(null);
+    setMessages([]);
+    setCap(null);
+    setPending(false);
+    setView("chat");
   };
 
   const prompts = cap?.prompts ?? DEFAULT_PROMPTS;
@@ -245,12 +493,20 @@ function ChatPanel({
           dragging ? "cursor-grabbing" : "cursor-grab",
         )}
       >
-        <AiAvatar size={22} />
+        {view === "history" ? (
+          <HeaderBtn icon={ChevronLeft} label="返回对话" onClick={() => setView("chat")} />
+        ) : (
+          <AiAvatar size={22} />
+        )}
         <span className="font-heading font-semibold text-[14px] text-[var(--color-text-primary)] flex-1 truncate">
-          HROnfire AI 助手
+          {view === "history" ? "历史会话" : "HROnfire AI 助手"}
         </span>
-        <HeaderBtn icon={Plus} label="新对话" onClick={() => { setMessages([]); setCap(null); }} />
-        <HeaderBtn icon={History} label="历史会话（即将上线）" disabled />
+        <HeaderBtn icon={Plus} label="新对话" onClick={newChat} />
+        <HeaderBtn
+          icon={History}
+          label="历史会话"
+          onClick={() => (view === "history" ? setView("chat") : openHistory())}
+        />
         <HeaderBtn
           icon={docked ? PictureInPicture2 : PanelRight}
           label={docked ? "浮动窗口" : "贴靠右侧"}
@@ -260,93 +516,213 @@ function ChatPanel({
       </div>
 
       {/* 内容区 */}
-      <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-5">
-        {messages.length === 0 ? (
-          <div className="flex flex-col gap-5">
-            <div className="flex items-center gap-4 pt-4 pb-2">
-              <AiAvatar size={60} />
-              <div className="flex flex-col">
-                <span className="font-heading text-[20px] font-semibold text-[var(--color-text-primary)] leading-snug">
-                  你好，欢迎使用
-                </span>
-                <span className="font-heading text-[20px] font-bold text-[var(--color-accent)] leading-snug">
-                  AI 助手
-                </span>
-              </div>
+      {view === "history" ? (
+        <div className="flex-1 overflow-y-auto px-3 py-3">
+          {historyLoading ? (
+            <div className="flex justify-center pt-10">
+              <Loader2 className="w-5 h-5 animate-spin text-[var(--color-text-tertiary)]" />
             </div>
-
-            <div className="flex flex-col gap-2.5">
-              <span className="text-[12px] font-bold text-[var(--color-text-tertiary)] tracking-[0.08em]">我可以帮你</span>
-              <div className="grid grid-cols-3 gap-2">
-                {CAPABILITIES.map((c) => {
-                  const active = cap?.label === c.label;
-                  return (
-                    <button
-                      key={c.label}
-                      type="button"
-                      onClick={() => setCap(active ? null : c)}
-                      className={cn(
-                        "flex items-center gap-2 rounded-xl border px-2.5 py-2.5 text-left transition-all duration-200 ease-[var(--ease-bob)] active:scale-[0.98]",
-                        active
-                          ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
-                          : "border-[var(--color-border-subtle)] bg-white hover:border-[var(--color-accent)] hover:shadow-[var(--shadow-card)]",
-                      )}
-                    >
-                      <span className="w-7 h-7 rounded-lg bg-[var(--color-accent-soft)] text-[var(--color-accent)] grid place-items-center shrink-0">
-                        <c.icon className="w-4 h-4" />
-                      </span>
-                      <span className={cn("text-[12px] font-bold truncate", active ? "text-[var(--color-accent)]" : "text-[var(--color-text-primary)]")}>
-                        {c.label}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-1.5">
-              {prompts.map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  onClick={() => send(p)}
-                  className="text-[12px] text-[var(--color-text-secondary)] bg-[var(--color-bg-muted)] hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)] rounded-full px-3 py-1.5 transition-colors text-left"
+          ) : convs.length === 0 ? (
+            <p className="text-center text-[12px] text-[var(--color-text-tertiary)] pt-10">
+              还没有历史会话
+            </p>
+          ) : (
+            <div className="flex flex-col gap-1">
+              {convs.map((c) => (
+                <div
+                  key={c.id}
+                  className={cn(
+                    "group flex items-center gap-2 rounded-lg px-3 py-2.5 cursor-pointer hover:bg-[var(--color-bg-muted)]",
+                    convId === c.id && "bg-[var(--color-accent-soft)]",
+                  )}
+                  onClick={() => openConv(c.id)}
                 >
-                  <span className="text-[var(--color-orange)] font-bold mr-1">#</span>
-                  {p}
-                </button>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] text-[var(--color-text-primary)] truncate">
+                      {c.title}
+                    </div>
+                    <div className="text-[11px] text-[var(--color-text-tertiary)]">
+                      {c.updated_at.slice(0, 16).replace("T", " ")}
+                      {c.message_count != null && ` · ${c.message_count} 条消息`}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="删除会话"
+                    className="opacity-0 group-hover:opacity-100 w-7 h-7 grid place-items-center rounded-md text-[var(--color-text-tertiary)] hover:text-[var(--color-danger,#dc2626)] hover:bg-white transition-all"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeConv(c.id);
+                    }}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               ))}
             </div>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {messages.map((m, i) =>
-              m.role === "user" ? (
-                <div key={i} className="self-end max-w-[85%] bg-[var(--color-accent)] text-white text-[13px] leading-relaxed rounded-2xl rounded-br-sm px-3.5 py-2 whitespace-pre-wrap">
-                  {m.text}
+          )}
+        </div>
+      ) : (
+        <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-5">
+          {messages.length === 0 ? (
+            <div className="flex flex-col gap-5">
+              <div className="flex items-center gap-4 pt-4 pb-2">
+                <AiAvatar size={60} />
+                <div className="flex flex-col">
+                  <span className="font-heading text-[20px] font-semibold text-[var(--color-text-primary)] leading-snug">
+                    你好，欢迎使用
+                  </span>
+                  <span className="font-heading text-[20px] font-bold text-[var(--color-accent)] leading-snug">
+                    AI 助手
+                  </span>
                 </div>
-              ) : (
-                <div key={i} className="flex gap-2 max-w-[92%]">
-                  <AiAvatar size={24} />
-                  <div className="bg-[var(--color-bg-muted)] text-[var(--color-text-primary)] text-[13px] leading-relaxed rounded-2xl rounded-tl-sm px-3.5 py-2 whitespace-pre-wrap">
+              </div>
+
+              <div className="flex flex-col gap-2.5">
+                <span className="text-[12px] font-bold text-[var(--color-text-tertiary)] tracking-[0.08em]">我可以帮你</span>
+                <div className="grid grid-cols-3 gap-2">
+                  {CAPABILITIES.map((c) => {
+                    const active = cap?.label === c.label;
+                    return (
+                      <button
+                        key={c.label}
+                        type="button"
+                        onClick={() => setCap(active ? null : c)}
+                        className={cn(
+                          "flex items-center gap-2 rounded-xl border px-2.5 py-2.5 text-left transition-all duration-200 ease-[var(--ease-bob)] active:scale-[0.98]",
+                          active
+                            ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
+                            : "border-[var(--color-border-subtle)] bg-white hover:border-[var(--color-accent)] hover:shadow-[var(--shadow-card)]",
+                        )}
+                      >
+                        <span className="w-7 h-7 rounded-lg bg-[var(--color-accent-soft)] text-[var(--color-accent)] grid place-items-center shrink-0">
+                          <c.icon className="w-4 h-4" />
+                        </span>
+                        <span className={cn("text-[12px] font-bold truncate", active ? "text-[var(--color-accent)]" : "text-[var(--color-text-primary)]")}>
+                          {c.label}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-1.5">
+                {prompts.map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => send(p)}
+                    className="text-[12px] text-[var(--color-text-secondary)] bg-[var(--color-bg-muted)] hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)] rounded-full px-3 py-1.5 transition-colors text-left"
+                  >
+                    <span className="text-[var(--color-orange)] font-bold mr-1">#</span>
+                    {p}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {messages.map((m, i) =>
+                m.role === "user" ? (
+                  <div key={i} className="self-end max-w-[85%] bg-[var(--color-accent)] text-white text-[13px] leading-relaxed rounded-2xl rounded-br-sm px-3.5 py-2 whitespace-pre-wrap">
                     {m.text}
                   </div>
+                ) : (
+                  <div key={i} className="flex gap-2 max-w-[94%]">
+                    <AiAvatar size={24} />
+                    <div className="flex flex-col gap-1.5 min-w-0">
+                      {/* 工具调用 chips */}
+                      {m.tools && m.tools.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {m.tools.map((s, j) => (
+                            <span
+                              key={`${s.callId}-${j}`}
+                              className={cn(
+                                "inline-flex items-center gap-1 text-[11px] rounded-full px-2 py-0.5 border",
+                                s.status === "running" &&
+                                  "border-[var(--color-accent)] text-[var(--color-accent)]",
+                                s.status === "done" &&
+                                  "border-[var(--color-border-subtle)] text-[var(--color-text-tertiary)]",
+                                s.status === "error" &&
+                                  "border-[var(--color-danger,#dc2626)] text-[var(--color-danger,#dc2626)]",
+                              )}
+                            >
+                              {s.status === "running" ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : s.status === "done" ? (
+                                <Check className="w-3 h-3" />
+                              ) : (
+                                <Wrench className="w-3 h-3" />
+                              )}
+                              {s.label}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {m.text && (
+                        <div className="bg-[var(--color-bg-muted)] text-[var(--color-text-primary)] text-[13px] leading-relaxed rounded-2xl rounded-tl-sm px-3.5 py-2 whitespace-pre-wrap">
+                          {m.text}
+                        </div>
+                      )}
+                      {/* 写操作确认卡 */}
+                      {m.confirms?.map((c) => (
+                        <div
+                          key={c.callId}
+                          className="rounded-xl border border-[var(--color-border-subtle)] bg-white px-3.5 py-3 shadow-[var(--shadow-card)]"
+                        >
+                          <div className="text-[12px] font-bold text-[var(--color-text-primary)]">
+                            确认执行:{c.label}
+                          </div>
+                          {Object.keys(c.args).length > 0 && (
+                            <pre className="mt-1.5 max-h-28 overflow-auto rounded-md bg-[var(--color-bg-muted)] px-2 py-1.5 text-[11px] text-[var(--color-text-secondary)] whitespace-pre-wrap break-all">
+                              {JSON.stringify(c.args, null, 2)}
+                            </pre>
+                          )}
+                          {!c.decided ? (
+                            <div className="mt-2.5 flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => decide(c.callId, true)}
+                                className="flex-1 h-7 rounded-md bg-[var(--color-accent)] text-white text-[12px] font-bold hover:bg-[var(--color-accent-hover)] active:scale-[0.98] transition-all"
+                              >
+                                确认执行
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => decide(c.callId, false)}
+                                className="flex-1 h-7 rounded-md border border-[var(--color-border-subtle)] text-[12px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-muted)] active:scale-[0.98] transition-all"
+                              >
+                                取消
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="mt-2 text-[11px] text-[var(--color-text-tertiary)]">
+                              {c.decided === "approved" && "已确认,执行中…"}
+                              {c.decided === "rejected" && "已取消"}
+                              {c.decided === "timeout" && "确认超时,操作已取消"}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ),
+              )}
+              {pending && (
+                <div className="flex gap-2 items-center">
+                  <AiAvatar size={24} />
+                  <span className="flex gap-1 px-3.5 py-3 bg-[var(--color-bg-muted)] rounded-2xl rounded-tl-sm">
+                    {[0, 150, 300].map((d) => (
+                      <span key={d} className="w-1.5 h-1.5 rounded-full bg-[var(--color-text-tertiary)] animate-bounce" style={{ animationDelay: `${d}ms` }} />
+                    ))}
+                  </span>
                 </div>
-              ),
-            )}
-            {pending && (
-              <div className="flex gap-2 items-center">
-                <AiAvatar size={24} />
-                <span className="flex gap-1 px-3.5 py-3 bg-[var(--color-bg-muted)] rounded-2xl rounded-tl-sm">
-                  {[0, 150, 300].map((d) => (
-                    <span key={d} className="w-1.5 h-1.5 rounded-full bg-[var(--color-text-tertiary)] animate-bounce" style={{ animationDelay: `${d}ms` }} />
-                  ))}
-                </span>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 输入区 */}
       <div className="shrink-0 px-4 pb-3 pt-1">
@@ -368,7 +744,21 @@ function ChatPanel({
             placeholder="有什么可以帮你？Enter 发送，Shift+Enter 换行"
             className="w-full resize-none bg-transparent px-3 pt-2.5 text-[13px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] outline-none focus-visible:outline-none"
           />
-          <div className="flex items-center justify-end px-2 pb-2">
+          <div className="flex items-center justify-end gap-2 px-2 pb-2">
+            {pending && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  stop();
+                }}
+                aria-label="停止生成"
+                title="停止生成"
+                className="w-8 h-8 rounded-full grid place-items-center border border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-muted)] active:scale-[0.94] transition-all"
+              >
+                <Square className="w-3.5 h-3.5" />
+              </button>
+            )}
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); send(); }}

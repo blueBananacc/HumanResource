@@ -1,7 +1,7 @@
 # Free-Hire 离线部署 compose
 #
 # 跟 docker-compose.yml 区别:
-# - backend / frontend 用 image: 引用 docker load 进来的本地镜像,不 build
+# - backend / frontend / assistant 用 image: 引用 docker load 进来的本地镜像,不 build
 # - postgres / redis 也用本地镜像(假设目标环境无 Docker Hub 访问)
 # - 镜像 tag 走 ${FREEHIRE_VERSION},install.sh 自动写到 .env
 #
@@ -53,6 +53,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       STORAGE_BACKEND: local
       STORAGE_ROOT: /var/lib/free-hire/objects
+      # AI 助手 sidecar 内网地址。
+      ASSISTANT_URL: http://assistant:3001
     volumes:
       - object-data:/var/lib/free-hire/objects
     depends_on:
@@ -89,6 +91,21 @@ services:
       redis:
         condition: service_healthy
 
+  # AI 助手 sidecar(pi-agent-core,Node 22)。不对外发布端口,
+  # 只接 backend /api/assistant/* 的转发;业务工具调用又回打 backend
+  # 公共 API —— 权限/租户/license 全在 backend 判定。
+  assistant:
+    image: free-hire-assistant:${FREEHIRE_VERSION:?需要在 .env 里设置 FREEHIRE_VERSION}
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: http://backend:8000
+      PORT: "3001"
+      DATA_DIR: /app/data
+    volumes:
+      - assistant-data:/app/data
+    depends_on:
+      - backend
+
   frontend:
     image: free-hire-frontend:${FREEHIRE_VERSION:?需要在 .env 里设置 FREEHIRE_VERSION}
     restart: unless-stopped
@@ -101,3 +118,4 @@ volumes:
   pg-data:
   redis-data:
   object-data:
+  assistant-data:

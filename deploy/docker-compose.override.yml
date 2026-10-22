@@ -14,3 +14,11 @@ services:
   worker:
     volumes:
       - ../backend:/app
+
+  # 本地开发:挂 assistant 源码 + tsx watch 热更新(覆盖生产 CMD)。
+  assistant:
+    volumes:
+      - ../assistant/src:/app/src
+    command: ["npx", "tsx", "watch", "src/server.ts"]
+    environment:
+      NODE_ENV: development

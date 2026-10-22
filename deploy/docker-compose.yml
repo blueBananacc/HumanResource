@@ -51,6 +51,8 @@ services:
       # 容器化场景固定机器指纹,避免容器重建后 license 失效。
       # 生产部署时务必换成你自己的随机值。
       MACHINE_FINGERPRINT_OVERRIDE: dev-compose-fixed-fingerprint-001
+      # AI 助手 sidecar 内网地址。
+      ASSISTANT_URL: http://assistant:3001
     volumes:
       # 简历/解析产物等持久化到命名卷,容器重建不丢数据。
       # 生产部署建议改 bind mount 到你自己的备份卷。
@@ -98,6 +100,25 @@ services:
       redis:
         condition: service_healthy
 
+  # AI 助手 sidecar(pi-agent-core,Node 22)。不对外发布端口,
+  # 只接 backend /api/assistant/* 的转发;业务工具调用又回打 backend
+  # 公共 API —— 权限/租户/license 全在 backend 判定。
+  assistant:
+    build:
+      context: ../assistant
+      dockerfile: ../deploy/Dockerfile.assistant
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: http://backend:8000
+      PORT: "3001"
+      DATA_DIR: /app/data
+    volumes:
+      - assistant-data:/app/data
+    depends_on:
+      backend:
+        condition: service_started
+    # 调试时可临时加 ports: ["3001:3001"]。
+
   frontend:
     build:
       context: ../frontend
@@ -112,3 +133,4 @@ volumes:
   pg-data:
   redis-data:
   object-data:
+  assistant-data:

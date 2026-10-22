@@ -178,7 +178,7 @@ Redis 分布式锁会自动接管去重(M2 Step B 已落地)。
 
 ```bash
 docker compose down -v          # 停服 + 删数据卷
-docker rmi free-hire-backend:{VERSION} free-hire-frontend:{VERSION}
+docker rmi free-hire-backend:{VERSION} free-hire-frontend:{VERSION} free-hire-assistant:{VERSION}
 docker rmi postgres:16-alpine redis:7-alpine
 cd .. && rm -rf free-hire-{VERSION}/
 ```

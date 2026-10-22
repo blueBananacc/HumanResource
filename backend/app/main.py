@@ -26,6 +26,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
+from app.api import assistant as assistant_api
 from app.api import audit as audit_api
 from app.api import auth as auth_api
 from app.api import email as email_api
@@ -278,6 +279,7 @@ def create_app() -> FastAPI:
     app.include_router(email_api.router, prefix="/api")
     app.include_router(smtp_api.router, prefix="/api")
     app.include_router(voice_api.router, prefix="/api")
+    app.include_router(assistant_api.router, prefix="/api")
 
     return app
 

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_user
 from app.domain.models import License, User
-from app.infra.db import get_db
+from app.infra.db import SessionLocal, get_db
 from app.infra.license.fingerprint import get_machine_fingerprint
 from app.infra.license.state import (
     QUOTA_LABELS,
@@ -35,12 +35,15 @@ def require_feature(feature: str):
         def run(...): ...
     """
 
-    def _dep(db: Session = Depends(get_db)) -> None:
-        if not is_feature_enabled(db, feature):
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"功能未启用: {feature}(请激活对应 license)",
-            )
+    def _dep() -> None:
+        # 短事务:若用 yield 依赖的 Session,流式端点(如 assistant/chat)
+        # 会把池连接持有到响应结束。
+        with SessionLocal() as db:
+            if not is_feature_enabled(db, feature):
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail=f"功能未启用: {feature}(请激活对应 license)",
+                )
 
     return _dep
 
@@ -59,15 +62,13 @@ def require_within_quota(key: str):
     触顶时返回 402,detail 携带 edition / 当前用量 / 上限 / 升级提示。
     """
 
-    def _dep(
-        current: User = Depends(get_current_user),
-        db: Session = Depends(get_db),
-    ) -> None:
-        ok, used, limit = check_quota(db, current.tenant_id, key)
-        if ok:
-            return
-        edition = get_license_state(db)["edition"]
-        label = QUOTA_LABELS.get(key, key)
+    def _dep(current: User = Depends(get_current_user)) -> None:
+        with SessionLocal() as db:
+            ok, used, limit = check_quota(db, current.tenant_id, key)
+            if ok:
+                return
+            edition = get_license_state(db)["edition"]
+            label = QUOTA_LABELS.get(key, key)
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=(
