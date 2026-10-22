@@ -27,19 +27,28 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
 from app.api import assistant as assistant_api
+from app.api import attendance as attendance_api
 from app.api import audit as audit_api
 from app.api import auth as auth_api
 from app.api import email as email_api
+from app.api import employees as employees_api
+from app.api import expenses as expenses_api
 from app.api import healthz
+from app.api import hiring as hiring_api
+from app.api import hr_me as hr_me_api
 from app.api import interview_invite as interview_invite_api
 from app.api import interviews as interviews_api
 from app.api import job_governance as job_governance_api
 from app.api import jobs as jobs_api
+from app.api import leave as leave_api
 from app.api import license as license_api
+from app.api import lifecycle as lifecycle_api
 from app.api import llm as llm_api
 from app.api import matches as matches_api
 from app.api import metrics as metrics_api
 from app.api import org as org_api
+from app.api import payroll as payroll_api
+from app.api import performance as performance_api
 from app.api import question_library as question_library_api
 from app.api import question_sets as question_sets_api
 from app.api import reports as reports_api
@@ -280,6 +289,17 @@ def create_app() -> FastAPI:
     app.include_router(smtp_api.router, prefix="/api")
     app.include_router(voice_api.router, prefix="/api")
     app.include_router(assistant_api.router, prefix="/api")
+    # HRIS 员工核心(license feature: hr.suite)
+    app.include_router(employees_api.router, prefix="/api")
+    app.include_router(hr_me_api.router, prefix="/api")
+    app.include_router(leave_api.router, prefix="/api")
+    app.include_router(attendance_api.router, prefix="/api")
+    app.include_router(lifecycle_api.router, prefix="/api")
+    app.include_router(hiring_api.req_router, prefix="/api")
+    app.include_router(hiring_api.offer_router, prefix="/api")
+    app.include_router(performance_api.router, prefix="/api")
+    app.include_router(expenses_api.router, prefix="/api")
+    app.include_router(payroll_api.router, prefix="/api")
 
     return app
 

@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_user
-from app.domain.models import OrgUnit, User
+from app.domain.models import Employee, OrgUnit, User
 
 # 权限项。命名一律 `<动作>_<对象>`,便于前后端对齐
 PERM_MANAGE_ORG = "manage_org"
@@ -33,6 +33,18 @@ PERM_WRITE_INTERVIEW = "write_interview"
 PERM_OVERRIDE_SCORE = "override_score"
 PERM_VIEW_REPORTS = "view_reports"
 PERM_EXPORT_DATA = "export_data"
+# HRIS 员工核心(hrms suite) — 对应 docs/design/hrms-suite-design.md
+PERM_MANAGE_EMPLOYEES = "manage_employees"
+PERM_MANAGE_LEAVE = "manage_leave"
+PERM_APPROVE_LEAVE = "approve_leave"
+PERM_MANAGE_ATTENDANCE = "manage_attendance"
+PERM_MANAGE_LIFECYCLE = "manage_lifecycle"
+PERM_WRITE_REQUISITIONS = "write_requisitions"
+PERM_APPROVE_REQUISITIONS = "approve_requisitions"
+PERM_MANAGE_OFFERS = "manage_offers"
+PERM_MANAGE_PERFORMANCE = "manage_performance"
+PERM_MANAGE_EXPENSES = "manage_expenses"
+PERM_MANAGE_PAYROLL = "manage_payroll"
 
 
 # 角色 -> 权限集合。修改这里时要同步前端 `frontend/src/lib/roles.ts`。
@@ -56,6 +68,17 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             PERM_OVERRIDE_SCORE,
             PERM_VIEW_REPORTS,
             PERM_EXPORT_DATA,
+            PERM_MANAGE_EMPLOYEES,
+            PERM_MANAGE_LEAVE,
+            PERM_APPROVE_LEAVE,
+            PERM_MANAGE_ATTENDANCE,
+            PERM_MANAGE_LIFECYCLE,
+            PERM_WRITE_REQUISITIONS,
+            PERM_APPROVE_REQUISITIONS,
+            PERM_MANAGE_OFFERS,
+            PERM_MANAGE_PERFORMANCE,
+            PERM_MANAGE_EXPENSES,
+            PERM_MANAGE_PAYROLL,
         }
     ),
     "hr": frozenset(
@@ -68,6 +91,17 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             PERM_OVERRIDE_SCORE,
             PERM_VIEW_REPORTS,
             PERM_EXPORT_DATA,
+            PERM_MANAGE_EMPLOYEES,
+            PERM_MANAGE_LEAVE,
+            PERM_APPROVE_LEAVE,
+            PERM_MANAGE_ATTENDANCE,
+            PERM_MANAGE_LIFECYCLE,
+            PERM_WRITE_REQUISITIONS,
+            PERM_APPROVE_REQUISITIONS,
+            PERM_MANAGE_OFFERS,
+            PERM_MANAGE_PERFORMANCE,
+            PERM_MANAGE_EXPENSES,
+            PERM_MANAGE_PAYROLL,
         }
     ),
     "interviewer": frozenset(
@@ -80,6 +114,8 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         {
             PERM_WRITE_JOBS,
             PERM_VIEW_REPORTS,
+            PERM_APPROVE_LEAVE,
+            PERM_WRITE_REQUISITIONS,
         }
     ),
     "viewer": frozenset(
@@ -87,6 +123,8 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             PERM_VIEW_REPORTS,
         }
     ),
+    # 员工自助账号(ESS):无业务权限项,所有访问走 /api/me/* 行级过滤到本人
+    "employee": frozenset(),
 }
 
 
@@ -230,6 +268,67 @@ def ensure_can_see(scope: list[str] | None, target_org_id: str | None) -> None:
         )
 
 
+# ---- HRIS 员工行级 scope(对应 Frappe HRMS 的 ESS/User Permissions)----
+
+
+def get_linked_employee_id(db: Session, user: User) -> str | None:
+    """当前用户绑定的员工 id(employee.user_id == user.id)。未绑定返回 None。"""
+    row = db.execute(
+        select(Employee.id).where(
+            Employee.tenant_id == user.tenant_id, Employee.user_id == user.id
+        )
+    ).first()
+    return row[0] if row else None
+
+
+def require_linked_employee(db: Session, user: User) -> str:
+    """ESS 端点用:返回用户绑定的 employee_id,未绑定则 403。"""
+    emp_id = get_linked_employee_id(db, user)
+    if emp_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="当前账号未绑定员工档案",
+        )
+    return emp_id
+
+
+def team_employee_ids(db: Session, user: User) -> list[str] | None:
+    """审批数据范围:当前用户作为直属上级可见的 employee_id 列表。
+
+    - admin / hr → None(不限,全部可见)
+    - 绑定了员工档案的其他角色 → 直接下属(reports_to_id == 自己 employee_id)
+    - 未绑定员工档案 → [](只能看自己,即无)
+    """
+    if user.role in ("admin", "hr"):
+        return None
+    emp_id = get_linked_employee_id(db, user)
+    if emp_id is None:
+        return []
+    rows = db.execute(
+        select(Employee.id).where(
+            Employee.tenant_id == user.tenant_id, Employee.reports_to_id == emp_id
+        )
+    ).all()
+    return [r[0] for r in rows]
+
+
+def visible_employee_ids(
+    db: Session, user: User, *, include_self: bool = True
+) -> list[str] | None:
+    """列表接口的 employee_id 过滤集合。
+
+    admin/hr → None(不限);其他人 → 下属 + 自己(include_self)。
+    """
+    team = team_employee_ids(db, user)
+    if team is None:
+        return None
+    own = get_linked_employee_id(db, user)
+    out = list(team)
+    if include_self and own:
+        out.append(own)
+    return out
+
+
 __all__ = [
     "PERM_MANAGE_ORG",
     "PERM_MANAGE_TEAM",
@@ -242,13 +341,28 @@ __all__ = [
     "PERM_OVERRIDE_SCORE",
     "PERM_VIEW_REPORTS",
     "PERM_EXPORT_DATA",
+    "PERM_MANAGE_EMPLOYEES",
+    "PERM_MANAGE_LEAVE",
+    "PERM_APPROVE_LEAVE",
+    "PERM_MANAGE_ATTENDANCE",
+    "PERM_MANAGE_LIFECYCLE",
+    "PERM_WRITE_REQUISITIONS",
+    "PERM_APPROVE_REQUISITIONS",
+    "PERM_MANAGE_OFFERS",
+    "PERM_MANAGE_PERFORMANCE",
+    "PERM_MANAGE_EXPENSES",
+    "PERM_MANAGE_PAYROLL",
     "ROLE_PERMISSIONS",
     "apply_org_filter",
     "ensure_can_see",
+    "get_linked_employee_id",
     "get_org_scope",
     "has_permission",
     "list_permissions",
+    "require_linked_employee",
     "require_permission",
     "require_role",
+    "team_employee_ids",
+    "visible_employee_ids",
     "visible_org_ids",
 ]

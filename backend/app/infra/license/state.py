@@ -46,6 +46,7 @@ ALL_FEATURES = (
     "report.export",
     "team.multi",
     "assistant.agent",
+    "hr.suite",
 )
 
 # 三档版本预设:每档定义功能位 + 用量配额。-1 表示无限。

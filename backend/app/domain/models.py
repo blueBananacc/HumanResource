@@ -14,13 +14,15 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -925,6 +927,560 @@ class JobComment(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), index=True
+    )
+
+
+# =====================================================================
+# HRIS 员工核心(参照 Frappe HRMS 领域模型,见 docs/design/hrms-suite-design.md)
+# =====================================================================
+
+
+class Employee(Base):
+    """员工主数据 — HRIS 核心实体。
+
+    - ``reports_to_id`` 直属上级(自引用),既是组织架构图的边,
+      也是"上级审批下属请假/报销"的行级数据范围依据
+    - ``user_id`` 员工账号绑定(role='employee' 的 User,唯一);
+      员工登录后 /api/me/* 全部按它行级过滤 — 对应 Frappe ESS
+    - ``source_candidate_id`` 录用转化来源(offer accepted → 建档)
+    - ``status``: active / leave / suspended / terminated
+    - ``personal`` JSON 存低频字段(地址/紧急联系人/证件),避免表膨胀
+    """
+
+    __tablename__ = "employees"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_no: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    org_unit_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("org_units.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    designation: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reports_to_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
+    work_email: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
+    phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    hire_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    employment_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="full_time"
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="active", index=True
+    )
+    personal: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    source_candidate_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "employee_no", name="uq_employees_tenant_no"),
+    )
+
+
+class LeaveType(Base):
+    """假期类型:年假 / 病假 / 事假 / 调休 …。``annual_days`` 为年度默认额度。"""
+
+    __tablename__ = "leave_types"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    annual_days: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    is_paid: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sql_false())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_leave_types_tenant_name"),
+    )
+
+
+class LeaveAllocation(Base):
+    """假期额度发放:某员工某类型某年度分得多少天。"""
+
+    __tablename__ = "leave_allocations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    leave_type_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("leave_types.id", ondelete="CASCADE"), nullable=False
+    )
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    days: Mapped[float] = mapped_column(Float, nullable=False)
+    note: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "employee_id", "leave_type_id", "year", name="uq_leave_alloc_emp_type_year"
+        ),
+    )
+
+
+class LeaveApplication(Base):
+    """请假申请。``days`` 支持 0.5(半天)。
+
+    status: pending → approved / rejected / cancelled(员工撤回)
+    """
+
+    __tablename__ = "leave_applications"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    leave_type_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("leave_types.id", ondelete="CASCADE"), nullable=False
+    )
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    days: Mapped[float] = mapped_column(Float, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="pending", index=True
+    )
+    approver_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class LeaveLedgerEntry(Base):
+    """假期台账 — allocation(+) / application(-) 各一条,余额按汇总算。"""
+
+    __tablename__ = "leave_ledger_entries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    leave_type_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("leave_types.id", ondelete="CASCADE"), nullable=False
+    )
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    delta_days: Mapped[float] = mapped_column(Float, nullable=False)
+    ref_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    ref_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    note: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class EmployeeCheckin(Base):
+    """打卡记录(原始流水)。attendance 由它每日汇总。"""
+
+    __tablename__ = "employee_checkins"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    ts: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)  # in / out
+    method: Mapped[str] = mapped_column(String(16), nullable=False, server_default="web")
+    note: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class Attendance(Base):
+    """按天的考勤汇总。status: present / absent / leave / remote / holiday。
+
+    - checkin 产生的 first_in/last_out 自动刷新 work_hours
+    - 请假单 approved 且覆盖当天 → status='leave'
+    - HR 可手工修正(manual source)
+    """
+
+    __tablename__ = "attendances"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="present", index=True
+    )
+    first_in: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_out: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    work_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False, server_default="checkin")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("employee_id", "day", name="uq_attendance_emp_day"),
+    )
+
+
+class LifecycleTemplate(Base):
+    """入职/离职/调动清单模板。``tasks`` JSON: [{title}, …]"""
+
+    __tablename__ = "lifecycle_templates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    tasks: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_false()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class LifecycleEvent(Base):
+    """员工生命周期事件(入职/调动/晋升/离职)。
+
+    ``payload`` JSON 存各类型的扩展字段,如 transfer 的
+    {from_org_unit_id, to_org_unit_id}、promotion 的 {from_designation, to_designation}。
+    全部任务完成 → status 自动 completed。
+    """
+
+    __tablename__ = "lifecycle_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="in_progress", index=True
+    )
+    effective_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class LifecycleTask(Base):
+    __tablename__ = "lifecycle_tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    event_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("lifecycle_events.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    done: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sql_false())
+    done_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    sort: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+
+
+class JobRequisition(Base):
+    """招聘需求(编制)审批 — 对应 Frappe Job Requisition。
+
+    hiring_manager 提交 → admin/hr 审批 → approved 后可一键转 Job。
+    status: pending / approved / rejected / cancelled
+    """
+
+    __tablename__ = "job_requisitions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    org_unit_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("org_units.id", ondelete="SET NULL"), nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    headcount: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    level: Mapped[str] = mapped_column(String(32), nullable=False, server_default="intermediate")
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="pending", index=True
+    )
+    requested_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    approver_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    job_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class JobOffer(Base):
+    """录用通知书 Offer。accepted → 创建 Employee + onboarding 事件。
+
+    status: draft → sent → accepted / declined / withdrawn
+    ``salary`` JSON: {base, currency, period} — 轻量记录不做核算。
+    """
+
+    __tablename__ = "job_offers"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    candidate_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    position: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    salary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    letter: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="draft", index=True
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    employee_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="SET NULL"), nullable=True
+    )
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class Goal(Base):
+    """员工目标(OKR-lite)。progress 0-100,status: active / done / dropped"""
+
+    __tablename__ = "goals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="active", index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class AppraisalCycle(Base):
+    """考核周期。status: draft / open / closed"""
+
+    __tablename__ = "appraisal_cycles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="draft", index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class Appraisal(Base):
+    """绩效考核表。cycle×employee 唯一。
+
+    流程: draft → 员工自评提交(self_submitted) → 上级/HR 评(reviewed)
+    """
+
+    __tablename__ = "appraisals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    cycle_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    self_review: Mapped[str | None] = mapped_column(Text, nullable=True)
+    self_rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    manager_review: Mapped[str | None] = mapped_column(Text, nullable=True)
+    manager_rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reviewer_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="draft", index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("cycle_id", "employee_id", name="uq_appraisal_cycle_emp"),
+    )
+
+
+class ExpenseType(Base):
+    __tablename__ = "expense_types"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_expense_types_tenant_name"),
+    )
+
+
+class ExpenseClaim(Base):
+    """报销单。items 子表合计 total。审批流同请假单。"""
+
+    __tablename__ = "expense_claims"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    total: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="pending", index=True
+    )
+    approver_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class ExpenseItem(Base):
+    __tablename__ = "expense_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    claim_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("expense_claims.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    type_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("expense_types.id", ondelete="SET NULL"), nullable=True
+    )
+    occurred_on: Mapped[date] = mapped_column(Date, nullable=False)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    note: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
+
+class SalarySlip(Base):
+    """工资条(轻量登记制,不做自动核算)。employee × period 唯一。
+
+    ``items`` JSON: [{label, kind: earning|deduction, amount}]
+    gross/deductions/net 由 items 汇总或由 HR 直填。
+    status: draft / issued(issued 后员工可见)
+    """
+
+    __tablename__ = "salary_slips"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    period: Mapped[str] = mapped_column(String(7), nullable=False)  # 'YYYY-MM'
+    gross: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    deductions: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    net: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, server_default="CNY")
+    items: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="draft", index=True
+    )
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("employee_id", "period", name="uq_salary_slip_emp_period"),
     )
 
 
