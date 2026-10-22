@@ -108,6 +108,21 @@
   }
 }
 
+/* 复选框勾选时的对勾弹入(bob 的轻快反馈) */
+@keyframes check-pop {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  70% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
 /*
  * 打印样式:让面试报告页(.print-area)能直接 Cmd/Ctrl+P 导出 PDF
  * - 隐藏 sidebar / topbar / 操作按钮
