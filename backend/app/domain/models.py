@@ -835,6 +835,10 @@ class ResumeJobMatch(Base):
     gaps: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # HR 在面试页"推荐面试"区点"忽略"后写入 — 该匹配不再出现在建议列表
+    suggestion_dismissed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)

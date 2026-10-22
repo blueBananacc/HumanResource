@@ -1,7 +1,15 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MessageSquare, Mic, Plus, Sparkles, Link2 } from "lucide-react";
+import {
+  MessageSquare,
+  Mic,
+  Plus,
+  Sparkles,
+  Link2,
+  Trash2,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { Empty } from "@/components/ui/empty";
@@ -47,6 +55,18 @@ type Interview = {
   finished_at: string | null;
   turns: { idx: number; answer: string | null }[];
   summary: InterviewSummary | null;
+  deletable: boolean;
+};
+
+type Suggestion = {
+  match_id: string;
+  score: number;
+  resume_id: string;
+  candidate_id: string;
+  candidate_name: string;
+  job_id: string;
+  job_title: string;
+  job_level: string;
 };
 
 type Job = { id: string; title: string; level: string; status: string };
@@ -99,6 +119,52 @@ export function Interviews() {
   }, [q]);
 
   const items = data?.items ?? [];
+
+  // AI 推荐:匹配 ≥90 的简历↔岗位对 — "待确认面试项",确认后带预填打开发起弹窗
+  const { data: suggestions } = useQuery({
+    queryKey: ["interview-suggestions"],
+    queryFn: () => fetchJSON<Suggestion[]>("/api/interviews/suggested"),
+  });
+  const suggestionItems = suggestions ?? [];
+
+  const dismissSuggestion = useMutation({
+    mutationFn: (matchId: string) =>
+      fetchJSON(`/api/matches/${matchId}/dismiss-suggestion`, {
+        method: "POST",
+      }),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ["interview-suggestions"] }),
+    onError: (e: unknown) =>
+      alert(e instanceof ApiError ? e.message : "忽略失败"),
+  });
+
+  function startFromSuggestion(s: Suggestion) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("candidate", s.candidate_id);
+      next.set("job", s.job_id);
+      return next;
+    });
+    setShowStart(true);
+  }
+
+  async function deleteInterview(interviewId: string) {
+    if (
+      !(await confirm({
+        title: "删除这场面试?",
+        description: "面试记录与邀请链接会一并删除,操作不可恢复。",
+        tone: "danger",
+        confirmLabel: "删除",
+      }))
+    )
+      return;
+    try {
+      await fetchJSON(`/api/interviews/${interviewId}`, { method: "DELETE" });
+      qc.invalidateQueries({ queryKey: ["interviews"] });
+    } catch (e) {
+      alert(e instanceof ApiError ? e.message : "删除失败");
+    }
+  }
 
   // resend / cancel 闭包 — 拿到组件作用域里的 qc,接口成功后立即让列表 refetch,
   // 否则撤销/重生后行还会显示旧的 has_invite=true / status=in_progress。
@@ -181,6 +247,59 @@ export function Interviews() {
         )}
       </div>
 
+      {/* AI 推荐:匹配 >90 分的简历↔岗位对 — 待确认面试项 */}
+      {suggestionItems.length > 0 && (
+        <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
+          <div className="px-6 py-3.5 border-b border-[var(--color-border-row)] flex items-center gap-2.5 bg-[var(--color-accent-soft)]/40">
+            <Sparkles className="w-4 h-4 text-[var(--color-accent)]" />
+            <span className="font-heading font-semibold text-[13px] text-[var(--color-text-primary)]">
+              AI 推荐发起面试
+            </span>
+            <span className="text-[12px] text-[var(--color-text-tertiary)] font-body">
+              匹配 &gt;90 分 · 确认后发送邀请,或忽略不再提示
+            </span>
+          </div>
+          {suggestionItems.map((s, i) => (
+            <div
+              key={s.match_id}
+              className={`px-6 py-3.5 flex items-center gap-4 ${
+                i === suggestionItems.length - 1
+                  ? ""
+                  : "border-b border-[var(--color-border-row)]"
+              }`}
+            >
+              <span className="px-2 py-0.5 rounded-md bg-[var(--color-orange-soft)] text-[var(--color-orange)] text-[11px] font-mono font-semibold shrink-0">
+                匹配 {s.score}
+              </span>
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                <span className="font-medium text-sm text-[var(--color-text-primary)] font-body truncate">
+                  {s.candidate_name}
+                </span>
+                <span className="text-[12px] text-[var(--color-text-tertiary)] font-body truncate">
+                  · {s.job_title}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => dismissSuggestion.mutate(s.match_id)}
+                aria-label="忽略该推荐"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[12px] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-muted)] transition-colors font-body shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+                忽略
+              </button>
+              <Button
+                variant="secondary"
+                className="!px-3 !py-1.5 !text-[12px] shrink-0"
+                onClick={() => startFromSuggestion(s)}
+              >
+                发起面试
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
         {isLoading ? (
           <div className="p-12 text-center text-sm text-[var(--color-text-tertiary)] font-body">
@@ -212,6 +331,7 @@ export function Interviews() {
                   setInvite({ interviewId: iv.id, payload })
                 }
                 onResend={resendInvite}
+                onDelete={deleteInterview}
               />
             ))}
             <Pagination
@@ -238,6 +358,8 @@ export function Interviews() {
           setShowStart(false);
           setInvite({ interviewId, payload });
           clearPrefillParams();
+          // 刚发起的候选人应从"AI 推荐"区消失
+          qc.invalidateQueries({ queryKey: ["interview-suggestions"] });
         }}
       />
 
@@ -281,11 +403,13 @@ function InterviewRow({
   isLast,
   onShowInvite,
   onResend,
+  onDelete,
 }: {
   interview: Interview;
   isLast: boolean;
   onShowInvite: (payload: InvitePayload) => void;
   onResend: (interviewId: string) => Promise<InvitePayload | null>;
+  onDelete: (interviewId: string) => void;
 }) {
   const navigate = useNavigate();
   const isDone = interview.status === "done";
@@ -369,6 +493,20 @@ function InterviewRow({
           <Link2 className="w-3.5 h-3.5" />
           查看链接
         </Button>
+      )}
+
+      {interview.deletable && (
+        <button
+          type="button"
+          aria-label="删除面试"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(interview.id);
+          }}
+          className="p-1.5 rounded-md text-[var(--color-text-tertiary)] hover:text-[var(--color-danger)] hover:bg-[var(--color-bg-muted)] transition-colors shrink-0"
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
       )}
 
       <StatusTag interview={interview} />
@@ -553,8 +691,12 @@ function StartInterviewModal({
       setNotifyEmail("");
       setModality("text");
       setSingleTurnSeconds(90);
+    } else {
+      // 打开时应用预填 — 支持页面内点"AI 推荐"动态打开(原逻辑只在 mount 生效)
+      setJobId(prefillJobId ?? "");
+      setCandidateId(prefillCandidateId ?? "");
     }
-  }, [open]);
+  }, [open, prefillJobId, prefillCandidateId]);
 
   function toggleKind(k: string) {
     setKinds((prev) =>

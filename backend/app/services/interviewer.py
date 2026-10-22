@@ -381,21 +381,21 @@ def score_and_advance(db: Session, turn_id: str) -> dict[str, object]:
             "finished": False,
         }
 
-    interview = db.get(Interview, turn.interview_id)
-    if interview is None or interview.status != "in_progress":
-        return {"turn_id": turn_id, "status": "missing", "finished": False}
-
-    job = db.get(Job, interview.job_id)
-    candidate = db.get(Candidate, interview.candidate_id)
-    if not job or not candidate:
-        _mark_turn_failed(db, turn, "面试关联的岗位/候选人已不存在")
-        return {"turn_id": turn_id, "status": "failed", "finished": False}
-
-    turn.score_status = "scoring"
-    turn.score_started_at = _utcnow_naive()
-    db.commit()
-
     try:
+        interview = db.get(Interview, turn.interview_id)
+        if interview is None or interview.status != "in_progress":
+            return {"turn_id": turn_id, "status": "missing", "finished": False}
+
+        job = db.get(Job, interview.job_id)
+        candidate = db.get(Candidate, interview.candidate_id)
+        if not job or not candidate:
+            _mark_turn_failed(db, turn, "面试关联的岗位/候选人已不存在")
+            return {"turn_id": turn_id, "status": "failed", "finished": False}
+
+        turn.score_status = "scoring"
+        turn.score_started_at = _utcnow_naive()
+        db.commit()
+
         scores, evidence, llm_raw = _score_answer(
             db=db,
             question=turn.question,
@@ -487,6 +487,9 @@ def submit_answer_sync(
 
 
 def _mark_turn_failed(db: Session, turn: InterviewTurn, err: str) -> None:
+    # 异常路径上 session 可能还带着失败 / 未提交的事务,先 rollback 复位再写 failed,
+    # 否则 commit 会连环报错,turn 永远停在 pending — 候选人端无限"排队评分中"。
+    db.rollback()
     turn.score_status = "failed"
     turn.score_error = err[:2000]
     turn.score_finished_at = _utcnow_naive()

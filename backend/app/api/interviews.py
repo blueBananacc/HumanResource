@@ -19,11 +19,20 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -31,7 +40,15 @@ from sqlalchemy.orm import Session
 from app.api._pagination import PageOut, apply_q_ilike, count_total, paginate_params
 from app.api.auth import get_current_user
 from app.api.license import require_feature
-from app.domain.models import Candidate, Interview, InterviewTurn, Job, User
+from app.domain.models import (
+    Candidate,
+    Interview,
+    InterviewTurn,
+    Job,
+    Resume,
+    ResumeJobMatch,
+    User,
+)
 from app.infra.db import get_db
 from app.infra.invite_tokens import generate_invite_token, hash_invite_token
 from app.infra.license.state import is_feature_enabled
@@ -134,6 +151,8 @@ class InterviewOut(BaseModel):
     finished_at: datetime | None
     turns: list[TurnOut]
     summary: dict[str, Any] | None
+    # 仅"已撤销邀约"或"已过期且无任何评分"的面试可物理删除
+    deletable: bool = False
     # M6 语音面试
     modality: str = "text"
     single_turn_seconds: int = 90
@@ -221,6 +240,22 @@ def _turn_out(t: InterviewTurn) -> TurnOut:
     )
 
 
+def _is_deletable(interview: Interview, turns: list[InterviewTurn]) -> bool:
+    """面试是否允许物理删除:已撤销的邀约,或已过期且没有任何评分结果。"""
+    if interview.status == "abandoned":
+        return True
+    expired = (
+        interview.expires_at is not None
+        and interview.expires_at < _utcnow_naive()
+    )
+    if not expired:
+        return False
+    has_scores = interview.summary is not None or any(
+        t.scores for t in turns
+    )
+    return not has_scores
+
+
 def _full_out(db: Session, interview: Interview) -> InterviewOut:
     job = db.get(Job, interview.job_id)
     cand = db.get(Candidate, interview.candidate_id)
@@ -249,6 +284,7 @@ def _full_out(db: Session, interview: Interview) -> InterviewOut:
         finished_at=interview.finished_at,
         turns=[_turn_out(t) for t in turns],
         summary=interview.summary,
+        deletable=_is_deletable(interview, list(turns)),
         modality=interview.modality,
         single_turn_seconds=interview.single_turn_seconds,
         full_audio_storage_key=interview.full_audio_storage_key,
@@ -483,6 +519,89 @@ def list_interviews(
     )
 
 
+# ---------------------------- AI 推荐面试(score > 90) -----------------------------
+
+
+AUTO_SUGGEST_MIN_SCORE = 90
+
+
+class SuggestedInterviewOut(BaseModel):
+    """自动匹配高分(>90)但尚未发起面试的 (简历, 岗位) 对 — 一键发起的候选池。"""
+
+    match_id: str
+    score: int
+    resume_id: str
+    candidate_id: str
+    candidate_name: str
+    job_id: str
+    job_title: str
+    job_level: str
+    evaluated_at: datetime | None
+
+
+@router.get(
+    "/suggested",
+    response_model=list[SuggestedInterviewOut],
+    dependencies=[Depends(require_permission(PERM_VIEW_REPORTS))],
+)
+def suggested_interviews(
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> list[SuggestedInterviewOut]:
+    """匹配分 >90 的简历↔岗位对,前端渲染为"待确认面试项"。
+
+    派生自自动匹配评估(简历解析完 / 岗位上线时 worker 算分),不落新表:
+    已忽略(``suggestion_dismissed_at``)、岗位非 open、同一 (job, candidate)
+    已有面试记录(含已撤销 — 撤销是 HR 的主动决策)的,都不建议;
+    面试被删除后该匹配会重新出现。
+    """
+    has_interview = (
+        select(Interview.id)
+        .where(
+            Interview.job_id == ResumeJobMatch.job_id,
+            Interview.candidate_id == Resume.candidate_id,
+        )
+        .exists()
+    )
+    stmt = (
+        select(ResumeJobMatch, Resume, Candidate, Job)
+        .join(Resume, Resume.id == ResumeJobMatch.resume_id)
+        .join(Candidate, Candidate.id == Resume.candidate_id)
+        .join(Job, Job.id == ResumeJobMatch.job_id)
+        .where(
+            ResumeJobMatch.tenant_id == current.tenant_id,
+            ResumeJobMatch.status == "done",
+            ResumeJobMatch.score > AUTO_SUGGEST_MIN_SCORE,
+            ResumeJobMatch.suggestion_dismissed_at.is_(None),
+            Job.status == "open",
+            ~has_interview,
+        )
+    )
+    stmt = apply_org_filter(
+        stmt,
+        org_column=Candidate.org_unit_id,
+        scope=get_org_scope(db, current),
+    )
+    rows = db.execute(
+        stmt.order_by(ResumeJobMatch.score.desc()).limit(limit)
+    ).all()
+    return [
+        SuggestedInterviewOut(
+            match_id=m.id,
+            score=m.score or 0,
+            resume_id=r.id,
+            candidate_id=c.id,
+            candidate_name=c.name,
+            job_id=j.id,
+            job_title=j.title,
+            job_level=j.level,
+            evaluated_at=m.finished_at or m.created_at,
+        )
+        for m, r, c, j in rows
+    ]
+
+
 def _check_interview_visibility(
     db: Session, current: User, interview: Interview
 ) -> None:
@@ -690,6 +809,71 @@ def cancel_invite(
     db.commit()
     logger.info(
         "[interviews] invite cancelled tenant=%s interview=%s",
+        current.tenant_id,
+        interview.id,
+    )
+
+
+@router.delete(
+    "/{interview_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[
+        Depends(require_feature("interview.text")),
+        Depends(require_permission("write_interview")),
+    ],
+)
+def delete_interview(
+    interview_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> None:
+    """删除面试 — 仅限"已撤销邀约"或"已过期且无任何评分"的记录。
+
+    有评分 / 报告数据的面试一律 409,防止误删决策依据。
+    """
+    interview = db.get(Interview, interview_id)
+    if not interview or interview.tenant_id != current.tenant_id:
+        raise HTTPException(404, "面试不存在")
+    _check_interview_visibility(db, current, interview)
+    turns = db.scalars(
+        select(InterviewTurn).where(InterviewTurn.interview_id == interview.id)
+    ).all()
+    if not _is_deletable(interview, list(turns)):
+        raise HTTPException(
+            409, "仅支持删除已撤销或过期的无评分面试"
+        )
+    # interview_turns.interview_id 是 ondelete=CASCADE,删主行即连带删除;
+    # 语音面试的对象存储音频做 best-effort 清理,失败不阻断删除。
+    store = build_object_store()
+    audio_keys = [
+        t.audio_storage_key for t in turns if t.audio_storage_key
+    ]
+    if interview.full_audio_storage_key:
+        audio_keys.append(interview.full_audio_storage_key)
+    for key in audio_keys:
+        try:
+            asyncio.run(store.delete(key))
+        except Exception:
+            logger.warning(
+                "[interviews] delete audio object failed key=%s", key
+            )
+    db.delete(interview)
+    write_audit(
+        db,
+        actor=current,
+        entity_type="interview",
+        entity_id=interview.id,
+        action="delete",
+        detail={
+            "job_id": interview.job_id,
+            "candidate_id": interview.candidate_id,
+        },
+        request=request,
+    )
+    db.commit()
+    logger.info(
+        "[interviews] interview deleted tenant=%s interview=%s",
         current.tenant_id,
         interview.id,
     )

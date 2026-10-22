@@ -14,10 +14,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -280,6 +280,25 @@ def list_for_job(
     )
     rows = db.scalars(stmt).all()
     return [_to_out(db, m, job=job) for m in rows]
+
+
+@router.post(
+    "/{match_id}/dismiss-suggestion",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def dismiss_suggestion(
+    match_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> None:
+    """面试页"推荐面试"区点"忽略"— 该匹配不再作为待确认面试项出现。
+
+    不挂 license feature:这是纯 UI 状态标记,不消耗 LLM。
+    """
+    m = _check_match(db, match_id, current)
+    if m.suggestion_dismissed_at is None:
+        m.suggestion_dismissed_at = datetime.now(UTC).replace(tzinfo=None)
+        db.commit()
 
 
 @router.get("/{match_id}", response_model=MatchOut)
