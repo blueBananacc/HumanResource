@@ -30,8 +30,8 @@ Start-Process "C:\Users\666\AppData\Local\Programs\DockerDesktop\Docker Desktop.
 # 2. 起全部容器（自动加载 docker-compose.override.yml）
 cd deploy && docker compose up -d
 
-# 3. 起 Vite 开发服务器（注意代理变量，见下）
-cd frontend; $env:VITE_API_PROXY="http://localhost"; npm run dev
+# 3. 起 Vite 开发服务器
+cd frontend; npm run dev
 ```
 
 | 入口 | 地址 |
@@ -48,7 +48,7 @@ cd frontend; $env:VITE_API_PROXY="http://localhost"; npm run dev
 
 ## 三、已知坑（重要）
 
-1. **Vite 代理默认指容器内网**：`vite.config.ts` 里 `/api` 代理默认 `http://backend:8000`，宿主机直连时**必须**设 `VITE_API_PROXY=http://localhost`（nginx 转发），否则 API 请求返回空。可考虑写入 `frontend/.env.local` 固化。
+1. **Vite 代理已固化**：`/api` 默认代理 `http://localhost`（docker 网关 nginx → backend；backend 无独立端口）。改目标用 `frontend/.env.local` 的 `VITE_API_PROXY`（vite.config.ts 里已用 `loadEnv` 读取——`process.env` 读不到 .env 文件，必须 loadEnv）。另注意：`tsconfig.node.json` 已加 `emitDeclarationOnly`，否则 `tsc -b` 会在源码旁产出 `vite.config.js`，**vite 优先加载 .js 而非 .ts** 导致旧代理配置复活（之前 500 的元凶）；若再看到 `getaddrinfo ENOTFOUND backend`，先查有没有 vite.config.js 残留。
 2. **服务器访问 GitHub 受限**：`raw.githubusercontent.com` 直连会被 reset；clone/pull 走 `ghfast.top` 镜像。bootstrap 内已做镜像源容错（apt/pip/npm 走阿里云源）。
 3. **本机出站网络受限**：开发机不能直连服务器 SSH（出站被拦），服务器侧操作需在阿里云控制台「远程命令/Cloud Assistant」或 VNC 里执行；但 Actions → 服务器方向是通的。
 4. **部署 IP 与控制台显示不一致**：元数据探测 `120.55.125.13`（以此为准），控制台截图曾显示 `120.55.123.13`。
