@@ -81,6 +81,11 @@ class AllocationIn(BaseModel):
     note: str | None = None
 
 
+class AllocationUpdateIn(BaseModel):
+    days: float = Field(..., ge=0, le=365)
+    note: str | None = None
+
+
 class AllocationOut(BaseModel):
     id: str
     employee_id: str
@@ -117,6 +122,7 @@ class DecisionIn(BaseModel):
 
 
 class BalanceOut(BaseModel):
+    allocation_id: str
     employee_id: str
     employee_name: str
     leave_type_id: str
@@ -240,6 +246,7 @@ def _mark_attendance_leave(
         else:
             if att and att.source == "leave" and att.status == "leave":
                 att.status = "absent" if att.first_in is None else "present"
+                att.source = "checkin"
         day += timedelta(days=1)
 
 
@@ -386,7 +393,7 @@ def create_allocation(
         db.flush()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, "该员工本年度此类型额度已存在,请直接编辑")
+        raise HTTPException(status.HTTP_409_CONFLICT, "该员工本年度此类型额度已存在,可在列表中调整或收回")
     _write_ledger(
         db, tenant_id=current.tenant_id, employee_id=emp.id, leave_type_id=lt.id,
         year=body.year, delta=body.days, ref_type="allocation", ref_id=a.id,
@@ -403,6 +410,46 @@ def create_allocation(
     return AllocationOut(
         id=a.id, employee_id=a.employee_id, employee_name=emp.name,
         leave_type_id=a.leave_type_id, leave_type_name=lt.name,
+        year=a.year, days=a.days, note=a.note, created_at=a.created_at,
+    )
+
+
+@router.put("/allocations/{alloc_id}", response_model=AllocationOut)
+def update_allocation(
+    alloc_id: str,
+    body: AllocationUpdateIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_LEAVE)),
+):
+    """调整额度天数 — 以台账 delta 记账,余额接口照常重算。"""
+    a = db.get(LeaveAllocation, alloc_id)
+    if not a or a.tenant_id != current.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "额度不存在")
+    delta = body.days - a.days
+    if delta != 0:
+        _write_ledger(
+            db, tenant_id=current.tenant_id, employee_id=a.employee_id,
+            leave_type_id=a.leave_type_id, year=a.year, delta=delta,
+            ref_type="allocation_adjust", ref_id=a.id,
+            note=body.note or "额度调整",
+        )
+    a.days = body.days
+    if body.note is not None:
+        a.note = body.note
+    write_audit(
+        db, actor=current, entity_type="leave_allocation", entity_id=a.id,
+        action="update", detail={"days": a.days, "delta": delta},
+        request=request,
+    )
+    db.commit()
+    db.refresh(a)
+    emps, types = _emp_map(db, current.tenant_id), _type_map(db, current.tenant_id)
+    return AllocationOut(
+        id=a.id, employee_id=a.employee_id,
+        employee_name=emps[a.employee_id].name if a.employee_id in emps else "?",
+        leave_type_id=a.leave_type_id,
+        leave_type_name=types[a.leave_type_id].name if a.leave_type_id in types else "?",
         year=a.year, days=a.days, note=a.note, created_at=a.created_at,
     )
 
@@ -590,6 +637,7 @@ def balances(
             )
         ) or 0
         out.append(BalanceOut(
+            allocation_id=a.id,
             employee_id=a.employee_id,
             employee_name=emps[a.employee_id].name if a.employee_id in emps else "?",
             leave_type_id=a.leave_type_id,

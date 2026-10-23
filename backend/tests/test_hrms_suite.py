@@ -30,6 +30,7 @@ settings.machine_fingerprint_override = "test-machine-id-hris"
 
 from app.domain.models import (  # noqa: E402
     Attendance,
+    AuditLog,
     Base,
     Employee,
     LeaveApplication,
@@ -394,6 +395,88 @@ def test_leave_manager_team_scope(db_session):
         _cleanup(db_session, t)
 
 
+def test_leave_allocation_adjust_and_revoke(db_session):
+    """额度调整写台账 delta + 审计;重复发放 409;收回写负台账且余额行消失。"""
+    t = _tenant(db_session)
+    t2 = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    admin2 = _user(db_session, t2, role="admin")
+    client = TestClient(app)
+    try:
+        lt = _mk_leave_type(client, _hdr(admin))
+        emp = _mk_emp(client, _hdr(admin), name="调额")
+        year = date.today().year
+        res = client.post(
+            "/api/leave/allocations", headers=_hdr(admin),
+            json={"employee_id": emp["id"], "leave_type_id": lt["id"],
+                  "year": year, "days": 10},
+        )
+        assert res.status_code == 201
+        alloc_id = res.json()["id"]
+
+        # 同年同类型重复发放 → 409
+        res = client.post(
+            "/api/leave/allocations", headers=_hdr(admin),
+            json={"employee_id": emp["id"], "leave_type_id": lt["id"],
+                  "year": year, "days": 5},
+        )
+        assert res.status_code == 409
+
+        # 调整 10→6:台账记 allocation_adjust -4,余额/响应实时重算
+        res = client.put(
+            f"/api/leave/allocations/{alloc_id}", headers=_hdr(admin),
+            json={"days": 6, "note": "减半"},
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["days"] == 6 and res.json()["note"] == "减半"
+        b = client.get(
+            f"/api/leave/balances?employee_id={emp['id']}&year={year}",
+            headers=_hdr(admin),
+        ).json()
+        assert b[0]["allocation_id"] == alloc_id
+        assert b[0]["allocated"] == 6 and b[0]["balance"] == 6
+        by_type = {
+            e["ref_type"]: e["delta_days"]
+            for e in client.get("/api/leave/ledger", headers=_hdr(admin)).json()["items"]
+        }
+        assert by_type == {"allocation": 10.0, "allocation_adjust": -4.0}
+
+        # 天数不变仅改备注 → 不再写台账
+        res = client.put(
+            f"/api/leave/allocations/{alloc_id}", headers=_hdr(admin),
+            json={"days": 6, "note": "仅备注"},
+        )
+        assert res.status_code == 200 and res.json()["note"] == "仅备注"
+        assert client.get("/api/leave/ledger", headers=_hdr(admin)).json()["total"] == 2
+
+        # 跨租户不可见
+        res = client.put(
+            f"/api/leave/allocations/{alloc_id}", headers=_hdr(admin2),
+            json={"days": 1},
+        )
+        assert res.status_code == 404
+        res = client.delete(
+            f"/api/leave/allocations/{alloc_id}", headers=_hdr(admin2)
+        )
+        assert res.status_code == 404
+
+        # 收回 → 台账 allocation_revoke -6,行从余额列表消失
+        res = client.delete(
+            f"/api/leave/allocations/{alloc_id}", headers=_hdr(admin)
+        )
+        assert res.status_code == 204
+        assert client.get(
+            f"/api/leave/balances?employee_id={emp['id']}&year={year}",
+            headers=_hdr(admin),
+        ).json() == []
+        entries = client.get("/api/leave/ledger", headers=_hdr(admin)).json()["items"]
+        by_type = {e["ref_type"]: e["delta_days"] for e in entries}
+        assert by_type["allocation_revoke"] == -6.0
+        assert sum(e["delta_days"] for e in entries) == 0
+    finally:
+        _cleanup(db_session, t, t2)
+
+
 def test_checkin_and_summarize(db_session):
     t = _tenant(db_session)
     admin = _user(db_session, t, role="admin")
@@ -426,6 +509,18 @@ def test_checkin_and_summarize(db_session):
         )
         assert res.status_code == 200
         assert res.json()["status"] == "remote"
+        assert res.json()["source"] == "manual"
+
+        # 手工修正写审计日志
+        db_session.expire_all()
+        log = db_session.scalars(
+            select(AuditLog).where(
+                AuditLog.entity_type == "attendance",
+                AuditLog.entity_id == att_id,
+                AuditLog.action == "manual_correct",
+            )
+        ).first()
+        assert log and log.detail["status"] == "remote"
     finally:
         _cleanup(db_session, t)
 
@@ -512,11 +607,13 @@ def test_requisition_to_job(db_session):
         )
         assert res.status_code == 403
 
-        # admin 批 → 转岗位
+        # admin 批 → 转岗位(JSON body 里的审批意见要落库)
         res = client.post(
-            f"/api/requisitions/{rid}/approve", headers=_hdr(admin)
+            f"/api/requisitions/{rid}/approve", headers=_hdr(admin),
+            json={"note": "同意"},
         )
         assert res.json()["status"] == "approved"
+        assert res.json()["decision_note"] == "同意"
         res = client.post(
             f"/api/requisitions/{rid}/to-job", headers=_hdr(admin)
         )
@@ -526,6 +623,19 @@ def test_requisition_to_job(db_session):
         res = client.get(f"/api/jobs/{job_id}", headers=_hdr(admin))
         assert res.status_code == 200
         assert res.json()["title"] == "后端工程师"
+
+        # 驳回同样记录审批意见
+        res = client.post(
+            "/api/requisitions", headers=_hdr(hm),
+            json={"title": "前端工程师", "headcount": 1},
+        )
+        rid2 = res.json()["id"]
+        res = client.post(
+            f"/api/requisitions/{rid2}/reject", headers=_hdr(admin),
+            json={"note": "编制冻结"},
+        )
+        assert res.json()["status"] == "rejected"
+        assert res.json()["decision_note"] == "编制冻结"
     finally:
         _cleanup(db_session, t)
 

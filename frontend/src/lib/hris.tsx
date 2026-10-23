@@ -73,6 +73,7 @@ export type LeaveApplication = {
 };
 
 export type LeaveBalance = {
+  allocation_id: string;
   employee_id: string;
   employee_name: string;
   leave_type_id: string;

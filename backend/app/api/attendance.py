@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -27,6 +27,7 @@ from app.domain.models import (
     User,
 )
 from app.infra.db import get_db
+from app.services.audit import write_audit
 from app.services.permissions import (
     PERM_MANAGE_ATTENDANCE,
     PERM_VIEW_REPORTS,
@@ -132,12 +133,16 @@ def summarize_day(db: Session, *, tenant_id: str, employee_id: str, day: date) -
     if att.source != "manual":
         if on_leave:
             att.status = "leave"
+            att.source = "leave"
         elif first_in:
             att.status = "present"
+            att.source = "checkin"
         elif day.weekday() >= 5:
             att.status = "holiday"
+            att.source = "checkin"
         else:
             att.status = "absent"
+            att.source = "checkin"
         att.first_in = first_in or att.first_in
         att.last_out = last_out or att.last_out
         if att.first_in and att.last_out and att.last_out > att.first_in:
@@ -190,6 +195,7 @@ def list_attendance(
 def update_attendance(
     att_id: str,
     body: AttendanceIn,
+    request: Request,
     db: Session = Depends(get_db),
     current: User = Depends(require_permission(PERM_MANAGE_ATTENDANCE)),
 ):
@@ -204,6 +210,17 @@ def update_attendance(
         a.last_out = body.last_out
     if a.first_in and a.last_out and a.last_out > a.first_in:
         a.work_hours = round((a.last_out - a.first_in).total_seconds() / 3600, 2)
+    write_audit(
+        db, actor=current, entity_type="attendance", entity_id=a.id,
+        action="manual_correct",
+        detail={
+            "employee_id": a.employee_id, "day": str(a.day),
+            "status": a.status,
+            "first_in": a.first_in.isoformat() if a.first_in else None,
+            "last_out": a.last_out.isoformat() if a.last_out else None,
+        },
+        request=request,
+    )
     db.commit()
     db.refresh(a)
     emps, orgs = _maps(db, current.tenant_id)

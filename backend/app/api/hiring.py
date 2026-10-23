@@ -77,6 +77,10 @@ class RequisitionIn(BaseModel):
     reason: str = ""
 
 
+class ReqDecisionIn(BaseModel):
+    note: str | None = None
+
+
 class RequisitionOut(BaseModel):
     id: str
     title: str
@@ -179,7 +183,7 @@ def _req(db: Session, rid: str, tenant_id: str) -> JobRequisition:
 def approve_requisition(
     rid: str,
     request: Request,
-    note: str | None = None,
+    body: ReqDecisionIn | None = None,
     db: Session = Depends(get_db),
     current: User = Depends(require_permission(PERM_APPROVE_REQUISITIONS)),
 ):
@@ -189,7 +193,7 @@ def approve_requisition(
     r.status = "approved"
     r.approver_id = current.id
     r.decided_at = _now()
-    r.decision_note = note
+    r.decision_note = body.note if body else None
     write_audit(
         db, actor=current, entity_type="job_requisition", entity_id=r.id,
         action="approve", detail={}, request=request,
@@ -204,7 +208,7 @@ def approve_requisition(
 def reject_requisition(
     rid: str,
     request: Request,
-    note: str | None = None,
+    body: ReqDecisionIn | None = None,
     db: Session = Depends(get_db),
     current: User = Depends(require_permission(PERM_APPROVE_REQUISITIONS)),
 ):
@@ -214,7 +218,7 @@ def reject_requisition(
     r.status = "rejected"
     r.approver_id = current.id
     r.decided_at = _now()
-    r.decision_note = note
+    r.decision_note = body.note if body else None
     write_audit(
         db, actor=current, entity_type="job_requisition", entity_id=r.id,
         action="reject", detail={}, request=request,
