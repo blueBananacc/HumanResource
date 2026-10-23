@@ -23,7 +23,7 @@ import {
   fmtMoney,
   type SalarySlip,
 } from "@/lib/hris";
-import { Field, useEmployeeOptions } from "./Employees";
+import { Field, PageError, useEmployeeOptions } from "./Employees";
 
 export function Payroll() {
   const [sp] = useSearchParams();
@@ -33,7 +33,7 @@ export function Payroll() {
   const [viewing, setViewing] = useState<SalarySlip | null>(null);
   const qc = useQueryClient();
 
-  const { data, isLoading, page, pageCount, total, goto } =
+  const { data, isLoading, isError, error, page, pageCount, total, goto } =
     usePagedQuery<SalarySlip>({
       key: ["salary-slips"],
       url: "/api/payroll/slips",
@@ -63,10 +63,12 @@ export function Payroll() {
             轻量薪酬登记 — 录入/导入工资条,发放后员工在自助端可见。
           </p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="w-4 h-4" />
-          录入工资条
-        </Button>
+        {!isError && (
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="w-4 h-4" />
+            录入工资条
+          </Button>
+        )}
       </div>
 
       <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
@@ -74,6 +76,8 @@ export function Payroll() {
           <div className="p-12 text-center text-sm text-[var(--color-text-tertiary)] font-body">
             加载中…
           </div>
+        ) : isError ? (
+          <PageError error={error} />
         ) : items.length === 0 ? (
           <Empty
             icon={Banknote}
@@ -191,7 +195,7 @@ function SlipCreateModal({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const empOptions = useEmployeeOptions();
+  const empOptions = useEmployeeOptions(open);
   const [empId, setEmpId] = useState("");
   const [rows, setRows] = useState<SlipRow[]>([
     { label: "基本工资", kind: "earning", amount: "" },

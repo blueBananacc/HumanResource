@@ -30,6 +30,7 @@ from app.domain.models import (
 from app.infra.db import get_db
 from app.services.audit import write_audit
 from app.services.permissions import (
+    PERM_APPROVE_EXPENSES,
     PERM_MANAGE_EXPENSES,
     PERM_VIEW_REPORTS,
     get_linked_employee_id,
@@ -82,6 +83,7 @@ class ClaimOut(BaseModel):
     approver_id: str | None
     decided_at: datetime | None
     decision_note: str | None
+    own_request: bool
     created_at: datetime
 
 
@@ -98,7 +100,10 @@ def _maps(db: Session, tenant_id: str):
     return emps, orgs, types
 
 
-def _claim_out(c: ExpenseClaim, items: list[ExpenseItem], emps, orgs, types) -> ClaimOut:
+def _claim_out(
+    c: ExpenseClaim, items: list[ExpenseItem], emps, orgs, types,
+    me_id: str | None = None,
+) -> ClaimOut:
     e = emps.get(c.employee_id)
     return ClaimOut(
         id=c.id, employee_id=c.employee_id,
@@ -111,7 +116,9 @@ def _claim_out(c: ExpenseClaim, items: list[ExpenseItem], emps, orgs, types) -> 
             occurred_on=i.occurred_on, amount=i.amount, note=i.note,
         ) for i in sorted(items, key=lambda x: x.occurred_on)],
         approver_id=c.approver_id, decided_at=c.decided_at,
-        decision_note=c.decision_note, created_at=c.created_at,
+        decision_note=c.decision_note,
+        own_request=bool(e and e.user_id == me_id),
+        created_at=c.created_at,
     )
 
 
@@ -203,7 +210,7 @@ def list_claims(
     for i in items:
         by_claim.setdefault(i.claim_id, []).append(i)
     return PageOut(
-        items=[_claim_out(c, by_claim.get(c.id, []), emps, orgs, types)
+        items=[_claim_out(c, by_claim.get(c.id, []), emps, orgs, types, current.id)
                for c in rows],
         total=total, limit=limit, offset=offset,
     )
@@ -226,7 +233,7 @@ def get_claim(
     items = list(db.scalars(
         select(ExpenseItem).where(ExpenseItem.claim_id == c.id)
     ))
-    return _claim_out(c, items, emps, orgs, types)
+    return _claim_out(c, items, emps, orgs, types, current.id)
 
 
 def _team_ids_with_self(db: Session, user: User) -> list[str]:
@@ -247,12 +254,17 @@ def _team_ids_with_self(db: Session, user: User) -> list[str]:
 
 
 def _can_decide(db: Session, user: User, c: ExpenseClaim) -> bool:
+    emp = db.get(Employee, c.employee_id)
+    if not emp:
+        return False
+    # 职责分离:不能批自己提交的报销单
+    if emp.user_id == user.id:
+        return False
     if user.role in ("admin", "hr"):
         return True
     if user.role == "hiring_manager":
         mgr = get_linked_employee_id(db, user)
-        emp = db.get(Employee, c.employee_id)
-        return bool(mgr and emp and emp.reports_to_id == mgr)
+        return bool(mgr and emp.reports_to_id == mgr)
     return False
 
 
@@ -269,7 +281,8 @@ def _decide(
     if c.status != "pending":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "已处理")
     if not _can_decide(db, current, c):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "只能审批直属下属的报销")
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "只能审批直属下属的报销,不能自批")
     c.status = to
     c.approver_id = current.id
     c.decided_at = _now()
@@ -294,7 +307,7 @@ class DecideIn(BaseModel):
 def approve_claim(
     claim_id: str, body: DecideIn, request: Request,
     db: Session = Depends(get_db),
-    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+    current: User = Depends(require_permission(PERM_APPROVE_EXPENSES)),
 ):
     return _decide(db, request, current, claim_id, "approved", body.note)
 
@@ -303,7 +316,7 @@ def approve_claim(
 def reject_claim(
     claim_id: str, body: DecideIn, request: Request,
     db: Session = Depends(get_db),
-    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+    current: User = Depends(require_permission(PERM_APPROVE_EXPENSES)),
 ):
     return _decide(db, request, current, claim_id, "rejected", body.note)
 
@@ -329,4 +342,4 @@ def pay_claim(
     items = list(db.scalars(
         select(ExpenseItem).where(ExpenseItem.claim_id == c.id)
     ))
-    return _claim_out(c, items, emps, orgs, types)
+    return _claim_out(c, items, emps, orgs, types, current.id)

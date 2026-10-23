@@ -114,6 +114,7 @@ class ApplicationOut(BaseModel):
     approver_email: str | None
     decided_at: datetime | None
     decision_note: str | None
+    own_request: bool
     created_at: datetime
 
 
@@ -176,7 +177,8 @@ def _user_map(db: Session, tenant_id: str):
 
 
 def _app_out(
-    a: LeaveApplication, emps: dict, types: dict, users: dict, orgs: dict
+    a: LeaveApplication, emps: dict, types: dict, users: dict, orgs: dict,
+    me_id: str | None = None,
 ) -> ApplicationOut:
     e = emps.get(a.employee_id)
     return ApplicationOut(
@@ -195,6 +197,7 @@ def _app_out(
         approver_email=users.get(a.approver_id) if a.approver_id else None,
         decided_at=a.decided_at,
         decision_note=a.decision_note,
+        own_request=bool(e and e.user_id == me_id),
         created_at=a.created_at,
     )
 
@@ -207,13 +210,18 @@ def _locked_app(db: Session, app_id: str) -> LeaveApplication | None:
 
 
 def _can_approve(db: Session, user: User, app: LeaveApplication) -> bool:
-    """admin/hr 都能批;hiring_manager 仅直属下属。"""
+    """admin/hr 都能批;hiring_manager 仅直属下属;任何人不能批自己的申请。"""
+    target = db.get(Employee, app.employee_id)
+    if not target:
+        return False
+    # 职责分离:审批人与申请人是同一登录账号(含绑定了员工档案的 admin/hr)时拒绝
+    if target.user_id == user.id:
+        return False
     if user.role in ("admin", "hr"):
         return True
     if user.role == "hiring_manager":
         mgr_emp = get_linked_employee_id(db, user)
-        target = db.get(Employee, app.employee_id)
-        return bool(mgr_emp and target and target.reports_to_id == mgr_emp)
+        return bool(mgr_emp and target.reports_to_id == mgr_emp)
     return False
 
 
@@ -245,9 +253,9 @@ def _write_ledger(
 
 
 def _mark_attendance_leave(
-    db: Session, *, tenant_id: str, employee_id: str, start, end, on_leave: bool
+    db: Session, *, tenant_id: str, employee_id: str, start, end
 ) -> None:
-    """请假审批通过/撤销时联动 attendance 状态。"""
+    """请假审批通过时把区间内考勤标记为 leave(撤销路径在 hr_me 删行重算)。"""
     from datetime import timedelta
 
     day = start
@@ -257,20 +265,15 @@ def _mark_attendance_leave(
                 Attendance.employee_id == employee_id, Attendance.day == day
             )
         ).first()
-        if on_leave:
-            if att is None:
-                att = Attendance(
-                    tenant_id=tenant_id, employee_id=employee_id, day=day,
-                    status="leave", source="leave",
-                )
-                db.add(att)
-            elif att.status in ("present", "absent") and att.first_in is None:
-                att.status = "leave"
-                att.source = "leave"
-        else:
-            if att and att.source == "leave" and att.status == "leave":
-                att.status = "absent" if att.first_in is None else "present"
-                att.source = "checkin"
+        if att is None:
+            att = Attendance(
+                tenant_id=tenant_id, employee_id=employee_id, day=day,
+                status="leave", source="leave",
+            )
+            db.add(att)
+        elif att.status in ("present", "absent") and att.first_in is None:
+            att.status = "leave"
+            att.source = "leave"
         day += timedelta(days=1)
 
 
@@ -370,7 +373,7 @@ def list_allocations(
     employee_id: str | None = None,
     year: int | None = None,
     db: Session = Depends(get_db),
-    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+    current: User = Depends(require_permission(PERM_MANAGE_LEAVE)),
 ):
     limit, offset, _ = pagination
     stmt = select(LeaveAllocation).where(LeaveAllocation.tenant_id == current.tenant_id)
@@ -546,7 +549,7 @@ def list_applications(
         select(OrgUnit).where(OrgUnit.tenant_id == current.tenant_id)
     )}
     return PageOut(
-        items=[_app_out(a, emps, types, users, orgs) for a in rows],
+        items=[_app_out(a, emps, types, users, orgs, current.id) for a in rows],
         total=total, limit=limit, offset=offset,
     )
 
@@ -565,7 +568,8 @@ def approve_application(
     if a.status != "pending":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "该申请已处理")
     if not _can_approve(db, current, a):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "只能审批直属下属的申请")
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "只能审批直属下属的申请,不能自批")
     a.status = "approved"
     a.approver_id = current.id
     a.decided_at = _now()
@@ -579,7 +583,7 @@ def approve_application(
     )
     _mark_attendance_leave(
         db, tenant_id=current.tenant_id, employee_id=a.employee_id,
-        start=a.start_date, end=a.end_date, on_leave=True,
+        start=a.start_date, end=a.end_date,
     )
     write_audit(
         db, actor=current, entity_type="leave_application", entity_id=a.id,
@@ -588,7 +592,7 @@ def approve_application(
     db.commit()
     db.refresh(a)
     emps, types, users = _emp_map(db, current.tenant_id), _type_map(db, current.tenant_id), _user_map(db, current.tenant_id)
-    return _app_out(a, emps, types, users, {})
+    return _app_out(a, emps, types, users, {}, current.id)
 
 
 @router.post("/applications/{app_id}/reject", response_model=ApplicationOut)
@@ -605,7 +609,8 @@ def reject_application(
     if a.status != "pending":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "该申请已处理")
     if not _can_approve(db, current, a):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "只能审批直属下属的申请")
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "只能审批直属下属的申请,不能自批")
     a.status = "rejected"
     a.approver_id = current.id
     a.decided_at = _now()
@@ -617,7 +622,7 @@ def reject_application(
     db.commit()
     db.refresh(a)
     emps, types, users = _emp_map(db, current.tenant_id), _type_map(db, current.tenant_id), _user_map(db, current.tenant_id)
-    return _app_out(a, emps, types, users, {})
+    return _app_out(a, emps, types, users, {}, current.id)
 
 
 # ============ balances / ledger ============

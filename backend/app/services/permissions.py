@@ -44,6 +44,8 @@ PERM_APPROVE_REQUISITIONS = "approve_requisitions"
 PERM_MANAGE_OFFERS = "manage_offers"
 PERM_MANAGE_PERFORMANCE = "manage_performance"
 PERM_MANAGE_EXPENSES = "manage_expenses"
+# 报销审批(与请假审批同构,直属上级可批下属;支付仍走 manage_expenses)
+PERM_APPROVE_EXPENSES = "approve_expenses"
 PERM_MANAGE_PAYROLL = "manage_payroll"
 
 
@@ -78,6 +80,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             PERM_MANAGE_OFFERS,
             PERM_MANAGE_PERFORMANCE,
             PERM_MANAGE_EXPENSES,
+            PERM_APPROVE_EXPENSES,
             PERM_MANAGE_PAYROLL,
         }
     ),
@@ -101,6 +104,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             PERM_MANAGE_OFFERS,
             PERM_MANAGE_PERFORMANCE,
             PERM_MANAGE_EXPENSES,
+            PERM_APPROVE_EXPENSES,
             PERM_MANAGE_PAYROLL,
         }
     ),
@@ -115,6 +119,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             PERM_WRITE_JOBS,
             PERM_VIEW_REPORTS,
             PERM_APPROVE_LEAVE,
+            PERM_APPROVE_EXPENSES,
             PERM_WRITE_REQUISITIONS,
         }
     ),
@@ -351,6 +356,7 @@ __all__ = [
     "PERM_MANAGE_OFFERS",
     "PERM_MANAGE_PERFORMANCE",
     "PERM_MANAGE_EXPENSES",
+    "PERM_APPROVE_EXPENSES",
     "PERM_MANAGE_PAYROLL",
     "ROLE_PERMISSIONS",
     "apply_org_filter",

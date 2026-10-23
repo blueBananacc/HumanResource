@@ -252,7 +252,7 @@ def list_employees(
     org_unit_id: str | None = None,
     unlinked: bool = Query(False, description="仅看未绑定账号"),
     db: Session = Depends(get_db),
-    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+    current: User = Depends(require_permission(PERM_MANAGE_EMPLOYEES)),
 ):
     limit, offset, q = pagination
     stmt = select(Employee).where(Employee.tenant_id == current.tenant_id)
@@ -355,7 +355,7 @@ def org_chart(
 def get_employee(
     emp_id: str,
     db: Session = Depends(get_db),
-    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+    current: User = Depends(require_permission(PERM_MANAGE_EMPLOYEES)),
 ):
     e = _emp(db, emp_id, current.tenant_id)
     orgs, emps = _name_maps(db, current.tenant_id)
@@ -478,6 +478,9 @@ def bind_account(
         ).first()
         if taken:
             raise HTTPException(status.HTTP_409_CONFLICT, "该账号已绑定其他员工")
+        # 之前解绑时被停用的 ESS 账号,重新绑定时恢复登录
+        if existing_user.role == "employee" and existing_user.status == "disabled":
+            existing_user.status = "active"
         user = existing_user
     else:
         password_out = body.password or secrets.token_urlsafe(9)
@@ -510,12 +513,16 @@ def unbind_account(
 ):
     e = _emp(db, emp_id, current.tenant_id)
     if e.user_id:
+        bound = db.get(User, e.user_id)
         write_audit(
             db, actor=current, entity_type="employee", entity_id=e.id,
             action="unbind_account", detail={"user_id": e.user_id},
             request=request,
         )
         e.user_id = None
+        # ESS 账号解绑后没有任何可达数据,停用防止裸账号继续登录
+        if bound is not None and bound.role == "employee":
+            bound.status = "disabled"
         db.commit()
 
 

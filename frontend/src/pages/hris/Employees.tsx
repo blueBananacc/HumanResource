@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Network, Plus, Users } from "lucide-react";
+import { Lock, Network, Plus, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
@@ -40,17 +40,36 @@ export function useOrgOptions() {
   }));
 }
 
-/** 员工下拉选项(分配额度/定目标/生命周期事件等共用) */
-export function useEmployeeOptions() {
+/** 员工下拉选项(分配额度/定目标/生命周期事件等共用)。enabled=false 时不发请求。 */
+export function useEmployeeOptions(enabled = true) {
   const { data } = useQuery<{ items: Employee[] }>({
     queryKey: ["employee-options"],
     queryFn: () => fetchJSON("/api/employees?limit=200"),
     staleTime: 30_000,
+    enabled,
   });
   return (data?.items ?? []).map((e) => ({
     value: e.id,
     label: `${e.name} (${e.employee_no})`,
   }));
+}
+
+/** 列表/详情接口失败态 — 403 提示无权限,其余显示错误信息。 */
+export function PageError({ error }: { error: unknown }) {
+  const denied = error instanceof ApiError && error.status === 403;
+  return (
+    <Empty
+      icon={Lock}
+      title={denied ? "没有权限查看" : "加载失败"}
+      description={
+        denied
+          ? "当前账号无权访问该模块,请联系管理员开通权限。"
+          : error instanceof ApiError
+            ? error.message
+            : "请稍后重试。"
+      }
+    />
+  );
 }
 
 export function Field({
@@ -75,7 +94,7 @@ export function Field({
 
 export function Employees() {
   const [createOpen, setCreateOpen] = useState(false);
-  const { data, isLoading, page, pageCount, total, goto, q, setQ } =
+  const { data, isLoading, isError, error, page, pageCount, total, goto, q, setQ } =
     usePagedQuery<Employee>({ key: ["employees"], url: "/api/employees" });
   const items = data?.items ?? [];
 
@@ -90,10 +109,12 @@ export function Employees() {
             全员花名册 — 员工档案、部门、汇报线与账号绑定。
           </p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="w-4 h-4" />
-          新建员工
-        </Button>
+        {!isError && (
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="w-4 h-4" />
+            新建员工
+          </Button>
+        )}
       </div>
 
       <div className="flex items-center gap-3">
@@ -124,6 +145,8 @@ export function Employees() {
           <div className="p-12 text-center text-sm text-[var(--color-text-tertiary)] font-body">
             加载中…
           </div>
+        ) : isError ? (
+          <PageError error={error} />
         ) : items.length === 0 ? (
           <Empty
             icon={Users}

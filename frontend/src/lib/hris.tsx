@@ -69,6 +69,8 @@ export type LeaveApplication = {
   approver_email: string | null;
   decided_at: string | null;
   decision_note: string | null;
+  /** 申请人即当前登录账号 — 不能自批,前端据此隐藏审批按钮 */
+  own_request: boolean;
   created_at: string;
 };
 
@@ -249,6 +251,8 @@ export type ExpenseClaim = {
   approver_id: string | null;
   decided_at: string | null;
   decision_note: string | null;
+  /** 申请人即当前登录账号 — 不能自批,前端据此隐藏审批按钮 */
+  own_request: boolean;
   created_at: string;
 };
 

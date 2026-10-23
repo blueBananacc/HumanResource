@@ -19,7 +19,7 @@ import {
   EMPLOYMENT_TYPE_LABEL,
   type Employee,
 } from "@/lib/hris";
-import { Field, useEmployeeOptions, useOrgOptions } from "./Employees";
+import { Field, PageError, useEmployeeOptions, useOrgOptions } from "./Employees";
 
 const EMPLOYMENT_OPTIONS = Object.entries(EMPLOYMENT_TYPE_LABEL).map(
   ([value, label]) => ({ value, label }),
@@ -36,7 +36,7 @@ export function EmployeeDetail() {
   const qc = useQueryClient();
   const [editOpen, setEditOpen] = useState(false);
   const [bindOpen, setBindOpen] = useState(false);
-  const { data: e, isLoading } = useQuery<Employee>({
+  const { data: e, isLoading, isError, error } = useQuery<Employee>({
     queryKey: ["employee", id],
     queryFn: () => fetchJSON(`/api/employees/${id}`),
   });
@@ -47,12 +47,19 @@ export function EmployeeDetail() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["employee", id] }),
   });
 
-  if (isLoading || !e) {
+  if (isLoading) {
     return (
       <main className="p-8 max-w-[1000px] mx-auto w-full">
         <div className="text-sm text-[var(--color-text-tertiary)] font-body">
           加载中…
         </div>
+      </main>
+    );
+  }
+  if (isError || !e) {
+    return (
+      <main className="p-8 max-w-[1000px] mx-auto w-full">
+        <PageError error={error} />
       </main>
     );
   }
@@ -231,7 +238,9 @@ function EmployeeEditModal({
 }) {
   const qc = useQueryClient();
   const orgOptions = useOrgOptions();
-  const empOptions = useEmployeeOptions().filter((o) => o.value !== emp.id);
+  const empOptions = useEmployeeOptions(open).filter(
+    (o) => o.value !== emp.id,
+  );
   const [orgId, setOrgId] = useState(emp.org_unit_id ?? "");
   const [reportsTo, setReportsTo] = useState(emp.reports_to_id ?? "");
   const [empType, setEmpType] = useState(emp.employment_type);

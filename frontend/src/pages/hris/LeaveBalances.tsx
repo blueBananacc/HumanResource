@@ -46,12 +46,19 @@ export function LeaveBalances() {
         `/api/leave/balances?year=${year}${employeeFilter ? `&employee_id=${employeeFilter}` : ""}`,
       ),
   });
-  const { data: ledger, page, pageCount, total, goto } =
-    usePagedQuery<import("@/lib/hris").LeaveLedgerEntry>({
-      key: ["leave-ledger"],
-      url: "/api/leave/ledger",
-      params: { year },
-    });
+  const {
+    data: ledger,
+    isError: ledgerError,
+    page,
+    pageCount,
+    total,
+    goto,
+  } = usePagedQuery<import("@/lib/hris").LeaveLedgerEntry>({
+    key: ["leave-ledger"],
+    url: "/api/leave/ledger",
+    params: { year },
+    enabled: canManage,
+  });
 
   const revoke = useMutation({
     mutationFn: (allocationId: string) =>
@@ -181,7 +188,13 @@ export function LeaveBalances() {
           台账流水
         </h3>
         <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
-          {(ledger?.items ?? []).length === 0 ? (
+          {!canManage || ledgerError ? (
+            <div className="p-8 text-center text-[13px] text-[var(--color-text-tertiary)] font-body">
+              {ledgerError
+                ? "台账加载失败,请稍后重试。"
+                : "没有权限查看台账流水。"}
+            </div>
+          ) : (ledger?.items ?? []).length === 0 ? (
             <div className="p-8 text-center text-[13px] text-[var(--color-text-tertiary)] font-body">
               暂无流水 — 分配和请假审批都会写入台账。
             </div>
@@ -223,13 +236,15 @@ export function LeaveBalances() {
             ))
           )}
         </div>
-        <Pagination
-          page={page}
-          pageCount={pageCount}
-          total={total}
-          pageSize={PAGE_SIZE}
-          onChange={goto}
-        />
+        {canManage && (
+          <Pagination
+            page={page}
+            pageCount={pageCount}
+            total={total}
+            pageSize={PAGE_SIZE}
+            onChange={goto}
+          />
+        )}
       </section>
 
       <AllocationModal open={allocOpen} onClose={() => setAllocOpen(false)} />
@@ -328,7 +343,7 @@ function AllocationModal({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const empOptions = useEmployeeOptions();
+  const empOptions = useEmployeeOptions(open);
   const { data: types } = useQuery<LeaveType[]>({
     queryKey: ["leave-types"],
     queryFn: () => fetchJSON("/api/leave/types"),

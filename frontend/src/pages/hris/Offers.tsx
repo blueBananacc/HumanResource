@@ -19,7 +19,7 @@ import { fetchJSON, ApiError } from "@/lib/api";
 import { usePagedQuery, PAGE_SIZE } from "@/lib/usePagedQuery";
 import { formatRelative } from "@/lib/format";
 import { StatusPill, type Offer } from "@/lib/hris";
-import { Field } from "./Employees";
+import { Field, PageError } from "./Employees";
 
 const STATUS_OPTIONS = [
   { value: "", label: "全部状态" },
@@ -42,7 +42,7 @@ export function Offers() {
   const [open, setOpen] = useState(false);
   const qc = useQueryClient();
 
-  const { data, isLoading, page, pageCount, total, goto } =
+  const { data, isLoading, isError, error, page, pageCount, total, goto } =
     usePagedQuery<Offer>({
       key: ["offers"],
       url: "/api/offers",
@@ -82,10 +82,12 @@ export function Offers() {
             录用通知书 — 候选人接受后自动创建员工档案并生成入职清单。
           </p>
         </div>
-        <Button onClick={() => setOpen(true)}>
-          <Plus className="w-4 h-4" />
-          新建 Offer
-        </Button>
+        {!isError && (
+          <Button onClick={() => setOpen(true)}>
+            <Plus className="w-4 h-4" />
+            新建 Offer
+          </Button>
+        )}
       </div>
 
       <div className="flex items-center gap-3">
@@ -117,6 +119,8 @@ export function Offers() {
           <div className="p-12 text-center text-sm text-[var(--color-text-tertiary)] font-body">
             加载中…
           </div>
+        ) : isError ? (
+          <PageError error={error} />
         ) : items.length === 0 ? (
           <Empty
             icon={Mail}

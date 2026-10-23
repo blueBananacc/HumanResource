@@ -519,7 +519,12 @@ class MeClaimOut(BaseModel):
     created_at: datetime
 
 
-@router.get("/expense-types", response_model=list[MeLeaveTypeOut])
+class MeExpenseTypeOut(BaseModel):
+    id: str
+    name: str
+
+
+@router.get("/expense-types", response_model=list[MeExpenseTypeOut])
 def me_expense_types(
     db: Session = Depends(get_db), current: User = Depends(get_current_user)
 ):
@@ -527,7 +532,7 @@ def me_expense_types(
     rows = db.scalars(
         select(ExpenseType).where(ExpenseType.tenant_id == current.tenant_id)
     ).all()
-    return [MeLeaveTypeOut(id=t.id, name=t.name, is_paid=True) for t in rows]
+    return [MeExpenseTypeOut(id=t.id, name=t.name) for t in rows]
 
 
 @router.get("/expense-claims", response_model=list[MeClaimOut])

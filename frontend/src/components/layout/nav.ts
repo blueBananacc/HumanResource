@@ -90,9 +90,9 @@ export const mainModules: NavModule[] = [
       {
         label: "员工",
         items: [
-          { to: "/employees", label: "员工列表", keywords: "员工 employee 花名册" },
+          { to: "/employees", label: "员工列表", permission: PERM.MANAGE_EMPLOYEES, keywords: "员工 employee 花名册" },
           { to: "/org-chart", label: "组织架构图", keywords: "汇报线 架构 org" },
-          { to: "/lifecycle", label: "生命周期", keywords: "入职 离职 调动 晋升 onboarding" },
+          { to: "/lifecycle", label: "生命周期", permission: PERM.MANAGE_LIFECYCLE, keywords: "入职 离职 调动 晋升 onboarding" },
         ],
       },
     ],

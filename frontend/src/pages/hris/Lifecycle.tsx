@@ -16,7 +16,7 @@ import {
   type LifecycleEvent,
   type LifecycleTemplate,
 } from "@/lib/hris";
-import { Field, useEmployeeOptions, useOrgOptions } from "./Employees";
+import { Field, PageError, useEmployeeOptions, useOrgOptions } from "./Employees";
 
 const KIND_OPTIONS = Object.entries(LIFECYCLE_KIND_LABEL).map(
   ([value, label]) => ({ value, label }),
@@ -25,7 +25,7 @@ const KIND_OPTIONS = Object.entries(LIFECYCLE_KIND_LABEL).map(
 export function Lifecycle() {
   const [createOpen, setCreateOpen] = useState(false);
   const qc = useQueryClient();
-  const { data, isLoading, page, pageCount, total, goto } =
+  const { data, isLoading, isError, error, page, pageCount, total, goto } =
     usePagedQuery<LifecycleEvent>({
       key: ["lifecycle-events"],
       url: "/api/lifecycle/events",
@@ -60,10 +60,12 @@ export function Lifecycle() {
             入职 / 调动 / 晋升 / 离职清单 — 任务全部勾完自动标记完成。
           </p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="w-4 h-4" />
-          发起事件
-        </Button>
+        {!isError && (
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="w-4 h-4" />
+            发起事件
+          </Button>
+        )}
       </div>
 
       {templates && templates.length > 0 && (
@@ -86,6 +88,8 @@ export function Lifecycle() {
           <div className="p-12 text-center text-sm text-[var(--color-text-tertiary)] font-body">
             加载中…
           </div>
+        ) : isError ? (
+          <PageError error={error} />
         ) : items.length === 0 ? (
           <Empty
             icon={Shuffle}
@@ -197,7 +201,7 @@ function EventCreateModal({
   templates: LifecycleTemplate[];
 }) {
   const qc = useQueryClient();
-  const empOptions = useEmployeeOptions();
+  const empOptions = useEmployeeOptions(open);
   const orgOptions = useOrgOptions();
   const [empId, setEmpId] = useState("");
   const [kind, setKind] = useState("onboarding");

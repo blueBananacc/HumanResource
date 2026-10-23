@@ -55,6 +55,7 @@ export const PERM = {
   MANAGE_OFFERS: "manage_offers",
   MANAGE_PERFORMANCE: "manage_performance",
   MANAGE_EXPENSES: "manage_expenses",
+  APPROVE_EXPENSES: "approve_expenses",
   MANAGE_PAYROLL: "manage_payroll",
 } as const;
 

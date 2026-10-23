@@ -38,7 +38,7 @@ export function Requisitions() {
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState<Record<string, string>>({});
   const qc = useQueryClient();
-  const { hasPermission } = useAuth();
+  const { user, hasPermission } = useAuth();
   const canApprove = hasPermission(PERM.APPROVE_REQUISITIONS);
 
   const { data, isLoading, page, pageCount, total, goto } =
@@ -153,7 +153,12 @@ export function Requisitions() {
                 {r.reason && ` · ${r.reason}`}
                 {r.requested_by_email && ` · 提交人 ${r.requested_by_email}`}
               </div>
-              {r.status === "pending" && canApprove && (
+              {r.status === "pending" && r.requested_by === user?.id && (
+                <div className="mt-1.5 text-[12px] text-[var(--color-text-tertiary)] font-body">
+                  本人提交的需求,需其他审批人处理。
+                </div>
+              )}
+              {r.status === "pending" && r.requested_by !== user?.id && canApprove && (
                 <div className="mt-3 flex items-center gap-2">
                   <Input
                     value={notes[r.id] ?? ""}

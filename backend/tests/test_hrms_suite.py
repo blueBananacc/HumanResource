@@ -1154,3 +1154,215 @@ def test_hr_suite_feature_gate(db_session):
             license_api.is_feature_enabled = orig
     finally:
         _cleanup(db_session, t)
+
+
+# ============ 审查回归:读边界 / 自批 / 账号解绑 ============
+
+
+def test_hris_read_boundaries(db_session):
+    """viewer/interviewer 只有 view_reports:员工档案、Offer、额度、生命周期 → 403;
+    组织架构图(目录级)仍可读。"""
+    from app.domain.models import Candidate
+
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    viewer = _user(db_session, t, role="viewer")
+    interviewer = _user(db_session, t, role="interviewer")
+    client = TestClient(app)
+    try:
+        emp = _mk_emp(client, _hdr(admin))
+        lt = _mk_leave_type(client, _hdr(admin))
+        client.post(
+            "/api/leave/allocations", headers=_hdr(admin),
+            json={"employee_id": emp["id"], "leave_type_id": lt["id"],
+                  "year": date.today().year, "days": 5},
+        )
+        ev = client.post(
+            "/api/lifecycle/events", headers=_hdr(admin),
+            json={"employee_id": emp["id"], "kind": "onboarding"},
+        ).json()
+        cand = Candidate(
+            tenant_id=t.id, name="候选人丁",
+            display_email=f"cand-{uuid.uuid4().hex[:6]}@example.com",
+        )
+        db_session.add(cand)
+        db_session.commit()
+        offer = client.post(
+            "/api/offers", headers=_hdr(admin), json={"candidate_id": cand.id},
+        ).json()
+
+        for u in (viewer, interviewer):
+            hdr = _hdr(u)
+            assert client.get("/api/employees", headers=hdr).status_code == 403
+            assert client.get(
+                f"/api/employees/{emp['id']}", headers=hdr
+            ).status_code == 403
+            assert client.get(
+                "/api/leave/allocations", headers=hdr
+            ).status_code == 403
+            assert client.get("/api/offers", headers=hdr).status_code == 403
+            assert client.get(
+                f"/api/offers/{offer['id']}", headers=hdr
+            ).status_code == 403
+            assert client.get(
+                "/api/lifecycle/events", headers=hdr
+            ).status_code == 403
+            assert client.get(
+                f"/api/lifecycle/events/{ev['id']}", headers=hdr
+            ).status_code == 403
+            # 目录级组织图对内部角色仍开放(只含姓名/职位/部门)
+            assert client.get(
+                "/api/employees/org-chart", headers=hdr
+            ).status_code == 200
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_self_approval_blocked(db_session):
+    """职责分离:绑定了员工档案的 admin 不能批自己的请假/报销/需求。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    hr = _user(db_session, t, role="hr")
+    client = TestClient(app)
+    try:
+        lt = _mk_leave_type(client, _hdr(admin))
+        self_emp = _mk_emp(client, _hdr(admin), name="管理员本人")
+        client.post(
+            f"/api/employees/{self_emp['id']}/account", headers=_hdr(admin),
+            json={"email": admin.email},
+        )
+
+        # 请假:admin 自提 → 自批 403;hr 代批 200
+        s = date.today() + timedelta(days=20)
+        app_id = client.post(
+            "/api/me/leave-applications", headers=_hdr(admin),
+            json={"leave_type_id": lt["id"], "start_date": str(s),
+                  "end_date": str(s), "days": 1},
+        ).json()["id"]
+        assert client.post(
+            f"/api/leave/applications/{app_id}/approve",
+            headers=_hdr(admin), json={},
+        ).status_code == 403
+        assert client.post(
+            f"/api/leave/applications/{app_id}/approve",
+            headers=_hdr(hr), json={},
+        ).status_code == 200
+
+        # 报销:admin 自提 → 自批 403;hr 代批 200
+        cid = client.post(
+            "/api/me/expense-claims", headers=_hdr(admin),
+            json={"title": "自己的单", "items": [
+                {"occurred_on": str(date.today()), "amount": 10}]},
+        ).json()["id"]
+        assert client.post(
+            f"/api/expenses/claims/{cid}/approve",
+            headers=_hdr(admin), json={},
+        ).status_code == 403
+        assert client.post(
+            f"/api/expenses/claims/{cid}/approve",
+            headers=_hdr(hr), json={},
+        ).status_code == 200
+
+        # 招聘需求:admin 自提 → 自批 403;hr 代批 200
+        rid = client.post(
+            "/api/requisitions", headers=_hdr(admin),
+            json={"title": "自己的需求", "headcount": 1},
+        ).json()["id"]
+        assert client.post(
+            f"/api/requisitions/{rid}/approve",
+            headers=_hdr(admin), json={},
+        ).status_code == 403
+        assert client.post(
+            f"/api/requisitions/{rid}/approve",
+            headers=_hdr(hr), json={},
+        ).status_code == 200
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_expense_approve_perm_and_hm_scope(db_session):
+    """approve_expenses 权限:viewer/interviewer 403;HM 只批直属下属。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    hm = _user(db_session, t, role="hiring_manager")
+    viewer = _user(db_session, t, role="viewer")
+    interviewer = _user(db_session, t, role="interviewer")
+    client = TestClient(app)
+    try:
+        mgr_emp = _mk_emp(client, _hdr(admin), name="报销主管")
+        sub_emp, sub_ess = _mk_ess_employee(client, _hdr(admin), name="报销下属2")
+        _, other_ess = _mk_ess_employee(client, _hdr(admin), name="报销外人2")
+        client.put(
+            f"/api/employees/{sub_emp['id']}", headers=_hdr(admin),
+            json={"name": "报销下属2", "reports_to_id": mgr_emp["id"]},
+        )
+        client.post(
+            f"/api/employees/{mgr_emp['id']}/account", headers=_hdr(admin),
+            json={"email": hm.email},
+        )
+        c_sub = client.post(
+            "/api/me/expense-claims", headers=sub_ess,
+            json={"title": "下属的", "items": [
+                {"occurred_on": str(date.today()), "amount": 20}]},
+        ).json()
+        c_other = client.post(
+            "/api/me/expense-claims", headers=other_ess,
+            json={"title": "外人的", "items": [
+                {"occurred_on": str(date.today()), "amount": 30}]},
+        ).json()
+
+        # viewer/interviewer 无 approve_expenses → 403
+        for u in (viewer, interviewer):
+            assert client.post(
+                f"/api/expenses/claims/{c_sub['id']}/approve",
+                headers=_hdr(u), json={},
+            ).status_code == 403
+        # HM 批下属 OK;批外人 403
+        assert client.post(
+            f"/api/expenses/claims/{c_sub['id']}/approve",
+            headers=_hdr(hm), json={},
+        ).status_code == 200
+        assert client.post(
+            f"/api/expenses/claims/{c_other['id']}/approve",
+            headers=_hdr(hm), json={},
+        ).status_code == 403
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_unbind_disables_ess_account(db_session):
+    """解绑 ESS 账号 → 账号停用不能再登录;重新绑定同邮箱恢复。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        emp = _mk_emp(client, _hdr(admin))
+        email = f"ub-{uuid.uuid4().hex[:6]}@example.com"
+        acct = client.post(
+            f"/api/employees/{emp['id']}/account", headers=_hdr(admin),
+            json={"email": email},
+        ).json()
+
+        res = client.delete(
+            f"/api/employees/{emp['id']}/account", headers=_hdr(admin)
+        )
+        assert res.status_code == 204
+        u = db_session.scalars(select(User).where(User.email == email)).first()
+        assert u.status == "disabled"
+        # 停用后旧密码登录被拒
+        res = client.post(
+            "/api/auth/login",
+            json={"email": email, "password": acct["password"]},
+        )
+        assert res.status_code in (401, 403)
+        # 重新绑定同邮箱 → 恢复 active
+        res = client.post(
+            f"/api/employees/{emp['id']}/account", headers=_hdr(admin),
+            json={"email": email},
+        )
+        assert res.status_code == 200
+        db_session.expire_all()
+        u = db_session.scalars(select(User).where(User.email == email)).first()
+        assert u.status == "active"
+    finally:
+        _cleanup(db_session, t)

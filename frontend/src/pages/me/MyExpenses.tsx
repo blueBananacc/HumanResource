@@ -11,8 +11,8 @@ import { formatRelative } from "@/lib/format";
 import {
   StatusPill,
   fmtMoney,
+  type ExpenseType,
   type MeClaim,
-  type MeLeaveType,
 } from "@/lib/hris";
 import { Field } from "../hris/Employees";
 
@@ -132,7 +132,7 @@ function ClaimCreateModal({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const { data: types } = useQuery<MeLeaveType[]>({
+  const { data: types } = useQuery<ExpenseType[]>({
     queryKey: ["me-expense-types"],
     queryFn: () => fetchJSON("/api/me/expense-types"),
   });

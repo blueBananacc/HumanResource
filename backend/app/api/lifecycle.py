@@ -175,7 +175,7 @@ def list_events(
     status_filter: str | None = Query(None, alias="status"),
     employee_id: str | None = None,
     db: Session = Depends(get_db),
-    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+    current: User = Depends(require_permission(PERM_MANAGE_LIFECYCLE)),
 ):
     limit, offset, _ = pagination
     stmt = select(LifecycleEvent).where(
@@ -293,7 +293,7 @@ def create_event(
 def get_event(
     event_id: str,
     db: Session = Depends(get_db),
-    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+    current: User = Depends(require_permission(PERM_MANAGE_LIFECYCLE)),
 ):
     ev = db.get(LifecycleEvent, event_id)
     if not ev or ev.tenant_id != current.tenant_id:

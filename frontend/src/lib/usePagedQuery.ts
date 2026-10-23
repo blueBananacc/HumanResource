@@ -39,6 +39,8 @@ type PagedQueryOpts<T> = {
    */
   qParam?: string;
   pageParam?: string;
+  /** false 时不发请求(无权限的子查询,如台账对非 manage 角色) */
+  enabled?: boolean;
 };
 
 type PagedQueryResult<T> = {
@@ -112,6 +114,7 @@ export function usePagedQuery<T>(opts: PagedQueryOpts<T>): PagedQueryResult<T> {
     queryFn: () => fetchJSON<Page<T>>(`${opts.url}?${queryString}`),
     // keepPreviousData 避免翻页时分页器本身闪烁(react-query v5 用 placeholderData)
     placeholderData: (prev) => prev,
+    enabled: opts.enabled !== false,
     refetchInterval: opts.refetchInterval
       ? (q2) => opts.refetchInterval!(q2.state.data as Page<T> | undefined)
       : false,

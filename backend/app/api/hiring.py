@@ -17,6 +17,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, count_total, paginate_params
@@ -190,6 +191,9 @@ def approve_requisition(
     r = _req(db, rid, current.tenant_id)
     if r.status != "pending":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "已处理")
+    if r.requested_by == current.id:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "不能审批自己提交的招聘需求")
     r.status = "approved"
     r.approver_id = current.id
     r.decided_at = _now()
@@ -215,6 +219,9 @@ def reject_requisition(
     r = _req(db, rid, current.tenant_id)
     if r.status != "pending":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "已处理")
+    if r.requested_by == current.id:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "不能审批自己提交的招聘需求")
     r.status = "rejected"
     r.approver_id = current.id
     r.decided_at = _now()
@@ -317,7 +324,7 @@ def list_offers(
     status_filter: str | None = Query(None, alias="status"),
     candidate_id: str | None = None,
     db: Session = Depends(get_db),
-    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+    current: User = Depends(require_permission(PERM_MANAGE_OFFERS)),
 ):
     limit, offset, _ = pagination
     stmt = select(JobOffer).where(JobOffer.tenant_id == current.tenant_id)
@@ -389,7 +396,7 @@ def _offer(db: Session, oid: str, tenant_id: str, *, for_update: bool = False) -
 def get_offer(
     oid: str,
     db: Session = Depends(get_db),
-    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+    current: User = Depends(require_permission(PERM_MANAGE_OFFERS)),
 ):
     o = _offer(db, oid, current.tenant_id)
     cands, jobs = _offer_maps(db, current.tenant_id)
@@ -469,7 +476,12 @@ def _employee_from_offer(db: Session, o: JobOffer, actor: User) -> Employee:
         source_candidate_id=cand.id,
     )
     db.add(emp)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # employee_no 采用 max+1 生成,并发建档可能撞号 — 回滚后由调用方重试
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "工号分配冲突,请重试")
     # 候选人标记 hired 便于人才库筛选
     if cand.status == "active":
         cand.status = "hired"

@@ -10,6 +10,8 @@ import { Pagination } from "@/components/ui/pagination";
 import { Select } from "@/components/ui/select";
 import { fetchJSON, ApiError } from "@/lib/api";
 import { usePagedQuery, PAGE_SIZE } from "@/lib/usePagedQuery";
+import { useAuth } from "@/lib/auth";
+import { PERM } from "@/lib/roles";
 import { StatusPill, type Goal } from "@/lib/hris";
 import { Field, useEmployeeOptions } from "./Employees";
 
@@ -30,6 +32,8 @@ export function Performance() {
   const status = sp.get("status") ?? "";
   const [open, setOpen] = useState(false);
   const qc = useQueryClient();
+  const { hasPermission } = useAuth();
+  const canManage = hasPermission(PERM.MANAGE_PERFORMANCE);
 
   const { data, isLoading, page, pageCount, total, goto } =
     usePagedQuery<Goal>({
@@ -56,10 +60,12 @@ export function Performance() {
             员工个人目标 — 进度由员工自助端更新,HR 在这里统览。
           </p>
         </div>
-        <Button onClick={() => setOpen(true)}>
-          <Plus className="w-4 h-4" />
-          定目标
-        </Button>
+        {canManage && (
+          <Button onClick={() => setOpen(true)}>
+            <Plus className="w-4 h-4" />
+            定目标
+          </Button>
+        )}
       </div>
 
       <div className="flex items-center gap-3">
@@ -96,7 +102,11 @@ export function Performance() {
             icon={GoalIcon}
             title="还没有目标"
             description="为员工创建目标,员工在自助端更新进度。"
-            action={<Button onClick={() => setOpen(true)}>定目标</Button>}
+            action={
+              canManage ? (
+                <Button onClick={() => setOpen(true)}>定目标</Button>
+              ) : undefined
+            }
           />
         ) : (
           items.map((g, i) => (
@@ -122,13 +132,15 @@ export function Performance() {
                     截止 {g.due_date}
                   </span>
                 )}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => del.mutate(g.id)}
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </Button>
+                {canManage && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => del.mutate(g.id)}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </Button>
+                )}
               </div>
               {g.description && (
                 <div className="mt-1 text-[12px] text-[var(--color-text-secondary)] font-body">
@@ -172,7 +184,8 @@ function GoalCreateModal({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const empOptions = useEmployeeOptions();
+  // 打开弹窗时才拉员工列表 — 该页面 view_reports 可看,无 manage 权限的用户不应触发 /api/employees
+  const empOptions = useEmployeeOptions(open);
   const [empId, setEmpId] = useState("");
   const [err, setErr] = useState("");
   const mut = useMutation({

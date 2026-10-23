@@ -9,9 +9,11 @@ import { Select } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { fetchJSON, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { PERM } from "@/lib/roles";
 import { usePagedQuery, PAGE_SIZE } from "@/lib/usePagedQuery";
 import { formatRelative } from "@/lib/format";
 import { StatusPill, type LeaveApplication } from "@/lib/hris";
+import { PageError } from "./Employees";
 
 const STATUS_OPTIONS = [
   { value: "", label: "全部状态" },
@@ -29,7 +31,8 @@ const SCOPE_OPTIONS = [
 export function LeaveAdmin() {
   const [sp, setSp] = useSearchParams();
   const status = sp.get("status") ?? "";
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
+  const canApprove = hasPermission(PERM.APPROVE_LEAVE);
   // 主管默认看自己管理的;admin/hr 看全部(后端对非管理角色始终按汇报线过滤)
   const isManagerOnly = user?.role !== "admin" && user?.role !== "hr";
   const scope = sp.get("scope") ?? (isManagerOnly ? "team" : "all");
@@ -37,7 +40,7 @@ export function LeaveAdmin() {
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [err, setErr] = useState("");
 
-  const { data, isLoading, page, pageCount, total, goto } =
+  const { data, isLoading, isError, error, page, pageCount, total, goto } =
     usePagedQuery<LeaveApplication>({
       key: ["leave-apps"],
       url: "/api/leave/applications",
@@ -118,6 +121,8 @@ export function LeaveAdmin() {
           <div className="p-12 text-center text-sm text-[var(--color-text-tertiary)] font-body">
             加载中…
           </div>
+        ) : isError ? (
+          <PageError error={error} />
         ) : items.length === 0 ? (
           <Empty
             icon={CalendarDays}
@@ -160,7 +165,11 @@ export function LeaveAdmin() {
                   </span>
                 )}
               </div>
-              {a.status === "pending" ? (
+              {a.status === "pending" && a.own_request ? (
+                <div className="mt-1.5 text-[12px] text-[var(--color-text-tertiary)] font-body">
+                  本人提交的申请,需其他审批人处理。
+                </div>
+              ) : a.status === "pending" && canApprove ? (
                 <div className="mt-3 flex items-center gap-2">
                   <Input
                     value={notes[a.id] ?? ""}

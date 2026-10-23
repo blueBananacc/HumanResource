@@ -51,6 +51,31 @@ def login(email: str, password: str) -> str:
     return r["access_token"]
 
 
+def ensure_hr_token(tok) -> str | None:
+    """幂等创建 hr@example.com(role=hr)并返回其 token;受限时返回 None。
+
+    职责分离修复后,admin 自提的需求不能再自批 — 审批改由这个 hr 账号执行。
+    已存在时走 reset 拿一次性密码,保证重复运行也能登录。
+    """
+    email = "hr@example.com"
+    r = req("POST", "/users/", tok, {"email": email, "role": "hr"}, quiet=True)
+    if r.get("_status"):
+        if r["_status"] != 409:
+            # 配额(license)或权限受限 — 没有第二审批人,需求留 pending
+            print(f"  (hr 账号不可用:{r['_status']},需求保持待审批)")
+            return None
+        users = req("GET", "/users/", tok)
+        uid = next((u["id"] for u in users if u["email"] == email), None)
+        if uid is None:
+            return None
+        pw = req("POST", f"/users/{uid}/reset", tok)["new_password"]
+        print(f"  {email} 密码已重置 → {pw}")
+    else:
+        pw = r["initial_password"]
+        print(f"  {email} 已创建 → 初始密码 {pw}")
+    return login(email, pw)
+
+
 def find_employee(tok, name_or_no: str):
     items = req("GET", "/employees?limit=200", tok).get("items", [])
     for e in items:
@@ -242,12 +267,17 @@ def main():
     print("== 招聘需求 ==")
     reqs = req("GET", "/requisitions?limit=200", tok).get("items", [])
     if not any(r["status"] == "approved" or r["status"] == "converted" for r in reqs):
+        # admin 提交 + hr 审批 — 同一人不能自批,走双账号演示职责分离
         r = req("POST", "/requisitions", tok, {
             "title": "研发部-高级后端工程师", "org_unit_id": dev["id"],
             "headcount": 2, "level": "senior", "reason": "新业务线扩张",
         })
-        req("POST", f"/requisitions/{r['id']}/approve", tok, {"note": "Q4 编制内"})
-        print(f"  已批准需求 → {r['title']}")
+        hr_tok = ensure_hr_token(tok)
+        if hr_tok:
+            req("POST", f"/requisitions/{r['id']}/approve", hr_tok, {"note": "Q4 编制内"})
+            print(f"  已批准需求 → {r['title']}(hr 账号审批)")
+        else:
+            print(f"  待审批需求 → {r['title']}")
     if not any(r["status"] == "pending" for r in reqs):
         r = req("POST", "/requisitions", tok, {
             "title": "产品部-产品设计师", "org_unit_id": prod["id"],
@@ -390,6 +420,7 @@ def main():
     print("=" * 50)
     print("完成。账号:")
     print(f"  管理员   admin@example.com / {ADMIN_PASSWORD}")
+    print("  HR      hr@example.com / 上方「已创建/已重置」行的一次性密码")
     print(f"  员工 ESS emp1@hronfire.dev / {EMP_PASSWORD} (李晓芸)")
     print(f"  员工 ESS emp2@hronfire.dev / {EMP_PASSWORD} (王浩)")
     print("历史打卡: docker exec -i free-hire-postgres-1 psql -U freehire -d freehire < backend/_seed_checkins.sql")

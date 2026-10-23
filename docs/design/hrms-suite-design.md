@@ -72,10 +72,19 @@ write_requisitions admin,hr,hiring_manager  提需求
 approve_requisitions admin,hr        批需求
 manage_offers      admin,hr          Offer
 manage_performance admin,hr          考核周期/评分
-manage_expenses    admin,hr          报销审批
+manage_expenses    admin,hr          报销类型/标记支付
+approve_expenses   admin,hr,hiring_manager  报销审批(HM 仅下属)
 manage_payroll     admin,hr          工资条
 ```
 employee 角色:无权限项,仅 `/api/me/*`。
+
+### 读边界(审查收口)
+- 敏感读按 manage 权限而非 view_reports:员工档案 `/api/employees*`、
+  Offer `/api/offers*`、额度流水 `/api/leave/allocations`、生命周期事件
+  `/api/lifecycle/events*` — viewer/interviewer 一律 403。
+- `/api/employees/org-chart` 是目录级信息(姓名/职位/部门),内部角色可读。
+- 职责分离:审批人不能批自己提交的请假/报销/招聘需求
+  (申请人绑定的 user_id == 当前用户 → 403)。
 
 ## API 结构
 - 管理端:`/api/employees` `/api/leave/*` `/api/attendance` `/api/checkins`

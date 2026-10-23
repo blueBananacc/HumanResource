@@ -33,10 +33,10 @@ export function Expenses() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [err, setErr] = useState("");
   const qc = useQueryClient();
-  const { user, hasPermission } = useAuth();
+  const { hasPermission } = useAuth();
   const canPay = hasPermission(PERM.MANAGE_EXPENSES);
-  // admin/hr 或用人经理(后端再按汇报线限制到直属下属)
-  const canDecide = canPay || user?.role === "hiring_manager";
+  // admin/hr/用人经理可批;后端再按汇报线限制到直属下属、并拒绝自批
+  const canDecide = hasPermission(PERM.APPROVE_EXPENSES);
 
   const { data, isLoading, page, pageCount, total, goto } =
     usePagedQuery<ExpenseClaim>({
@@ -161,7 +161,12 @@ export function Expenses() {
                   ))}
                 </div>
               )}
-              {c.status === "pending" && canDecide && (
+              {c.status === "pending" && c.own_request && (
+                <div className="mt-1.5 text-[12px] text-[var(--color-text-tertiary)] font-body">
+                  本人提交的报销,需其他审批人处理。
+                </div>
+              )}
+              {c.status === "pending" && !c.own_request && canDecide && (
                 <div className="mt-3 flex items-center gap-2">
                   <Input
                     value={notes[c.id] ?? ""}
