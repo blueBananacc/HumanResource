@@ -14,12 +14,13 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_user
 from app.domain.models import (
     Interview,
+    OrgUnit,
     Reservation,
     Resource,
     Room,
@@ -31,6 +32,8 @@ from app.services.permissions import (
     PERM_MANAGE_SETTINGS,
     PERM_VIEW_REPORTS,
     PERM_WRITE_INTERVIEW,
+    apply_org_filter,
+    ensure_can_see,
     get_org_scope,
     require_permission,
 )
@@ -140,20 +143,85 @@ def _overlapping(
     db: Session, tenant_id: str, *, room_id=None, resource_id=None,
     starts_at: datetime, ends_at: datetime, exclude_id=None,
 ) -> Reservation | None:
-    """同对象 + status=active 的时间重叠检查。"""
-    stmt = select(Reservation).where(
-        Reservation.tenant_id == tenant_id,
-        Reservation.status == "active",
-        Reservation.starts_at < ends_at,
-        Reservation.ends_at > starts_at,
-    )
+    """同对象 + status=active 的时间重叠检查。
+
+    room / resource 任一被占即冲突(OR 语义):一条预约同时占会议室和资源时,
+    另一条约同一会议室但不同资源,依然算会议室冲突。
+    两个 id 都为空时调用方不应调本函数(无对象,不存在对象冲突)。
+    """
+    obj_clauses = []
     if room_id:
-        stmt = stmt.where(Reservation.room_id == room_id)
+        obj_clauses.append(Reservation.room_id == room_id)
     if resource_id:
-        stmt = stmt.where(Reservation.resource_id == resource_id)
+        obj_clauses.append(Reservation.resource_id == resource_id)
+    if not obj_clauses:
+        return None
+    stmt = (
+        select(Reservation)
+        .where(
+            Reservation.tenant_id == tenant_id,
+            Reservation.status == "active",
+            Reservation.starts_at < ends_at,
+            Reservation.ends_at > starts_at,
+            or_(*obj_clauses),
+        )
+    )
     if exclude_id:
         stmt = stmt.where(Reservation.id != exclude_id)
     return db.scalars(stmt).first()
+
+
+def _locked_room(db: Session, tenant_id: str, rid: str) -> Room:
+    """SELECT FOR UPDATE 锁住会议室行 — 序列化同一对象的并发预约,
+    防止两个请求同时通过重叠检查造成双重预订。"""
+    r = db.scalars(
+        select(Room)
+        .where(Room.id == rid, Room.tenant_id == tenant_id)
+        .with_for_update()
+    ).first()
+    if not r:
+        raise HTTPException(404, "会议室不存在")
+    return r
+
+
+def _locked_resource(db: Session, tenant_id: str, rid: str) -> Resource:
+    r = db.scalars(
+        select(Resource)
+        .where(Resource.id == rid, Resource.tenant_id == tenant_id)
+        .with_for_update()
+    ).first()
+    if not r:
+        raise HTTPException(404, "资源不存在")
+    return r
+
+
+def _check_interviewers(db: Session, tenant_id: str, ids: list[str]) -> None:
+    """面试官必须是本租户用户,防止挂到别的租户/不存在的 id。"""
+    if not ids:
+        return
+    cnt = db.scalar(
+        select(func.count())
+        .select_from(User)
+        .where(User.tenant_id == tenant_id, User.id.in_(ids))
+    ) or 0
+    if cnt != len(set(ids)):
+        raise HTTPException(400, "面试官必须是本租户用户")
+
+
+def _check_room_scope(db: Session, current: User, room: Room) -> None:
+    """无 org 的会议室视为全租户共享;有 org 的按数据范围过滤。"""
+    if room.org_unit_id is None:
+        return
+    ensure_can_see(get_org_scope(db, current), room.org_unit_id)
+
+
+def _reservation_visible(db: Session, current: User, r: Reservation) -> None:
+    """改/取消已存在的预约时,校验其当前所占会议室在数据范围内。"""
+    if not r.room_id:
+        return
+    room = db.get(Room, r.room_id)
+    if room is not None:
+        _check_room_scope(db, current, room)
 
 
 def _to_out(
@@ -180,13 +248,12 @@ def _to_out(
 def list_rooms(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
+    _p=Depends(require_permission(PERM_VIEW_REPORTS)),
 ):
-    scope = get_org_scope(db, current)
     stmt = select(Room).where(Room.tenant_id == current.tenant_id)
-    if scope and not scope.is_all and scope.org_ids:
-        stmt = stmt.where(
-            (Room.org_unit_id.is_(None)) | (Room.org_unit_id.in_(scope.org_ids))
-        )
+    stmt = apply_org_filter(
+        stmt, org_column=Room.org_unit_id, scope=get_org_scope(db, current)
+    )
     return [
         RoomOut(
             id=r.id, name=r.name, location=r.location, capacity=r.capacity,
@@ -194,6 +261,15 @@ def list_rooms(
         )
         for r in db.scalars(stmt.order_by(Room.name))
     ]
+
+
+def _check_org_unit(db: Session, tenant_id: str, org_unit_id: str | None) -> None:
+    """org_unit_id 必须属于本租户,防止挂到别租户的节点。"""
+    if org_unit_id is None:
+        return
+    ou = db.get(OrgUnit, org_unit_id)
+    if not ou or ou.tenant_id != tenant_id:
+        raise HTTPException(400, "org_unit_id 不存在")
 
 
 @rooms_router.post("", response_model=RoomOut, status_code=201)
@@ -204,6 +280,7 @@ def create_room(
     current: User = Depends(get_current_user),
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
+    _check_org_unit(db, current.tenant_id, body.org_unit_id)
     r = Room(tenant_id=current.tenant_id, **body.model_dump())
     db.add(r)
     db.commit()
@@ -227,6 +304,7 @@ def update_room(
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
     r = _room(db, current.tenant_id, room_id)
+    _check_org_unit(db, current.tenant_id, body.org_unit_id)
     for k, v in body.model_dump().items():
         setattr(r, k, v)
     write_audit(db, actor=current, entity_type="room", entity_id=r.id,
@@ -260,6 +338,7 @@ def delete_room(
 def list_resources(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
+    _p=Depends(require_permission(PERM_VIEW_REPORTS)),
 ):
     return [
         ResourceOut(id=r.id, name=r.name, type=r.type, is_active=r.is_active)
@@ -370,13 +449,12 @@ def list_reservations(
         stmt = stmt.where(Reservation.room_id == room_id)
     if kind:
         stmt = stmt.where(Reservation.kind == kind)
-    scope = get_org_scope(db, current)
-    if scope and not scope.is_all and scope.org_ids:
-        stmt = stmt.outerjoin(Room, Room.id == Reservation.room_id).where(
-            (Reservation.room_id.is_(None))
-            | (Room.org_unit_id.is_(None))
-            | (Room.org_unit_id.in_(scope.org_ids))
-        )
+    # 数据范围:预约本身无 org,跟随所约会议室的 org;不占会议室的预约
+    #(纯面试官/资源预约)按 org NULL 公共可见处理。
+    stmt = stmt.outerjoin(Room, Room.id == Reservation.room_id)
+    stmt = apply_org_filter(
+        stmt, org_column=Room.org_unit_id, scope=get_org_scope(db, current)
+    )
     rows = db.scalars(stmt.order_by(Reservation.starts_at)).all()
     rooms, resources, users = _reservation_names(db, current.tenant_id, rows)
     return [_to_out(db, r, rooms, resources, users) for r in rows]
@@ -397,11 +475,13 @@ def create_reservation(
     if ends_at <= starts_at:
         raise HTTPException(400, "结束时间必须晚于开始时间")
     if body.room_id:
-        room = _room(db, current.tenant_id, body.room_id)
+        # FOR UPDATE:序列化同会议室的并发预约,防双重预订
+        room = _locked_room(db, current.tenant_id, body.room_id)
         if not room.is_active:
             raise HTTPException(400, "会议室已停用")
+        _check_room_scope(db, current, room)
     if body.resource_id:
-        res = _resource(db, current.tenant_id, body.resource_id)
+        res = _locked_resource(db, current.tenant_id, body.resource_id)
         if not res.is_active:
             raise HTTPException(400, "资源已停用")
     if not body.room_id and not body.resource_id and body.kind != "interview":
@@ -410,7 +490,10 @@ def create_reservation(
         iv = db.get(Interview, body.interview_id)
         if not iv or iv.tenant_id != current.tenant_id:
             raise HTTPException(404, "面试不存在")
+    _check_interviewers(db, current.tenant_id, body.interviewer_ids)
 
+    # kind=interview 且无 room/resource 时 _overlapping 直接返回 None
+    #(无对象 → 无对象冲突;面试官冲突走 availability 提示,不硬 409)
     clash = _overlapping(
         db, current.tenant_id, room_id=body.room_id, resource_id=body.resource_id,
         starts_at=starts_at, ends_at=ends_at,
@@ -453,16 +536,31 @@ def update_reservation(
     _p=Depends(require_permission(PERM_WRITE_INTERVIEW)),
 ):
     r = _reservation(db, current.tenant_id, rid)
+    _reservation_visible(db, current, r)
     if r.status == "cancelled":
         raise HTTPException(400, "已取消的预约不能修改")
+    if body.kind not in Reservation.KINDS:
+        raise HTTPException(400, f"kind 必须是 {Reservation.KINDS} 之一")
     starts_at = _naive(body.starts_at)
     ends_at = _naive(body.ends_at)
     if ends_at <= starts_at:
         raise HTTPException(400, "结束时间必须晚于开始时间")
     if body.room_id:
-        _room(db, current.tenant_id, body.room_id)
+        room = _locked_room(db, current.tenant_id, body.room_id)
+        if not room.is_active:
+            raise HTTPException(400, "会议室已停用")
+        _check_room_scope(db, current, room)
     if body.resource_id:
-        _resource(db, current.tenant_id, body.resource_id)
+        res = _locked_resource(db, current.tenant_id, body.resource_id)
+        if not res.is_active:
+            raise HTTPException(400, "资源已停用")
+    if not body.room_id and not body.resource_id and body.kind != "interview":
+        raise HTTPException(400, "预约必须占一个会议室或资源")
+    if body.interview_id:
+        iv = db.get(Interview, body.interview_id)
+        if not iv or iv.tenant_id != current.tenant_id:
+            raise HTTPException(404, "面试不存在")
+    _check_interviewers(db, current.tenant_id, body.interviewer_ids)
     clash = _overlapping(
         db, current.tenant_id, room_id=body.room_id, resource_id=body.resource_id,
         starts_at=starts_at, ends_at=ends_at, exclude_id=r.id,
@@ -498,6 +596,7 @@ def cancel_reservation(
     _p=Depends(require_permission(PERM_WRITE_INTERVIEW)),
 ):
     r = _reservation(db, current.tenant_id, rid)
+    _reservation_visible(db, current, r)
     if r.status == "cancelled":
         return _to_out(db, r, *_reservation_names(db, current.tenant_id, [r]))
     r.status = "cancelled"
@@ -528,11 +627,17 @@ def interviewer_availability(
         )
     ).all()
     rows = db.scalars(
-        select(Reservation).where(
-            Reservation.tenant_id == current.tenant_id,
-            Reservation.status == "active",
-            Reservation.starts_at < _naive(end),
-            Reservation.ends_at > _naive(start),
+        apply_org_filter(
+            select(Reservation)
+            .outerjoin(Room, Room.id == Reservation.room_id)
+            .where(
+                Reservation.tenant_id == current.tenant_id,
+                Reservation.status == "active",
+                Reservation.starts_at < _naive(end),
+                Reservation.ends_at > _naive(start),
+            ),
+            org_column=Room.org_unit_id,
+            scope=get_org_scope(db, current),
         )
     ).all()
     out = []

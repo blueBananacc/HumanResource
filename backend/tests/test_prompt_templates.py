@@ -179,9 +179,10 @@ def test_rollback(client, db_session):
         assert r.status_code == 200
         assert r.json()["content"] == "第一版内容,十个字符以上"
         assert r.json()["version"] == 3
-        # 历史版本列表
+        # 历史版本列表(带 content,前端可在回滚前预览旧版本内容)
         r = client.get("/api/prompt-templates/match.evaluate/versions", headers=hdr)
         assert [v["version"] for v in r.json()] == [3, 2, 1]
+        assert r.json()[0]["content"] == "第一版内容,十个字符以上"
         # 不存在的版本 → 404
         r = client.post(
             "/api/prompt-templates/match.evaluate/rollback", headers=hdr,

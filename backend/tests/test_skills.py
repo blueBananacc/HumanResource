@@ -24,6 +24,7 @@ from app.domain.models import (  # noqa: E402
     Job,
     JobApplication,
     JobSkill,
+    OrgUnit,
     Resume,
     Skill,
     Tenant,
@@ -278,3 +279,71 @@ def test_permissions_and_isolation(client, db_session):
         assert r.status_code == 404
     finally:
         _cleanup(db_session, t1, t2)
+
+
+def test_update_skill_dup_name_409(client, db_session):
+    """重命名撞已有名字 → 409(之前会直接 IntegrityError 500)。"""
+    t = _tenant(db_session)
+    u = _user(db_session, t)
+    hdr = _hdr(u)
+    try:
+        client.post("/api/skills", headers=hdr, json={"name": "A"})
+        sid = client.post("/api/skills", headers=hdr, json={"name": "B"}).json()["id"]
+        r = client.put(f"/api/skills/{sid}", headers=hdr,
+                       json={"name": "A", "category": "other"})
+        assert r.status_code == 409
+        # 改成不撞的名字 → 200
+        r = client.put(f"/api/skills/{sid}", headers=hdr,
+                       json={"name": "B2", "category": "tech"})
+        assert r.status_code == 200
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_org_scope_on_job_cand_skills(client, db_session):
+    """org-A 的 hr 不能读写 org-B 岗位/候选人的技能档案。"""
+    t = _tenant(db_session)
+    org_a = OrgUnit(tenant_id=t.id, name="A")
+    org_b = OrgUnit(tenant_id=t.id, name="B")
+    db_session.add_all([org_a, org_b])
+    db_session.commit()
+    db_session.refresh(org_a)
+    db_session.refresh(org_b)
+    job = Job(tenant_id=t.id, title="B岗", level="intermediate",
+              description="d", org_unit_id=org_b.id)
+    cand = Candidate(tenant_id=t.id, name="B候选人", org_unit_id=org_b.id)
+    db_session.add_all([job, cand])
+    db_session.commit()
+    db_session.refresh(job)
+    db_session.refresh(cand)
+    hr = _user(db_session, t, role="hr")
+    hr.org_unit_id = org_a.id
+    db_session.commit()
+    hdr = _hdr(hr)
+    try:
+        r = client.put(f"/api/jobs/{job.id}/skills", headers=hdr,
+                       json={"items": [{"name": "X"}]})
+        assert r.status_code == 404
+        r = client.get(f"/api/jobs/{job.id}/skill-coverage", headers=hdr)
+        assert r.status_code == 404
+        r = client.put(f"/api/candidates/{cand.id}/skills", headers=hdr,
+                       json={"items": [{"name": "X"}]})
+        assert r.status_code == 404
+        r = client.get(f"/api/candidates/{cand.id}/skills", headers=hdr)
+        assert r.status_code == 404
+        r = client.post(f"/api/candidates/{cand.id}/skills/import-resume",
+                        headers=hdr)
+        assert r.status_code == 404
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_employee_cannot_list_skills(client, db_session):
+    """ESS 员工(零权限)不能列技能字典 — 需要 view_reports。"""
+    t = _tenant(db_session)
+    emp = _user(db_session, t, role="employee")
+    try:
+        r = client.get("/api/skills", headers=_hdr(emp))
+        assert r.status_code == 403
+    finally:
+        _cleanup(db_session, t)

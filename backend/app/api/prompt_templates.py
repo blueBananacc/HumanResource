@@ -57,6 +57,7 @@ class PreviewOut(BaseModel):
 class VersionOut(BaseModel):
     id: str
     version: int
+    content: str
     created_by: str | None
     created_at: datetime
 
@@ -213,7 +214,7 @@ def list_versions(
         return []
     return [
         VersionOut(
-            id=v.id, version=v.version,
+            id=v.id, version=v.version, content=v.content,
             created_by=v.created_by, created_at=v.created_at,
         )
         for v in db.scalars(

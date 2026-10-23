@@ -189,3 +189,17 @@ API 链路手工 curl 走通 + ego-browser 每模块至少一条 UI 全流程。
 - 候选覆盖接口 `GET /jobs/{id}/skill-coverage` 为新增(方案未列):每技能给全池/管道内人数。
 
 测试:30 个新测试 + 364 全量绿(`freehire_test`);开发库迁移到 `0037`。
+
+## 审查修复(a2a996f5,2026-10-23)
+
+- rooms:`scope.is_all` 误用 → 绑 org 用户列表必 500,改 `apply_org_filter`;
+  `_overlapping` OR 语义 + interview 无对象不误报 + FOR UPDATE 防并发双订;
+  面试官/会议室 org/资源 is_active 校验补齐,availability 按范围过滤。
+- applications/skills:单资源端点补 `ensure_can_see`(原只查租户,org 范围可越
+  读写);list/pipeline/coverage 加候选范围过滤;skill 重名 409。
+- surveys:closed 禁编辑(原会级联清空答卷);`order` 缺省按下标(原默认 0
+  乱序);prompt 版本列表返回 content。
+- 前端:canWrite 一律 `hasPermission` 对齐后端(原按角色名硬判会错配
+  interviewer/hiring_manager);SurveyFill crypto.randomUUID 兜底。
+- 测试:+8 回归用例 → 全量 372 绿;API 真链路 6 模块 + ego-browser
+  UI 全链路复核通过。

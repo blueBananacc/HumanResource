@@ -34,6 +34,9 @@ from app.services.permissions import (
     PERM_VIEW_REPORTS,
     PERM_WRITE_JOBS,
     PERM_WRITE_RESUMES,
+    apply_org_filter,
+    ensure_can_see,
+    get_org_scope,
     require_permission,
 )
 
@@ -146,6 +149,16 @@ def _cand_or_404(db: Session, tenant_id: str, cid: str) -> Candidate:
     return c
 
 
+def _job_visible(db: Session, current: User, job: Job) -> Job:
+    ensure_can_see(get_org_scope(db, current), job.org_unit_id)
+    return job
+
+
+def _cand_visible(db: Session, current: User, cand: Candidate) -> Candidate:
+    ensure_can_see(get_org_scope(db, current), cand.org_unit_id)
+    return cand
+
+
 def _job_skills_out(db: Session, tenant_id: str, job_id: str) -> list[JobSkillOut]:
     rows = db.execute(
         select(JobSkill, Skill)
@@ -187,6 +200,7 @@ def list_skills(
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
+    _p=Depends(require_permission(PERM_VIEW_REPORTS)),
 ):
     stmt = select(Skill).where(Skill.tenant_id == current.tenant_id)
     if q and q.strip():
@@ -240,7 +254,17 @@ def update_skill(
     s = _skill_or_404(db, current.tenant_id, skill_id)
     if body.category not in CATEGORIES:
         raise HTTPException(400, f"category 必须是 {CATEGORIES} 之一")
-    s.name = body.name.strip()
+    name = body.name.strip()
+    dup = db.scalars(
+        select(Skill).where(
+            Skill.tenant_id == current.tenant_id,
+            Skill.name == name,
+            Skill.id != s.id,
+        )
+    ).first()
+    if dup:
+        raise HTTPException(409, "同名技能已存在")
+    s.name = name
     s.category = body.category
     s.description = body.description
     write_audit(db, actor=current, entity_type="skill", entity_id=s.id,
@@ -274,7 +298,8 @@ def get_job_skills(
     current: User = Depends(get_current_user),
     _p=Depends(require_permission(PERM_VIEW_REPORTS)),
 ):
-    _job_or_404(db, current.tenant_id, job_id)
+    job = _job_or_404(db, current.tenant_id, job_id)
+    _job_visible(db, current, job)
     return _job_skills_out(db, current.tenant_id, job_id)
 
 
@@ -288,6 +313,7 @@ def put_job_skills(
     _p=Depends(require_permission(PERM_WRITE_JOBS)),
 ):
     job = _job_or_404(db, current.tenant_id, job_id)
+    _job_visible(db, current, job)
     seen: set[str] = set()
     new_rows: list[JobSkill] = []
     for item in body.items:
@@ -321,25 +347,33 @@ def skill_coverage(
     _p=Depends(require_permission(PERM_VIEW_REPORTS)),
 ):
     job = _job_or_404(db, current.tenant_id, job_id)
+    _job_visible(db, current, job)
     reqs = _job_skills_out(db, current.tenant_id, job.id)
     if not reqs:
         return []
     req_ids = [r.skill_id for r in reqs]
+    scope = get_org_scope(db, current)
 
-    # 全租户具备该技能的候选人数
-    pool_rows = db.execute(
+    # 具备该技能的候选人数(按当前用户数据范围过滤)
+    pool_stmt = (
         select(CandidateSkill.skill_id, func.count(func.distinct(CandidateSkill.candidate_id)))
+        .join(Candidate, Candidate.id == CandidateSkill.candidate_id)
         .where(
             CandidateSkill.tenant_id == current.tenant_id,
             CandidateSkill.skill_id.in_(req_ids),
         )
         .group_by(CandidateSkill.skill_id)
-    ).all()
+    )
+    pool_stmt = apply_org_filter(
+        pool_stmt, org_column=Candidate.org_unit_id, scope=scope
+    )
+    pool_rows = db.execute(pool_stmt).all()
     pool = {sid: int(n) for sid, n in pool_rows}
 
-    # 该岗位管道中具备该技能的候选人数
-    pipe_rows = db.execute(
+    # 该岗位管道中具备该技能的候选人数(同样按数据范围过滤)
+    pipe_stmt = (
         select(CandidateSkill.skill_id, func.count(func.distinct(CandidateSkill.candidate_id)))
+        .join(Candidate, Candidate.id == CandidateSkill.candidate_id)
         .join(
             JobApplication,
             (JobApplication.candidate_id == CandidateSkill.candidate_id)
@@ -351,7 +385,11 @@ def skill_coverage(
             CandidateSkill.skill_id.in_(req_ids),
         )
         .group_by(CandidateSkill.skill_id)
-    ).all()
+    )
+    pipe_stmt = apply_org_filter(
+        pipe_stmt, org_column=Candidate.org_unit_id, scope=scope
+    )
+    pipe_rows = db.execute(pipe_stmt).all()
     pipe = {sid: int(n) for sid, n in pipe_rows}
 
     return [
@@ -374,7 +412,8 @@ def get_candidate_skills(
     current: User = Depends(get_current_user),
     _p=Depends(require_permission(PERM_VIEW_REPORTS)),
 ):
-    _cand_or_404(db, current.tenant_id, candidate_id)
+    cand = _cand_or_404(db, current.tenant_id, candidate_id)
+    _cand_visible(db, current, cand)
     return _cand_skills_out(db, current.tenant_id, candidate_id)
 
 
@@ -388,6 +427,7 @@ def put_candidate_skills(
     _p=Depends(require_permission(PERM_WRITE_RESUMES)),
 ):
     cand = _cand_or_404(db, current.tenant_id, candidate_id)
+    _cand_visible(db, current, cand)
     seen: set[str] = set()
     new_rows: list[CandidateSkill] = []
     for item in body.items:
@@ -422,6 +462,7 @@ def import_resume_skills(
 ):
     """把候选人最新解析完成简历的 ``parsed_data.skills`` 合并进技能档案。"""
     cand = _cand_or_404(db, current.tenant_id, candidate_id)
+    _cand_visible(db, current, cand)
     resume = db.scalars(
         select(Resume)
         .where(

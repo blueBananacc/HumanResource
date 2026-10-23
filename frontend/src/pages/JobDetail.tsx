@@ -18,6 +18,7 @@ import { useConfirm } from "@/components/ui/confirm";
 import { JobSkillsCard } from "@/components/skills/SkillWidgets";
 import { fetchJSON, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { PERM } from "@/lib/roles";
 import { formatRelative, levelLabel } from "@/lib/format";
 import { JobFormModal, type Job } from "./Jobs";
 import { JobGovernancePanel } from "./JobGovernancePanel";
@@ -68,8 +69,8 @@ const STATUS_OPTIONS: JobStatus[] = ["open", "paused", "closed"];
  */
 export function JobDetail() {
   const { id = "" } = useParams<{ id: string }>();
-  const { user } = useAuth();
-  const canWrite = user?.role === "admin" || user?.role === "hr" || user?.role === "hiring_manager";
+  const { hasPermission } = useAuth();
+  const canWrite = hasPermission(PERM.WRITE_JOBS);
   const navigate = useNavigate();
   const qc = useQueryClient();
   const confirm = useConfirm();

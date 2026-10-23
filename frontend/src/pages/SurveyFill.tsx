@@ -32,7 +32,12 @@ function respondentKey(sid: string) {
   const k = `survey-key-${sid}`;
   let v = localStorage.getItem(k);
   if (!v) {
-    v = `rk-${crypto.randomUUID()}`;
+    // crypto.randomUUID 仅在 secure context(https/localhost)可用,HTTP 部署兜底
+    const rand =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+    v = `rk-${rand}`;
     localStorage.setItem(k, v);
   }
   return v;

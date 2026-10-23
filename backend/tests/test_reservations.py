@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.domain.models import (  # noqa: E402
     Base,
+    OrgUnit,
     Reservation,
     Resource,
     Room,
@@ -282,3 +283,121 @@ def test_permissions_isolation(client, db_session):
         assert r.json() == []
     finally:
         _cleanup(db_session, t1, t2)
+
+
+def test_org_scoped_user_list_and_scope_enforcement(client, db_session):
+    """绑 org 的非 admin 用户:list_rooms/list_reservations 不能 500,且按数据范围过滤。"""
+    t = _tenant(db_session)
+    org_a = OrgUnit(tenant_id=t.id, name="A")
+    org_b = OrgUnit(tenant_id=t.id, name="B")
+    db_session.add_all([org_a, org_b])
+    db_session.commit()
+    db_session.refresh(org_a)
+    db_session.refresh(org_b)
+    admin = _user(db_session, t)
+    hr = _user(db_session, t, role="hr")
+    hr.org_unit_id = org_a.id
+    db_session.commit()
+    hadm, hhr = _hdr(admin), _hdr(hr)
+    try:
+        room_b = client.post("/api/rooms", headers=hadm,
+                             json={"name": "B会议室", "org_unit_id": org_b.id}).json()["id"]
+        room_pub = client.post("/api/rooms", headers=hadm, json={"name": "公共"}).json()["id"]
+
+        # org-A 用户:list 不 500,只看到 org NULL 的公共会议室
+        r = client.get("/api/rooms", headers=hhr)
+        assert r.status_code == 200
+        assert [x["id"] for x in r.json()] == [room_pub]
+
+        # org-A 用户:不能约 org-B 的会议室
+        r = client.post("/api/reservations", headers=hhr,
+                        json=_resv_json(room_b, start_h=9, end_h=10))
+        assert r.status_code == 404
+
+        # admin 在 org-B 会议室约一条 + 一条纯面试官预约(不占对象)
+        client.post("/api/reservations", headers=hadm,
+                    json=_resv_json(room_b, start_h=9, end_h=10))
+        iv = _resv_json(None, start_h=9, end_h=10, kind="interview", title="纯面试官")
+        r = client.post("/api/reservations", headers=hhr, json=iv)
+        assert r.status_code == 201  # 无对象 → 不与 B 会议室的预约误报冲突
+
+        # org-A 用户看预约列表:不含 org-B 会议室的那条,含自己的 interview 条
+        r = client.get("/api/reservations", headers=hhr,
+                       params={"start": BASE.isoformat(),
+                               "end": (BASE + timedelta(hours=3)).isoformat()})
+        assert r.status_code == 200
+        titles = [x["title"] for x in r.json()]
+        assert titles == ["纯面试官"]
+
+        # org-A 用户不能改/取消 org-B 会议室上的预约
+        resv_b = client.get("/api/reservations", headers=hadm,
+                            params={"start": BASE.isoformat(),
+                                    "end": (BASE + timedelta(hours=3)).isoformat(),
+                                    "room_id": room_b}).json()[0]
+        r = client.put(f"/api/reservations/{resv_b['id']}", headers=hhr,
+                       json=_resv_json(room_pub, start_h=11, end_h=12))
+        assert r.status_code == 404
+        r = client.post(f"/api/reservations/{resv_b['id']}/cancel", headers=hhr)
+        assert r.status_code == 404
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_room_resource_or_conflict(client, db_session):
+    """同时占会议室+资源的预约:同会议室不同资源依然冲突(OR 语义)。"""
+    t = _tenant(db_session)
+    u = _user(db_session, t)
+    hdr = _hdr(u)
+    try:
+        room = client.post("/api/rooms", headers=hdr, json={"name": "R"}).json()["id"]
+        res_b = client.post("/api/resources", headers=hdr,
+                            json={"name": "B", "type": "equipment"}).json()["id"]
+        res_c = client.post("/api/resources", headers=hdr,
+                            json={"name": "C", "type": "equipment"}).json()["id"]
+        body1 = _resv_json(room, start_h=9, end_h=10, resource_id=res_b)
+        assert client.post("/api/reservations", headers=hdr, json=body1).status_code == 201
+        # 同会议室、不同资源、时间重叠 → 仍 409
+        body2 = _resv_json(room, start_h=9.5, end_h=10.5, resource_id=res_c)
+        r = client.post("/api/reservations", headers=hdr, json=body2)
+        assert r.status_code == 409
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_reservation_input_validation(client, db_session):
+    """面试官必须本租户;update 复用完整校验(非法 kind / 停用对象)。"""
+    t = _tenant(db_session)
+    t2 = _tenant(db_session)
+    u = _user(db_session, t)
+    u2 = _user(db_session, t2)
+    hdr = _hdr(u)
+    try:
+        room = client.post("/api/rooms", headers=hdr, json={"name": "R"}).json()["id"]
+
+        # 跨租户面试官 → 400
+        r = client.post("/api/reservations", headers=hdr,
+                        json=_resv_json(room, start_h=9, end_h=10,
+                                        interviewer_ids=[u2.id]))
+        assert r.status_code == 400
+
+        rid = client.post("/api/reservations", headers=hdr,
+                          json=_resv_json(room, start_h=9, end_h=10)).json()["id"]
+
+        # 非法 kind → 400
+        r = client.put(f"/api/reservations/{rid}", headers=hdr,
+                       json=_resv_json(room, start_h=11, end_h=12, kind="bogus"))
+        assert r.status_code == 400
+
+        # 改到已停用的会议室 → 400
+        client.put(f"/api/rooms/{room}", headers=hdr,
+                   json={"name": "R", "is_active": False})
+        r = client.put(f"/api/reservations/{rid}", headers=hdr,
+                       json=_resv_json(room, start_h=11, end_h=12))
+        assert r.status_code == 400
+
+        # 无对象的非 interview 预约 → 400
+        r = client.post("/api/reservations", headers=hdr,
+                        json=_resv_json(None, start_h=13, end_h=14))
+        assert r.status_code == 400
+    finally:
+        _cleanup(db_session, t, t2)

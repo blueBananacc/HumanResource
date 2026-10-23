@@ -14,6 +14,7 @@ import { Drawer } from "@/components/ui/drawer";
 import { Empty } from "@/components/ui/empty";
 import { ApiError, fetchJSON } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { PERM } from "@/lib/roles";
 
 /**
  * 问卷管理(T2-3,MintHCM Surveys 移植)。
@@ -76,9 +77,9 @@ const QTYPE_LABEL: Record<string, string> = {
 
 export function Surveys() {
   const qc = useQueryClient();
-  const { user } = useAuth();
-  const canWrite =
-    user?.role === "admin" || user?.role === "hr" || user?.role === "hiring_manager";
+  const { hasPermission } = useAuth();
+  // 后端管理端写操作要求 write_interview — 与后端权限保持一致
+  const canWrite = hasPermission(PERM.WRITE_INTERVIEW);
   const [editing, setEditing] = useState<SurveyDetail | null>(null);
   const [creating, setCreating] = useState(false);
   const [resultsFor, setResultsFor] = useState<string | null>(null);

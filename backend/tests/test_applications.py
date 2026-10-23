@@ -25,6 +25,7 @@ from app.domain.models import (  # noqa: E402
     Job,
     JobApplication,
     JobApplicationEvent,
+    OrgUnit,
     ResumeJobMatch,
     Resume,
     Tenant,
@@ -358,3 +359,49 @@ def test_tenant_isolation(client, db_session):
         assert r.json()["total"] == 0
     finally:
         _cleanup(db_session, t1, t2)
+
+
+def test_org_scope_enforcement(client, db_session):
+    """绑 org 的非 admin 用户:看不到也改不了范围外的管道卡。"""
+    t = _tenant(db_session)
+    org_a = OrgUnit(tenant_id=t.id, name="A")
+    org_b = OrgUnit(tenant_id=t.id, name="B")
+    db_session.add_all([org_a, org_b])
+    db_session.commit()
+    db_session.refresh(org_a)
+    db_session.refresh(org_b)
+    admin = _user(db_session, t)
+    job = Job(tenant_id=t.id, title="B岗", level="intermediate",
+              description="d", org_unit_id=org_b.id)
+    cand = Candidate(tenant_id=t.id, name="B候选人", org_unit_id=org_b.id)
+    db_session.add_all([job, cand])
+    db_session.commit()
+    db_session.refresh(job)
+    db_session.refresh(cand)
+    try:
+        # admin 建卡
+        r = client.post(
+            "/api/applications", headers=_hdr(admin),
+            json={"candidate_id": cand.id, "job_id": job.id},
+        )
+        app_id = r.json()["id"]
+
+        # org-A 的 hr:单卡读/写全 404,列表/看板也不含
+        hr = _user(db_session, t, role="hr")
+        hr.org_unit_id = org_a.id
+        db_session.commit()
+        hdr = _hdr(hr)
+        r = client.get(f"/api/applications/{app_id}", headers=hdr)
+        assert r.status_code == 404
+        r = client.post(f"/api/applications/{app_id}/transition", headers=hdr,
+                        json={"to_stage": "rejected"})
+        assert r.status_code == 404
+        r = client.delete(f"/api/applications/{app_id}", headers=hdr)
+        assert r.status_code == 404
+        r = client.get("/api/applications", headers=hdr)
+        assert r.json()["total"] == 0
+        # org-B 岗位本身看不到 → pipeline 404
+        r = client.get(f"/api/jobs/{job.id}/pipeline", headers=hdr)
+        assert r.status_code == 404
+    finally:
+        _cleanup(db_session, t)

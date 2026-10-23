@@ -54,7 +54,8 @@ class QuestionIn(BaseModel):
     text: str = Field(..., min_length=1, max_length=256)
     options: list[str] = Field(default_factory=list, max_length=20)
     required: bool = True
-    order: int = 0
+    # None → 按数组下标定序;客户端全传 0 会导致排序退化到随机 id
+    order: int | None = None
 
 
 class QuestionOut(BaseModel):
@@ -205,12 +206,13 @@ def create_survey(
     )
     db.add(s)
     db.flush()
-    for q in body.questions:
+    for i, q in enumerate(body.questions):
         db.add(
             SurveyQuestion(
                 tenant_id=current.tenant_id, survey_id=s.id,
                 type=q.type, text=q.text.strip(),
-                options=q.options, required=q.required, order=q.order,
+                options=q.options, required=q.required,
+                order=q.order if q.order is not None else i,
             )
         )
     write_audit(db, actor=current, entity_type="survey", entity_id=s.id,
@@ -255,19 +257,22 @@ def update_survey(
     _p=Depends(require_permission(PERM_WRITE_INTERVIEW)),
 ):
     s = _survey_or_404(db, current.tenant_id, sid)
-    if s.status == "published":
-        raise HTTPException(400, "已发布的问卷不能修改,请先关闭")
+    # 仅草稿可编辑:published 改题影响在收的答卷;closed 已有沉淀答卷,
+    # 整组替换题目会经 FK CASCADE 连坐删除 survey_response_answers
+    if s.status != "draft":
+        raise HTTPException(400, "仅草稿状态的问卷可以修改")
     _validate_questions(body.questions)
     s.title = body.title.strip()
     s.description = body.description
     s.updated_at = _now()
     db.query(SurveyQuestion).filter(SurveyQuestion.survey_id == s.id).delete()
-    for q in body.questions:
+    for i, q in enumerate(body.questions):
         db.add(
             SurveyQuestion(
                 tenant_id=current.tenant_id, survey_id=s.id,
                 type=q.type, text=q.text.strip(),
-                options=q.options, required=q.required, order=q.order,
+                options=q.options, required=q.required,
+                order=q.order if q.order is not None else i,
             )
         )
     write_audit(db, actor=current, entity_type="survey", entity_id=s.id,

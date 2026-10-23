@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { ApiError, fetchJSON } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { PERM } from "@/lib/roles";
 
 /**
  * 面试安排 · 排期页(T2-2,MintHCM Reservations/ReservationsCalendar 移植)。
@@ -77,9 +78,9 @@ function toLocal(s: string) {
 
 export function Schedule() {
   const qc = useQueryClient();
-  const { user } = useAuth();
-  const canWrite =
-    user?.role === "admin" || user?.role === "hr" || user?.role === "hiring_manager";
+  const { hasPermission } = useAuth();
+  // 后端 POST/PUT/cancel 要求 write_interview — 与后端权限保持一致
+  const canWrite = hasPermission(PERM.WRITE_INTERVIEW);
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [roomFilter, setRoomFilter] = useState<string>("");
   const [showCreate, setShowCreate] = useState(false);

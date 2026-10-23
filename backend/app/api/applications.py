@@ -210,6 +210,21 @@ def _check_scope(db: Session, current: User, job: Job, cand: Candidate) -> None:
     ensure_can_see(scope, cand.org_unit_id)
 
 
+def _get_app_in_scope(
+    db: Session, app_id: str, current: User
+) -> JobApplication:
+    """单卡读/写共用的可见性守卫:租户命中后还要求岗位与候选人
+    都在当前用户数据范围内,否则按 404 处理(不暴露存在性)。"""
+    app = _get_app(db, app_id, current.tenant_id)
+    job = db.get(Job, app.job_id)
+    cand = db.get(Candidate, app.candidate_id)
+    if job:
+        ensure_can_see(get_org_scope(db, current), job.org_unit_id)
+    if cand:
+        ensure_can_see(get_org_scope(db, current), cand.org_unit_id)
+    return app
+
+
 # ============ routes ============
 
 
@@ -236,6 +251,7 @@ def list_applications(
         stmt = stmt.where(JobApplication.stage == stage)
     scope = get_org_scope(db, current)
     stmt = apply_org_filter(stmt, org_column=Job.org_unit_id, scope=scope)
+    stmt = apply_org_filter(stmt, org_column=Candidate.org_unit_id, scope=scope)
     stmt = apply_q_ilike(stmt, q, Candidate.name)
     stmt = stmt.order_by(JobApplication.stage_changed_at.desc())
     total = count_total(db, stmt)
@@ -244,8 +260,11 @@ def list_applications(
     apps = [r[0] for r in rows]
     cands, jobs, users = _maps(db, current.tenant_id, apps)
     scores: dict[str, int] = {}
-    for app in apps:
-        scores.update(_match_scores(db, current.tenant_id, app.job_id, [app.candidate_id]))
+    by_job: dict[str, list[str]] = {}
+    for a in apps:
+        by_job.setdefault(a.job_id, []).append(a.candidate_id)
+    for jid, cand_ids in by_job.items():
+        scores.update(_match_scores(db, current.tenant_id, jid, cand_ids))
     return PageOut(
         items=[_to_out(a, cands, jobs, users, scores) for a in apps],
         total=total,
@@ -320,7 +339,7 @@ def get_application(
     current: User = Depends(get_current_user),
     _p=Depends(require_permission(PERM_VIEW_REPORTS)),
 ):
-    app = _get_app(db, app_id, current.tenant_id)
+    app = _get_app_in_scope(db, app_id, current)
     cands, jobs, users = _maps(db, current.tenant_id, [app])
     scores = _match_scores(db, current.tenant_id, app.job_id, [app.candidate_id])
     events = db.scalars(
@@ -361,7 +380,7 @@ def transition(
     current: User = Depends(get_current_user),
     _p=Depends(require_permission(PERM_WRITE_JOBS)),
 ):
-    app = _get_app(db, app_id, current.tenant_id)
+    app = _get_app_in_scope(db, app_id, current)
     if body.to_stage not in ALL_STAGES:
         raise HTTPException(400, f"to_stage 必须是 {ALL_STAGES} 之一")
     if body.to_stage == app.stage:
@@ -397,7 +416,7 @@ def delete_application(
     current: User = Depends(get_current_user),
     _p=Depends(require_permission(PERM_WRITE_JOBS)),
 ):
-    app = _get_app(db, app_id, current.tenant_id)
+    app = _get_app_in_scope(db, app_id, current)
     db.delete(app)
     write_audit(
         db, actor=current, entity_type="job_application", entity_id=app_id,
@@ -419,13 +438,19 @@ def get_pipeline(
     scope = get_org_scope(db, current)
     ensure_can_see(scope, job.org_unit_id)
 
+    # 看板卡片同样按候选人数据范围过滤:能看见岗位不等于能看所有候选人
     apps = db.scalars(
-        select(JobApplication)
-        .where(
-            JobApplication.tenant_id == current.tenant_id,
-            JobApplication.job_id == job_id,
+        apply_org_filter(
+            select(JobApplication)
+            .join(Candidate, Candidate.id == JobApplication.candidate_id)
+            .where(
+                JobApplication.tenant_id == current.tenant_id,
+                JobApplication.job_id == job_id,
+            )
+            .order_by(JobApplication.stage_changed_at.desc()),
+            org_column=Candidate.org_unit_id,
+            scope=scope,
         )
-        .order_by(JobApplication.stage_changed_at.desc())
     ).all()
     cand_ids = [a.candidate_id for a in apps]
     cands, _, users = _maps(db, current.tenant_id, apps)

@@ -233,3 +233,49 @@ def test_permissions_isolation(client, db_session):
         assert r.status_code == 200
     finally:
         _cleanup(db_session, t1, t2)
+
+
+def test_closed_survey_not_editable(client, db_session):
+    """closed 问卷不可编辑 — 之前允许 PUT,会把已收答卷连坐级联删光。"""
+    t = _tenant(db_session)
+    u = _user(db_session, t)
+    hdr = _hdr(u)
+    try:
+        r = client.post("/api/surveys", headers=hdr, json=_survey_body())
+        sid = r.json()["id"]
+        q_ids = [q["id"] for q in r.json()["questions"]]
+        client.post(f"/api/surveys/{sid}/status", headers=hdr,
+                    json={"status": "published"})
+        r = client.post(f"/api/public/surveys/{sid}/responses", json={
+            "respondent_key": "rk-" + uuid.uuid4().hex,
+            "answers": {q_ids[0]: 5, q_ids[1]: "内推"},
+        })
+        assert r.status_code == 201
+        client.post(f"/api/surveys/{sid}/status", headers=hdr,
+                    json={"status": "closed"})
+
+        # PUT closed → 400,数据保持原样
+        r = client.put(f"/api/surveys/{sid}", headers=hdr, json={
+            "title": "改题",
+            "questions": [{"type": "short_text", "text": "新题"}],
+        })
+        assert r.status_code == 400
+        r = client.get(f"/api/surveys/{sid}/results", headers=hdr)
+        assert r.json()["response_count"] == 1
+        by_q = {q["question_id"]: q for q in r.json()["questions"]}
+        assert by_q[q_ids[0]]["answered"] == 1
+        assert by_q[q_ids[0]]["avg_rating"] == 5.0
+        # published 同样不可编辑
+        r2 = client.post("/api/surveys", headers=hdr, json=_survey_body())
+        sid2 = r2.json()["id"]
+        client.post(f"/api/surveys/{sid2}/status", headers=hdr,
+                    json={"status": "published"})
+        assert client.put(f"/api/surveys/{sid2}", headers=hdr,
+                          json=_survey_body()).status_code == 400
+        # draft 仍可编辑
+        r3 = client.post("/api/surveys", headers=hdr, json=_survey_body())
+        sid3 = r3.json()["id"]
+        assert client.put(f"/api/surveys/{sid3}", headers=hdr,
+                          json=_survey_body()).status_code == 200
+    finally:
+        _cleanup(db_session, t)
