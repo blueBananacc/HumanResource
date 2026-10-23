@@ -1,16 +1,21 @@
 """HRIS 全链路种子数据 — 通过真实 API 走完整链(兼作后端链审查)。
 
 用法(宿主机):
-    python backend/_seed_hris.py
+    python backend/_seed_hris.py                          # 本地
+    SEED_BASE=http://<host>/api SEED_ADMIN_PASSWORD=xxx \
+        python backend/_seed_hris.py                      # 云端/任意部署
 
 默认打 http://localhost(nginx 网关 → backend)。需要 admin 登录。
 幂等:按名称/工号查重,重复运行不会翻倍造数据。
 产出:
   - 组织树 / 6 名员工 / 2 个 ESS 账号(emp1@hronfire.dev / emp2@hronfire.dev,密码 Emp@123456)
+  - admin 绑定 EMP001(管理员也走 /me 自助端演示"绑档案=也是员工")
   - 假期类型+额度+申请(待批/已批/已驳) + 今日打卡 + 考勤汇总
   - 生命周期模板+事件 / 招聘需求(已批+待批) / Offer(已接受→自动建档)
   - 目标+考核(含一条待上级评) / 报销(待批+已支付) / 工资条(已发放)
-  - _seed_checkins.sql:过去 5 个工作日的历史打卡,psql 执行后考勤更饱满
+  - 工作日历+节假日 / 假期政策(结转+发放) / 补卡+加班→调休(待批+已批)
+  - 近 3 个工作日历史考勤:纯 API 补卡审批回填(云端无 psql 也能跑);
+    另有 _seed_checkins.sql 供本地 psql 造更长的历史
 """
 from __future__ import annotations
 
@@ -24,7 +29,7 @@ from datetime import date, timedelta
 # 默认打 nginx 网关(:80);backend 容器不对外发布端口,8000 是宿主机上别的服务
 BASE = os.environ.get("SEED_BASE", "http://localhost/api")
 ADMIN_EMAIL = "admin@example.com"
-ADMIN_PASSWORD = "admin123456"
+ADMIN_PASSWORD = os.environ.get("SEED_ADMIN_PASSWORD", "admin123456")
 EMP_PASSWORD = "Emp@123456"
 
 
@@ -117,7 +122,7 @@ def main():
     # ---------- 员工 ----------
     print("== 员工 ==")
     roster = [
-        ("EMP001", "陈志远", "CTO", dev["id"], None, "active"),
+        ("EMP001", "卢品超", "CTO", dev["id"], None, "active"),
         ("EMP002", "李晓芸", "资深前端工程师", dev["id"], "EMP001", "active"),
         ("EMP003", "王浩", "后端工程师", dev["id"], "EMP001", "active"),
         ("EMP004", "赵雨晴", "产品经理", prod["id"], "EMP001", "active"),
@@ -163,6 +168,11 @@ def main():
             print(f"  {email} 绑定(密码 {EMP_PASSWORD}) user={r['user_id'][:8]}")
         else:
             print(f"  {email} 已绑定")
+    # admin 也挂到 EMP001 — 管理员既能管全端,也能走 /me 自助端
+    e1 = emp_by_no["EMP001"]
+    if not e1.get("has_account"):
+        req("POST", f"/employees/{e1['id']}/account", tok, {"email": ADMIN_EMAIL})
+        print(f"  {ADMIN_EMAIL} 绑定到 EMP001({e1['name']})")
 
     emp1 = login("emp1@hronfire.dev", EMP_PASSWORD)
     emp2 = login("emp2@hronfire.dev", EMP_PASSWORD)
@@ -472,6 +482,48 @@ def main():
             req("POST", f"/overtime/requests/{r['id']}/approve", tok,
                 {"note": "记录属实"})
             print(f"  已批加班 → 调休入账 {r['comp_days']} 天")
+
+    # ---------- 历史补卡回填考勤(纯 API,云端无 psql 也能出饱满考勤) ----------
+    print("== 历史考勤回填 ==")
+    hols = {h["day"] for h in req("GET", "/work-calendar/holidays", tok)}
+    past_wds: list[date] = []
+    d = today
+    while len(past_wds) < 3:
+        d -= timedelta(days=1)
+        if d.weekday() < 5 and str(d) not in hols:
+            past_wds.append(d)
+    month_start = today.replace(day=1)
+    for emp_tok, emp in (
+        (emp1, emp_by_no["EMP002"]),
+        (emp2, emp_by_no["EMP003"]),
+    ):
+        att = req(
+            "GET",
+            f"/attendance?month={str(month_start)[:7]}&employee_id={emp['id']}&limit=100",
+            tok,
+        ).get("items", [])
+        done_days = {a["day"] for a in att
+                     if a["status"] in ("present", "leave", "remote")}
+        for wd in past_wds:
+            if str(wd) in done_days:
+                continue
+            r = req("POST", "/me/attendance-requests", emp_tok, {
+                "ts": f"{wd}T09:0{wd.day % 6}:00Z", "kind": "in",
+                "reason": "外勤见客户,忘打卡"}, quiet=True)
+            if r.get("_status"):
+                continue  # 同日已有待批同向申请 → 整天跳过,别补半个 in/out
+            req("POST", f"/attendance/requests/{r['id']}/approve", tok,
+                {"note": "属实"})
+            r = req("POST", "/me/attendance-requests", emp_tok, {
+                "ts": f"{wd}T18:1{wd.day % 6}:00Z", "kind": "out",
+                "reason": "下班赶车忘打"}, quiet=True)
+            if not r.get("_status"):
+                req("POST", f"/attendance/requests/{r['id']}/approve", tok,
+                    {"note": "属实"})
+            print(f"  {emp['name']} {wd} 补卡 in/out 已批 → present")
+    req("POST", "/attendance/summarize", tok,
+        {"start": str(month_start), "end": str(today)})
+    print("  本月考勤重算完成")
 
     # ---------- 历史打卡 SQL ----------
     emps_for_sql = [emp_by_no["EMP002"], emp_by_no["EMP003"], emp_by_no["EMP004"]]
