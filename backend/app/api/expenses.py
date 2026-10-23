@@ -260,7 +260,10 @@ def _decide(
     db: Session, request: Request, current: User,
     claim_id: str, to: Literal["approved", "rejected"], note: str | None,
 ) -> ClaimOut:
-    c = db.get(ExpenseClaim, claim_id)
+    # FOR UPDATE:并发审批只允许一方通过状态检查
+    c = db.execute(
+        select(ExpenseClaim).where(ExpenseClaim.id == claim_id).with_for_update()
+    ).scalar_one_or_none()
     if not c or c.tenant_id != current.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "报销单不存在")
     if c.status != "pending":

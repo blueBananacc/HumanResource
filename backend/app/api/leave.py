@@ -199,6 +199,13 @@ def _app_out(
     )
 
 
+def _locked_app(db: Session, app_id: str) -> LeaveApplication | None:
+    """FOR UPDATE 锁申请行 — 审批/撤销写台账,并发双击会记两次流水。"""
+    return db.execute(
+        select(LeaveApplication).where(LeaveApplication.id == app_id).with_for_update()
+    ).scalar_one_or_none()
+
+
 def _can_approve(db: Session, user: User, app: LeaveApplication) -> bool:
     """admin/hr 都能批;hiring_manager 仅直属下属。"""
     if user.role in ("admin", "hr"):
@@ -552,7 +559,7 @@ def approve_application(
     db: Session = Depends(get_db),
     current: User = Depends(require_permission(PERM_APPROVE_LEAVE)),
 ):
-    a = db.get(LeaveApplication, app_id)
+    a = _locked_app(db, app_id)
     if not a or a.tenant_id != current.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "申请不存在")
     if a.status != "pending":
@@ -592,7 +599,7 @@ def reject_application(
     db: Session = Depends(get_db),
     current: User = Depends(require_permission(PERM_APPROVE_LEAVE)),
 ):
-    a = db.get(LeaveApplication, app_id)
+    a = _locked_app(db, app_id)
     if not a or a.tenant_id != current.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "申请不存在")
     if a.status != "pending":

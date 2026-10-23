@@ -16,7 +16,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, count_total, paginate_params
@@ -374,8 +374,12 @@ def create_offer(
     return _offer_out(o, cands, jobs)
 
 
-def _offer(db: Session, oid: str, tenant_id: str) -> JobOffer:
-    o = db.get(JobOffer, oid)
+def _offer(db: Session, oid: str, tenant_id: str, *, for_update: bool = False) -> JobOffer:
+    stmt = select(JobOffer).where(JobOffer.id == oid)
+    if for_update:
+        # 状态机变更带副作用(建员工/生命周期),先锁行防并发重复回应
+        stmt = stmt.with_for_update()
+    o = db.execute(stmt).scalar_one_or_none()
     if not o or o.tenant_id != tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Offer 不存在")
     return o
@@ -427,7 +431,7 @@ def respond_offer(
     current: User = Depends(require_permission(PERM_MANAGE_OFFERS)),
 ):
     """记录候选人回应。accepted → 建 Employee + onboarding 事件。"""
-    o = _offer(db, oid, current.tenant_id)
+    o = _offer(db, oid, current.tenant_id, for_update=True)
     if o.status != "sent":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅已发出的 Offer 可回应")
     o.status = "accepted" if body.accepted else "declined"
@@ -448,16 +452,13 @@ def respond_offer(
 
 def _employee_from_offer(db: Session, o: JobOffer, actor: User) -> Employee:
     """Offer accepted → 员工建档。"""
+    from app.api.employees import next_employee_no
+
     cand = db.get(Candidate, o.candidate_id)
     job = db.get(Job, o.job_id) if o.job_id else None
-    n = db.scalar(
-        select(func.count()).select_from(Employee).where(
-            Employee.tenant_id == o.tenant_id
-        )
-    ) or 0
     emp = Employee(
         tenant_id=o.tenant_id,
-        employee_no=f"EMP{n + 1:04d}",
+        employee_no=next_employee_no(db, o.tenant_id),
         name=cand.name,
         org_unit_id=job.org_unit_id if job else None,
         designation=o.position or (job.title if job else None),

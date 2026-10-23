@@ -7,6 +7,7 @@ import { Modal } from "@/components/ui/modal";
 import { Empty } from "@/components/ui/empty";
 import { Select } from "@/components/ui/select";
 import { fetchJSON, ApiError } from "@/lib/api";
+import { useConfirm } from "@/components/ui/confirm";
 import { formatRelative } from "@/lib/format";
 import {
   StatusPill,
@@ -19,6 +20,7 @@ import { Field } from "../hris/Employees";
 export function MyLeave() {
   const [open, setOpen] = useState(false);
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const { data: balances } = useQuery<MeBalance[]>({
     queryKey: ["me-balances"],
     queryFn: () => fetchJSON("/api/me/leave-balances"),
@@ -36,8 +38,24 @@ export function MyLeave() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["me-leave-apps"] });
       qc.invalidateQueries({ queryKey: ["me-balances"] });
+      // 撤销已批申请会恢复考勤/台账,让相关页面下次拉新数据
+      qc.invalidateQueries({ queryKey: ["me-attendance"] });
+      qc.invalidateQueries({ queryKey: ["me-attendance-today"] });
     },
   });
+
+  async function onCancel(a: MeApplication) {
+    if (a.status === "approved") {
+      const ok = await confirm({
+        title: "撤销已批准的请假?",
+        description: `${a.leave_type_name} ${a.start_date} → ${a.end_date} · ${a.days} 天,撤销后返还额度并恢复考勤。`,
+        confirmLabel: "撤销",
+        tone: "danger",
+      });
+      if (!ok) return;
+    }
+    cancel.mutate(a.id);
+  }
 
   return (
     <main className="p-8 flex flex-col gap-6 max-w-[900px] mx-auto w-full">
@@ -127,15 +145,15 @@ export function MyLeave() {
               <span className="text-[11px] text-[var(--color-text-tertiary)] font-body">
                 {formatRelative(a.created_at)}
               </span>
-              {a.status === "pending" && (
+              {(a.status === "pending" || a.status === "approved") && (
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => cancel.mutate(a.id)}
+                  onClick={() => onCancel(a)}
                   disabled={cancel.isPending}
                 >
                   <Undo2 className="w-3.5 h-3.5" />
-                  撤回
+                  {a.status === "pending" ? "撤回" : "撤销"}
                 </Button>
               )}
             </div>

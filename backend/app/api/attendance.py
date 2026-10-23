@@ -7,16 +7,15 @@
 """
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, count_total, paginate_params
-from app.api.auth import get_current_user
 from app.api.license import require_feature
 from app.domain.models import (
     Attendance,
@@ -225,12 +224,16 @@ def update_attendance(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "考勤记录不存在")
     a.status = body.status
     a.source = "manual"
-    if body.first_in is not None:
+    # model_fields_set:显式传 null = 清空时间;不传字段则不覆盖
+    if "first_in" in body.model_fields_set:
         a.first_in = body.first_in
-    if body.last_out is not None:
+    if "last_out" in body.model_fields_set:
         a.last_out = body.last_out
-    if a.first_in and a.last_out and a.last_out > a.first_in:
-        a.work_hours = round((a.last_out - a.first_in).total_seconds() / 3600, 2)
+    a.work_hours = (
+        round((a.last_out - a.first_in).total_seconds() / 3600, 2)
+        if a.first_in and a.last_out and a.last_out > a.first_in
+        else None
+    )
     write_audit(
         db, actor=current, entity_type="attendance", entity_id=a.id,
         action="manual_correct",

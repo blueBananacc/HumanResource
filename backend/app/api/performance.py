@@ -389,6 +389,9 @@ def review_appraisal(
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "员工尚未提交自评或已评定"
         )
+    cycle = db.get(AppraisalCycle, a.cycle_id)
+    if not cycle or cycle.status != "open":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "考核周期未开启或已关闭")
     a.manager_review = body.manager_review.strip()
     a.manager_rating = body.manager_rating
     a.reviewer_id = current.id

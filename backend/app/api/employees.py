@@ -21,12 +21,11 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, apply_q_ilike, count_total, paginate_params
-from app.api.auth import get_current_user
 from app.api.license import require_feature
 from app.domain.models import Employee, OrgUnit, User
 from app.infra.db import get_db
@@ -194,12 +193,15 @@ def _serialize(e: Employee, orgs: dict, emps: dict) -> EmployeeOut:
     )
 
 
-def _next_employee_no(db: Session, tenant_id: str) -> str:
-    n = db.scalar(
-        select(func.count()).select_from(Employee).where(
-            Employee.tenant_id == tenant_id
-        )
-    ) or 0
+def next_employee_no(db: Session, tenant_id: str) -> str:
+    """取下一个可用工号 — 按现有 EMP#### 最大序号 +1,删人留洞也不撞号。"""
+    nos = db.scalars(
+        select(Employee.employee_no).where(Employee.tenant_id == tenant_id)
+    ).all()
+    n = max(
+        (int(no[3:]) for no in nos if re.fullmatch(r"EMP\d{4,}", no)),
+        default=0,
+    )
     return f"EMP{n + 1:04d}"
 
 
@@ -290,7 +292,7 @@ def create_employee(
         _ = mgr
     e = Employee(
         tenant_id=current.tenant_id,
-        employee_no=body.employee_no or _next_employee_no(db, current.tenant_id),
+        employee_no=body.employee_no or next_employee_no(db, current.tenant_id),
         name=body.name,
         org_unit_id=body.org_unit_id,
         designation=body.designation,

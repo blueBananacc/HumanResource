@@ -178,7 +178,9 @@ function EditModal({
     const addr = String(fd.get("address") || "").trim();
     const emergency = String(fd.get("emergency_contact") || "").trim();
     if (addr) personal["住址"] = addr;
+    else delete personal["住址"];
     if (emergency) personal["紧急联系人"] = emergency;
+    else delete personal["紧急联系人"];
     mut.mutate({
       phone: String(fd.get("phone") || "").trim() || null,
       personal,

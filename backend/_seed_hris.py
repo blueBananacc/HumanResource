@@ -21,7 +21,8 @@ import urllib.request
 import urllib.error
 from datetime import date, timedelta
 
-BASE = os.environ.get("SEED_BASE", "http://localhost:8000/api")
+# 默认打 nginx 网关(:80);backend 容器不对外发布端口,8000 是宿主机上别的服务
+BASE = os.environ.get("SEED_BASE", "http://localhost/api")
 ADMIN_EMAIL = "admin@example.com"
 ADMIN_PASSWORD = "admin123456"
 EMP_PASSWORD = "Emp@123456"
@@ -381,7 +382,8 @@ def main():
                 f"(gen_random_uuid()::text, (SELECT tenant_id FROM employees WHERE id='{e['id']}'), "
                 f"'{e['id']}', '{wd} 18:1{len(lines)%6}:00', 'out', 'web');"
             )
-    with open("_seed_checkins.sql", "w", encoding="utf-8") as f:
+    sql_path = os.path.join(os.path.dirname(__file__), "_seed_checkins.sql")
+    with open(sql_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
     print()

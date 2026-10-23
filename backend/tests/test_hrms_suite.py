@@ -32,7 +32,6 @@ from app.domain.models import (  # noqa: E402
     Attendance,
     AuditLog,
     Base,
-    Employee,
     LeaveApplication,
     OrgUnit,
     Tenant,
@@ -760,6 +759,61 @@ def test_performance_cycle_flow(db_session):
         _cleanup(db_session, t)
 
 
+def test_closed_cycle_blocks_self_submit_and_review(db_session):
+    """周期关闭后:员工不能再自评,主管不能再评定。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        emp, ess = _mk_ess_employee(client, _hdr(admin))
+        res = client.post(
+            "/api/performance/cycles", headers=_hdr(admin),
+            json={"name": "2026 Q3", "period_start": "2026-07-01",
+                  "period_end": "2026-09-30"},
+        )
+        cid = res.json()["id"]
+        client.post(f"/api/performance/cycles/{cid}/open", headers=_hdr(admin))
+        res = client.post(
+            "/api/performance/appraisals", headers=_hdr(admin),
+            json={"cycle_id": cid, "employee_ids": [emp["id"]]},
+        )
+        aid = res.json()[0]["id"]
+
+        # 关闭周期 → 自评被拒
+        client.post(f"/api/performance/cycles/{cid}/close", headers=_hdr(admin))
+        res = client.post(
+            f"/api/me/appraisals/{aid}/submit-self", headers=ess,
+            json={"self_review": "补交", "self_rating": 5},
+        )
+        assert res.status_code == 400
+
+        # 已提交自评的考核,关闭后主管也不能再评
+        res = client.post(
+            "/api/performance/cycles", headers=_hdr(admin),
+            json={"name": "2026 Q4", "period_start": "2026-10-01",
+                  "period_end": "2026-12-31"},
+        )
+        cid2 = res.json()["id"]
+        client.post(f"/api/performance/cycles/{cid2}/open", headers=_hdr(admin))
+        res = client.post(
+            "/api/performance/appraisals", headers=_hdr(admin),
+            json={"cycle_id": cid2, "employee_ids": [emp["id"]]},
+        )
+        aid2 = res.json()[0]["id"]
+        client.post(
+            f"/api/me/appraisals/{aid2}/submit-self", headers=ess,
+            json={"self_review": "Q4 自评", "self_rating": 3},
+        )
+        client.post(f"/api/performance/cycles/{cid2}/close", headers=_hdr(admin))
+        res = client.post(
+            f"/api/performance/appraisals/{aid2}/review", headers=_hdr(admin),
+            json={"manager_review": "达标", "manager_rating": 4},
+        )
+        assert res.status_code == 400
+    finally:
+        _cleanup(db_session, t)
+
+
 def test_expense_claim_flow(db_session):
     t = _tenant(db_session)
     admin = _user(db_session, t, role="admin")
@@ -797,6 +851,8 @@ def test_expense_claim_flow(db_session):
 
         res = client.get("/api/me/expense-claims", headers=ess)
         assert res.json()[0]["status"] == "paid"
+        # 回归:多明细报销单在 ESS 列表里必须保留全部明细
+        assert len(res.json()[0]["items"]) == 2
     finally:
         _cleanup(db_session, t)
 

@@ -200,7 +200,12 @@ def update_slip(
     s = _slip(db, sid, current.tenant_id)
     if s.status != "draft":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "已发放的工资条先回收再改")
+    emp = db.get(Employee, body.employee_id)
+    if not emp or emp.tenant_id != current.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "员工不存在")
     gross, ded, net = _totals(body.items)
+    s.employee_id = emp.id
+    s.period = body.period
     s.items = [i.model_dump() for i in body.items]
     s.gross, s.deductions, s.net = gross, ded, net
     s.currency = body.currency
@@ -209,7 +214,13 @@ def update_slip(
         db, actor=current, entity_type="salary_slip", entity_id=s.id,
         action="update", detail={"net": s.net}, request=request,
     )
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "该员工此期间的工资条已存在"
+        )
     db.refresh(s)
     emps, orgs = _maps(db, current.tenant_id)
     return _slip_out(s, emps, orgs)

@@ -112,12 +112,11 @@ def me_profile_update(
     current: User = Depends(get_current_user),
 ):
     e = _me(db, current)
-    if body.phone is not None:
+    # model_fields_set:显式传 null = 清空;不传字段才不覆盖
+    if "phone" in body.model_fields_set:
         e.phone = body.phone
-    if body.personal is not None:
-        merged = dict(e.personal or {})
-        merged.update(body.personal)
-        e.personal = merged
+    if "personal" in body.model_fields_set:
+        e.personal = body.personal
     e.updated_at = _now()
     db.commit()
     return me_profile(db, current)
@@ -291,7 +290,10 @@ def me_leave_cancel(
     current: User = Depends(get_current_user),
 ):
     e = _me(db, current)
-    a = db.get(LeaveApplication, app_id)
+    # FOR UPDATE:approved 撤销会写返还台账,与审批并发时必须先锁行
+    a = db.execute(
+        select(LeaveApplication).where(LeaveApplication.id == app_id).with_for_update()
+    ).scalar_one_or_none()
     if not a or a.employee_id != e.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "申请不存在")
     if a.status not in ("pending", "approved"):
@@ -538,14 +540,13 @@ def me_claims(db: Session = Depends(get_db), current: User = Depends(get_current
     types = {t.id: t for t in db.scalars(
         select(ExpenseType).where(ExpenseType.tenant_id == current.tenant_id)
     )}
-    items = {i.claim_id: i for i in db.scalars(
+    # group items — dict keyed by claim_id would keep only the last row per claim
+    by_claim: dict[str, list[ExpenseItem]] = {}
+    for i in db.scalars(
         select(ExpenseItem).where(
             ExpenseItem.claim_id.in_([c.id for c in rows] or ["__none__"])
         )
-    )}
-    # group items
-    by_claim: dict[str, list[ExpenseItem]] = {}
-    for i in items.values():
+    ):
         by_claim.setdefault(i.claim_id, []).append(i)
     out = []
     for c in rows:
@@ -720,12 +721,14 @@ def me_appraisal_submit(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "考核表不存在")
     if a.status != "draft":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "已提交,不能重复自评")
+    cycle = db.get(AppraisalCycle, a.cycle_id)
+    if not cycle or cycle.status != "open":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "考核周期未开启或已关闭")
     a.self_review = body.self_review.strip()
     a.self_rating = body.self_rating
     a.status = "self_submitted"
     a.updated_at = _now()
     db.commit()
-    cycle = db.get(AppraisalCycle, a.cycle_id)
     return MeAppraisalOut(
         id=a.id, cycle_id=a.cycle_id, cycle_name=cycle.name if cycle else "?",
         status=a.status, self_review=a.self_review, self_rating=a.self_rating,
