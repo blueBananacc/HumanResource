@@ -28,8 +28,12 @@ const TITLE_BY_PATH: Record<string, string> = {
   "/leave": "请假审批",
   "/leave/balances": "假期额度",
   "/leave/types": "假期类型",
+  "/leave/policies": "假期政策",
   "/attendance": "考勤记录",
   "/attendance/checkins": "打卡流水",
+  "/attendance/requests": "补卡审批",
+  "/attendance/calendar": "节假日历",
+  "/overtime": "加班审批",
   "/requisitions": "招聘需求审批",
   "/offers": "Offer 管理",
   "/performance": "目标管理",
@@ -76,8 +80,13 @@ export function AppShell() {
   if (user.role === "employee" && !loc.pathname.startsWith("/me")) {
     return <Navigate to="/me" replace />;
   }
-  // 非员工角色反过来也别进 /me(后端 /api/me 只对绑定了员工的账号开放)
-  if (user.role !== "employee" && loc.pathname.startsWith("/me")) {
+  // 非员工角色若绑定了员工档案(用人经理等)也可进 /me 自助区 ——
+  // 后端 /api/me 同样只对绑定账号开放;未绑定的访问回首页。
+  if (
+    user.role !== "employee" &&
+    loc.pathname.startsWith("/me") &&
+    !user.employee_id
+  ) {
     return <Navigate to="/" replace />;
   }
 

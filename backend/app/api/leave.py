@@ -28,8 +28,10 @@ from app.domain.models import (
     LeaveAllocation,
     LeaveApplication,
     LeaveLedgerEntry,
+    LeavePolicy,
     LeaveType,
     OrgUnit,
+    OvertimeRequest,
     User,
 )
 from app.infra.db import get_db
@@ -38,11 +40,13 @@ from app.services.permissions import (
     PERM_APPROVE_LEAVE,
     PERM_MANAGE_LEAVE,
     PERM_VIEW_REPORTS,
+    can_decide_for_employee,
     get_linked_employee_id,
     require_permission,
     team_ids_with_self,
     visible_employee_ids,
 )
+from app.services.work_calendar import holiday_map, is_workday, workday_set
 
 router = APIRouter(prefix="/leave", tags=["hris-leave"], dependencies=[Depends(require_feature("hr.suite"))])
 
@@ -54,6 +58,8 @@ class LeaveTypeIn(BaseModel):
     name: str
     annual_days: float = Field(0, ge=0, le=365)
     is_paid: bool = True
+    # 调休类型:加班申请批准后把额度结算到这类类型(额度来自加班而非年度发放)
+    is_comp: bool = False
 
     @field_validator("name")
     @classmethod
@@ -69,6 +75,7 @@ class LeaveTypeOut(BaseModel):
     name: str
     annual_days: float
     is_paid: bool
+    is_comp: bool = False
     allocated_days: float = 0
     used_days: float = 0
 
@@ -226,19 +233,9 @@ def _locked_app(db: Session, app_id: str) -> LeaveApplication | None:
 
 
 def _can_approve(db: Session, user: User, app: LeaveApplication) -> bool:
-    """admin/hr 都能批;hiring_manager 仅直属下属;任何人不能批自己的申请。"""
-    target = db.get(Employee, app.employee_id)
-    if not target:
-        return False
-    # 职责分离:审批人与申请人是同一登录账号(含绑定了员工档案的 admin/hr)时拒绝
-    if target.user_id == user.id:
-        return False
-    if user.role in ("admin", "hr"):
-        return True
-    if user.role == "hiring_manager":
-        mgr_emp = get_linked_employee_id(db, user)
-        return bool(mgr_emp and target.reports_to_id == mgr_emp)
-    return False
+    """admin/hr 都能批;hiring_manager 仅直属下属;任何人不能批自己的申请。
+    与补卡/加班审批共用 services.permissions.can_decide_for_employee 同一口径。"""
+    return can_decide_for_employee(db, user, app.employee_id)
 
 
 def _write_ledger(
@@ -254,11 +251,20 @@ def _write_ledger(
 def _mark_attendance_leave(
     db: Session, *, tenant_id: str, employee_id: str, start, end
 ) -> None:
-    """请假审批通过时把区间内考勤标记为 leave(撤销路径在 hr_me 删行重算)。"""
+    """请假审批通过时把区间内考勤标记为 leave(撤销路径在 hr_me 删行重算)。
+
+    只写工作日:周末/节假日不算请假,保持台账扣的天数与考勤标记的天数
+    口径一致(请假校验已按工作日数卡 days)。
+    """
     from datetime import timedelta
 
+    wd = workday_set(db, tenant_id)
+    hols = holiday_map(db, tenant_id, start, end)
     day = start
     while day <= end:
+        if not is_workday(day, wd, hols):
+            day += timedelta(days=1)
+            continue
         att = db.scalars(
             select(Attendance).where(
                 Attendance.employee_id == employee_id, Attendance.day == day
@@ -303,7 +309,7 @@ def list_types(
         ) or 0
         out.append(LeaveTypeOut(
             id=t.id, name=t.name, annual_days=t.annual_days, is_paid=t.is_paid,
-            allocated_days=alloc, used_days=used,
+            is_comp=t.is_comp, allocated_days=alloc, used_days=used,
         ))
     return out
 
@@ -315,14 +321,16 @@ def create_type(
     current: User = Depends(require_permission(PERM_MANAGE_LEAVE)),
 ):
     t = LeaveType(tenant_id=current.tenant_id, name=body.name,
-                  annual_days=body.annual_days, is_paid=body.is_paid)
+                  annual_days=body.annual_days, is_paid=body.is_paid,
+                  is_comp=body.is_comp)
     db.add(t)
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, "假期类型已存在")
-    return LeaveTypeOut(id=t.id, name=t.name, annual_days=t.annual_days, is_paid=t.is_paid)
+    return LeaveTypeOut(id=t.id, name=t.name, annual_days=t.annual_days,
+                        is_paid=t.is_paid, is_comp=t.is_comp)
 
 
 @router.put("/types/{type_id}", response_model=LeaveTypeOut)
@@ -335,18 +343,33 @@ def update_type(
     t = db.get(LeaveType, type_id)
     if not t or t.tenant_id != current.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "假期类型不存在")
-    t.name, t.annual_days, t.is_paid = body.name, body.annual_days, body.is_paid
+    # 改成调休类型前先确认没被政策引用:政策包里出现调休类型是死配置
+    # (run 会跳过),不如直接拦住让管理员先解引用
+    if body.is_comp and not t.is_comp and any(
+        it.get("leave_type_id") == t.id
+        for p in db.scalars(
+            select(LeavePolicy).where(LeavePolicy.tenant_id == current.tenant_id)
+        )
+        for it in (p.items or [])
+    ):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "该类型已被假期政策引用,先从政策中移除")
+    t.name, t.annual_days, t.is_paid, t.is_comp = (
+        body.name, body.annual_days, body.is_paid, body.is_comp
+    )
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, "假期类型已存在")
-    return LeaveTypeOut(id=t.id, name=t.name, annual_days=t.annual_days, is_paid=t.is_paid)
+    return LeaveTypeOut(id=t.id, name=t.name, annual_days=t.annual_days,
+                        is_paid=t.is_paid, is_comp=t.is_comp)
 
 
 @router.delete("/types/{type_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_type(
     type_id: str,
+    request: Request,
     db: Session = Depends(get_db),
     current: User = Depends(require_permission(PERM_MANAGE_LEAVE)),
 ):
@@ -358,8 +381,29 @@ def delete_type(
     ).first()
     if used:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "该类型下已有请假申请,不能删除")
+    # 调休类型挂的加班申请也是 FK CASCADE:不拦的话删除类型会把审批
+    # 历史连同已入账的额度一起抹掉,与"有申请不能删"的语义不一致。
+    if db.scalars(
+        select(OvertimeRequest.id)
+        .where(OvertimeRequest.leave_type_id == t.id).limit(1)
+    ).first():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "该类型下已有加班申请,不能删除")
+    if any(
+        it.get("leave_type_id") == t.id
+        for p in db.scalars(
+            select(LeavePolicy).where(LeavePolicy.tenant_id == current.tenant_id)
+        )
+        for it in (p.items or [])
+    ):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "该类型已被假期政策引用,先从政策中移除")
+    # 该类型下没有申请才允许删;其额度与台账条目随 leave_types.id 的
+    # ON DELETE CASCADE 一并清掉,子台账自洽不留孤儿行。
     db.query(LeaveAllocation).filter(LeaveAllocation.leave_type_id == t.id).delete()
     db.delete(t)
+    write_audit(
+        db, actor=current, entity_type="leave_type", entity_id=t.id,
+        action="delete", detail={"name": t.name}, request=request,
+    )
     db.commit()
 
 
@@ -717,3 +761,331 @@ def ledger(
         ) for e in rows],
         total=total, limit=limit, offset=offset,
     )
+
+
+# ============ policies(假期政策:自动发放 + 年度结转)============
+
+
+class PolicyItemIn(BaseModel):
+    leave_type_id: str
+    days: float = Field(..., ge=0, le=365)
+
+    @field_validator("days")
+    @classmethod
+    def _v_days(cls, v: float) -> float:
+        return _validate_half_day(v)
+
+
+class PolicyIn(BaseModel):
+    name: str
+    items: list[PolicyItemIn] = Field(..., min_length=1)
+    # 结转到下一年的额度上限;None 表示不结转
+    carry_forward: float | None = Field(None, ge=0, le=365)
+
+    @field_validator("name")
+    @classmethod
+    def _v_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("名称不能为空")
+        return v
+
+
+class PolicyItemOut(BaseModel):
+    leave_type_id: str
+    leave_type_name: str
+    days: float
+
+
+class PolicyOut(BaseModel):
+    id: str
+    name: str
+    items: list[PolicyItemOut]
+    carry_forward: float | None
+    assigned_count: int
+    created_at: datetime
+
+
+class PolicyAssignIn(BaseModel):
+    employee_ids: list[str] = Field(..., min_length=1)
+
+
+class PolicyRunIn(BaseModel):
+    year: int = Field(..., ge=2000, le=2100)
+
+
+def _check_policy_types(db: Session, tenant_id: str, items: list[PolicyItemIn]) -> None:
+    for it in items:
+        lt = db.get(LeaveType, it.leave_type_id)
+        if not lt or lt.tenant_id != tenant_id:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "政策包含不存在的假期类型")
+        # 调休额度只能来自加班结算:政策 run 是 set-total 语义,放进调休类型
+        # 会把员工加班攒下的额度按目标天数静默清零
+        if lt.is_comp:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "调休类型的额度只能来自加班结算,不能放进政策包",
+            )
+
+
+def _policy_out(db: Session, p: LeavePolicy, tenant_id: str) -> PolicyOut:
+    types = _type_map(db, tenant_id)
+    n = db.scalar(
+        select(func.count()).select_from(Employee).where(
+            Employee.leave_policy_id == p.id
+        )
+    ) or 0
+    return PolicyOut(
+        id=p.id, name=p.name,
+        items=[PolicyItemOut(
+            leave_type_id=it["leave_type_id"],
+            leave_type_name=types[it["leave_type_id"]].name
+            if it["leave_type_id"] in types else "?",
+            days=it["days"],
+        ) for it in (p.items or [])],
+        carry_forward=p.carry_forward, assigned_count=n, created_at=p.created_at,
+    )
+
+
+def _apply_policy(
+    db: Session, tenant_id: str, employee_id: str, policy: LeavePolicy, year: int
+) -> None:
+    """按政策对齐某员工的当年额度。
+
+    set-total 语义:目标天数 = 政策天数 + 上年结转(carry_forward 封顶),
+    差额写台账 ``policy_run`` —— 重复 run 幂等(delta=0 不再记账)。
+    """
+    for item in policy.items or []:
+        lt_id, days = item["leave_type_id"], item["days"]
+        lt = db.get(LeaveType, lt_id)
+        if not lt or lt.tenant_id != tenant_id:
+            continue
+        # 防御:存量政策项的类型后来被改成调休 — 跳过,不清加班攒的额度
+        if lt.is_comp:
+            continue
+        carry = 0.0
+        if policy.carry_forward:
+            prev = db.scalars(
+                select(LeaveAllocation).where(
+                    LeaveAllocation.employee_id == employee_id,
+                    LeaveAllocation.leave_type_id == lt_id,
+                    LeaveAllocation.year == year - 1,
+                )
+            ).first()
+            if prev:
+                used = db.scalar(
+                    select(func.coalesce(func.sum(LeaveApplication.days), 0)).where(
+                        LeaveApplication.employee_id == employee_id,
+                        LeaveApplication.leave_type_id == lt_id,
+                        LeaveApplication.status == "approved",
+                        func.extract("year", LeaveApplication.start_date) == year - 1,
+                    )
+                ) or 0
+                carry = min(max(0.0, prev.days - used), policy.carry_forward)
+        target = days + carry
+        # 已休部分不回收:目标低于当年已批用量时按用量对齐,余额不为负
+        used_y = float(db.scalar(
+            select(func.coalesce(func.sum(LeaveApplication.days), 0)).where(
+                LeaveApplication.employee_id == employee_id,
+                LeaveApplication.leave_type_id == lt_id,
+                LeaveApplication.status == "approved",
+                func.extract("year", LeaveApplication.start_date) == year,
+            )
+        ) or 0)
+        target = max(target, used_y)
+        alloc = db.scalars(
+            select(LeaveAllocation).where(
+                LeaveAllocation.employee_id == employee_id,
+                LeaveAllocation.leave_type_id == lt_id,
+                LeaveAllocation.year == year,
+            )
+        ).first()
+        if alloc:
+            delta = target - alloc.days
+            alloc.days = target
+        else:
+            alloc = LeaveAllocation(
+                tenant_id=tenant_id, employee_id=employee_id,
+                leave_type_id=lt_id, year=year, days=target,
+                note=f"政策「{policy.name}」发放",
+            )
+            db.add(alloc)
+            db.flush()
+            delta = target
+        if delta != 0:
+            _write_ledger(
+                db, tenant_id=tenant_id, employee_id=employee_id,
+                leave_type_id=lt_id, year=year, delta=delta,
+                ref_type="policy_run", ref_id=policy.id,
+                note=f"政策「{policy.name}」{year} 年发放"
+                     + (f"(含上年结转 {carry})" if carry else ""),
+            )
+
+
+@router.get("/policies", response_model=list[PolicyOut])
+def list_policies(
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_LEAVE)),
+):
+    rows = db.scalars(
+        select(LeavePolicy).where(LeavePolicy.tenant_id == current.tenant_id)
+        .order_by(LeavePolicy.created_at.desc())
+    ).all()
+    return [_policy_out(db, p, current.tenant_id) for p in rows]
+
+
+@router.post("/policies", response_model=PolicyOut, status_code=status.HTTP_201_CREATED)
+def create_policy(
+    body: PolicyIn,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_LEAVE)),
+):
+    _check_policy_types(db, current.tenant_id, body.items)
+    p = LeavePolicy(
+        tenant_id=current.tenant_id, name=body.name,
+        items=[{"leave_type_id": it.leave_type_id, "days": it.days}
+               for it in body.items],
+        carry_forward=body.carry_forward,
+    )
+    db.add(p)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "假期政策已存在") from None
+    return _policy_out(db, p, current.tenant_id)
+
+
+@router.put("/policies/{policy_id}", response_model=PolicyOut)
+def update_policy(
+    policy_id: str,
+    body: PolicyIn,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_LEAVE)),
+):
+    p = db.get(LeavePolicy, policy_id)
+    if not p or p.tenant_id != current.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "假期政策不存在")
+    _check_policy_types(db, current.tenant_id, body.items)
+    p.name = body.name
+    p.items = [{"leave_type_id": it.leave_type_id, "days": it.days}
+               for it in body.items]
+    p.carry_forward = body.carry_forward
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "假期政策已存在") from None
+    return _policy_out(db, p, current.tenant_id)
+
+
+@router.delete("/policies/{policy_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_policy(
+    policy_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_LEAVE)),
+):
+    p = db.get(LeavePolicy, policy_id)
+    if not p or p.tenant_id != current.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "假期政策不存在")
+    bound = db.scalars(
+        select(Employee.id).where(Employee.leave_policy_id == p.id).limit(1)
+    ).first()
+    if bound:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "仍有员工绑定该政策,先解除绑定再删除")
+    write_audit(
+        db, actor=current, entity_type="leave_policy", entity_id=p.id,
+        action="delete", detail={"name": p.name}, request=request,
+    )
+    db.delete(p)
+    db.commit()
+
+
+@router.post("/policies/{policy_id}/assign")
+def assign_policy(
+    policy_id: str,
+    body: PolicyAssignIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_LEAVE)),
+):
+    """给员工挂政策并立即按当年发放额度。"""
+    p = db.get(LeavePolicy, policy_id)
+    if not p or p.tenant_id != current.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "假期政策不存在")
+    year = datetime.now().year
+    assigned = 0
+    for emp_id in body.employee_ids:
+        emp = db.get(Employee, emp_id)
+        if not emp or emp.tenant_id != current.tenant_id:
+            continue
+        emp.leave_policy_id = p.id
+        _apply_policy(db, current.tenant_id, emp.id, p, year)
+        assigned += 1
+    write_audit(
+        db, actor=current, entity_type="leave_policy", entity_id=p.id,
+        action="assign", detail={"employee_ids": body.employee_ids, "year": year},
+        request=request,
+    )
+    db.commit()
+    return {"assigned": assigned, "year": year}
+
+
+@router.post("/policies/{policy_id}/unassign")
+def unassign_policy(
+    policy_id: str,
+    body: PolicyAssignIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_LEAVE)),
+):
+    """解除绑定(已发放的额度保留,不回冲)。"""
+    p = db.get(LeavePolicy, policy_id)
+    if not p or p.tenant_id != current.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "假期政策不存在")
+    n = 0
+    for emp_id in body.employee_ids:
+        emp = db.get(Employee, emp_id)
+        if emp and emp.tenant_id == current.tenant_id and emp.leave_policy_id == p.id:
+            emp.leave_policy_id = None
+            n += 1
+    write_audit(
+        db, actor=current, entity_type="leave_policy", entity_id=p.id,
+        action="unassign", detail={"employee_ids": body.employee_ids},
+        request=request,
+    )
+    db.commit()
+    return {"unassigned": n}
+
+
+@router.post("/policies/{policy_id}/run")
+def run_policy(
+    policy_id: str,
+    body: PolicyRunIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_LEAVE)),
+):
+    """年度发放:对全部绑定员工按政策对齐 year 的额度(含上年结转)。"""
+    p = db.get(LeavePolicy, policy_id)
+    if not p or p.tenant_id != current.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "假期政策不存在")
+    emps = db.scalars(
+        select(Employee).where(
+            Employee.tenant_id == current.tenant_id,
+            Employee.leave_policy_id == p.id,
+        )
+    ).all()
+    for emp in emps:
+        _apply_policy(db, current.tenant_id, emp.id, p, body.year)
+    write_audit(
+        db, actor=current, entity_type="leave_policy", entity_id=p.id,
+        action="run", detail={"year": body.year, "employees": len(emps)},
+        request=request,
+    )
+    db.commit()
+    return {"applied": len(emps), "year": body.year}

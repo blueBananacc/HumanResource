@@ -26,26 +26,26 @@ export function MeDashboard() {
     queryKey: ["me-profile"],
     queryFn: () => fetchJSON("/api/me/profile"),
   });
-  const { data: balances } = useQuery<MeBalance[]>({
+  const { data: balances, isLoading: balLoading } = useQuery<MeBalance[]>({
     queryKey: ["me-balances"],
     queryFn: () => fetchJSON("/api/me/leave-balances"),
   });
-  const { data: today } = useQuery<MeAttendance[]>({
+  const { data: today, isLoading: todayLoading } = useQuery<MeAttendance[]>({
     queryKey: ["me-attendance-today"],
     queryFn: () => {
       const m = new Date().toISOString().slice(0, 7);
       return fetchJSON(`/api/me/attendance?month=${m}`);
     },
   });
-  const { data: checkins } = useQuery<MeCheckin[]>({
+  const { data: checkins, isLoading: checkinLoading } = useQuery<MeCheckin[]>({
     queryKey: ["me-checkins"],
     queryFn: () => fetchJSON("/api/me/checkins"),
   });
-  const { data: slips } = useQuery<MeSlip[]>({
+  const { data: slips, isLoading: slipsLoading } = useQuery<MeSlip[]>({
     queryKey: ["me-slips"],
     queryFn: () => fetchJSON("/api/me/salary-slips"),
   });
-  const { data: apps } = useQuery<MeApplication[]>({
+  const { data: apps, isLoading: appsLoading } = useQuery<MeApplication[]>({
     queryKey: ["me-leave-apps"],
     queryFn: () => fetchJSON("/api/me/leave-applications"),
   });
@@ -76,7 +76,9 @@ export function MeDashboard() {
           to="/me/leave"
           action="去请假"
         >
-          {(balances ?? []).length === 0 ? (
+          {balLoading ? (
+            <CardLoading />
+          ) : (balances ?? []).length === 0 ? (
             <div className="text-[13px] text-[var(--color-text-tertiary)] font-body">
               暂无额度
             </div>
@@ -100,7 +102,9 @@ export function MeDashboard() {
         </Card>
 
         <Card icon={Clock} title="今日考勤" to="/me/attendance" action="去打卡">
-          {todayAtt ? (
+          {todayLoading || checkinLoading ? (
+            <CardLoading />
+          ) : todayAtt ? (
             <div className="flex flex-col gap-1.5 text-[13px] font-body">
               <div className="flex items-center gap-2">
                 <StatusPill status={todayAtt.status} />
@@ -129,7 +133,9 @@ export function MeDashboard() {
           to="/me/payslips"
           action="查看全部"
         >
-          {(slips ?? []).length === 0 ? (
+          {slipsLoading ? (
+            <CardLoading />
+          ) : (slips ?? []).length === 0 ? (
             <div className="text-[13px] text-[var(--color-text-tertiary)] font-body">
               暂无工资条
             </div>
@@ -158,7 +164,9 @@ export function MeDashboard() {
           to="/me/leave"
           action="查看"
         >
-          {pending.length === 0 ? (
+          {appsLoading ? (
+            <CardLoading />
+          ) : pending.length === 0 ? (
             <div className="text-[13px] text-[var(--color-text-tertiary)] font-body">
               没有在途申请
             </div>
@@ -186,6 +194,14 @@ export function MeDashboard() {
         <QuickLink to="/me/profile" icon={UserRound} label="我的资料" />
       </div>
     </main>
+  );
+}
+
+function CardLoading() {
+  return (
+    <div className="text-[13px] text-[var(--color-text-tertiary)] font-body">
+      加载中…
+    </div>
   );
 }
 

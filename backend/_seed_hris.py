@@ -196,15 +196,21 @@ def main():
         )
 
     def _apply(emp_tok, emp_id, lt_id, offset: int, span: int, reason: str):
-        """幂等建申请:窗口与该员工现有申请重叠就往后挪一周再找。"""
+        """幂等建申请:窗口与该员工现有申请重叠就往后挪一周再找。
+
+        days 不传,由服务端按工作日历算(周末/节假日不算请假);
+        全周末窗口(0 个工作日)直接跳过。
+        """
         for shift in range(0, 366, 7):
             s = date.today() + timedelta(days=offset + shift)
             e = s + timedelta(days=span - 1)
-            if _overlaps(emp_id, s, e):
+            wd = sum(1 for i in range((e - s).days + 1)
+                     if (s + timedelta(days=i)).weekday() < 5)
+            if wd == 0 or _overlaps(emp_id, s, e):
                 continue
             r = req("POST", "/me/leave-applications", emp_tok, {
                 "leave_type_id": lt_id, "start_date": str(s),
-                "end_date": str(e), "days": span, "reason": reason,
+                "end_date": str(e), "reason": reason,
             })
             apps.append({"employee_id": emp_id, "status": "pending",
                          "start_date": str(s), "end_date": str(e)})
@@ -224,6 +230,32 @@ def main():
         req("POST", f"/leave/applications/{r['id']}/reject", tok, {"note": "事假天数超限,请拆分"})
         apps[-1]["status"] = "rejected"
         print(f"  已驳回申请 → {r['id'][:8]}")
+
+    # ---------- 工作日历 / 节假日 ----------
+    print("== 工作日历/节假日 ==")
+    cal = req("GET", "/work-calendar", tok)
+    if cal["workdays"] != [1, 2, 3, 4, 5] or cal["workday_hours"] != 8:
+        req("PUT", "/work-calendar", tok,
+            {"workdays": [1, 2, 3, 4, 5], "workday_hours": 8})
+        print("  日历已重置为周一~周五 8h")
+    hols = {h["day"]: h for h in req("GET", "/work-calendar/holidays", tok)}
+    today = date.today()
+    y, m = today.year, today.month
+    # 当月最后一个周六作为调休补班示例
+    ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
+    month_end = (date(ny, nm, 1) - timedelta(days=1)).day
+    last_sat = max(d for d in range(22, month_end + 1)
+                   if date(y, m, d).weekday() == 5)
+    seed_hols = [
+        (date(y, m, 1), "月初司庆假", "holiday"),
+        (date(y, m, 15), "季度团建(放假)", "holiday"),
+        (date(y, m, last_sat), "调休补班", "workday"),
+    ]
+    for d, name, kind in seed_hols:
+        if str(d) not in hols:
+            req("POST", "/work-calendar/holidays", tok,
+                {"day": str(d), "name": name, "kind": kind}, quiet=True)
+            print(f"  {d} {name}({kind})")
 
     # ---------- 打卡 + 考勤 ----------
     print("== 打卡/考勤 ==")
@@ -388,6 +420,58 @@ def main():
             })
             req("POST", f"/payroll/slips/{s['id']}/issue", tok)
             print(f"  {e['name']} {period_s} 已发放")
+
+    # ---------- 调休/加班/补卡/假期政策 ----------
+    print("== 调休/加班/补卡/假期政策 ==")
+    types = {t["name"]: t for t in req("GET", "/leave/types", tok)}
+    if "调休假" not in types:
+        types["调休假"] = req("POST", "/leave/types", tok,
+                              {"name": "调休假", "annual_days": 0,
+                               "is_paid": True, "is_comp": True})
+        print("  调休假(is_comp)已建")
+    comp = types["调休假"]
+
+    policies = req("GET", "/leave/policies", tok)
+    pol = next((p for p in policies if p["name"] == "正式员工假勤包"), None)
+    if not pol:
+        pol = req("POST", "/leave/policies", tok, {
+            "name": "正式员工假勤包",
+            "items": [{"leave_type_id": annual["id"], "days": 10},
+                      {"leave_type_id": types["病假"]["id"], "days": 5}],
+            "carry_forward": 5,
+        })
+        print(f"  政策 正式员工假勤包 → {pol['id'][:8]}")
+    if pol["assigned_count"] == 0:
+        r = req("POST", f"/leave/policies/{pol['id']}/assign", tok, {
+            "employee_ids": [emp_by_no["EMP004"]["id"]],
+        })
+        print(f"  政策已绑定 EMP004,发放 {r['year']} 年额度")
+
+    att_reqs = req("GET", "/attendance/requests?limit=50", tok).get("items", [])
+    if not any(i["status"] == "pending" for i in att_reqs):
+        yesterday = today - timedelta(days=1)
+        r = req("POST", "/me/attendance-requests", emp1, {
+            "ts": f"{yesterday}T09:02:00Z", "kind": "in",
+            "reason": "早会直接进会议室,忘打卡"}, quiet=True)
+        if not r.get("_status"):
+            print(f"  待审批补卡 → {r['id'][:8]}")
+    ot_reqs = req("GET", "/overtime/requests?limit=50", tok).get("items", [])
+    if not any(i["status"] == "pending" for i in ot_reqs):
+        r = req("POST", "/me/overtime-requests", emp2, {
+            "leave_type_id": comp["id"],
+            "work_date": str(today - timedelta(days=2)),
+            "hours": 6, "reason": "版本发布加班"}, quiet=True)
+        if not r.get("_status"):
+            print(f"  待审批加班 → {r['id'][:8]}(折算 {r['comp_days']} 天)")
+    if not any(i["status"] == "approved" for i in ot_reqs):
+        r = req("POST", "/me/overtime-requests", emp1, {
+            "leave_type_id": comp["id"],
+            "work_date": str(today - timedelta(days=5)),
+            "hours": 8, "reason": "周末值班"}, quiet=True)
+        if not r.get("_status"):
+            req("POST", f"/overtime/requests/{r['id']}/approve", tok,
+                {"note": "记录属实"})
+            print(f"  已批加班 → 调休入账 {r['comp_days']} 天")
 
     # ---------- 历史打卡 SQL ----------
     emps_for_sql = [emp_by_no["EMP002"], emp_by_no["EMP003"], emp_by_no["EMP004"]]

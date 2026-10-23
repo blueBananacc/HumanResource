@@ -34,6 +34,9 @@ class UserOut(BaseModel):
     tenant_id: str
     org_unit_id: str | None
     permissions: list[str] = []
+    # 绑定的员工档案 id(employee.user_id == user.id);非 employee 角色
+    # 绑定后也能进 /me 自助区,前端据此放行 ESS 路由与导航入口。
+    employee_id: str | None = None
 
 
 class LoginResponse(BaseModel):
@@ -42,9 +45,9 @@ class LoginResponse(BaseModel):
     user: UserOut
 
 
-def _user_out(u: User) -> UserOut:
+def _user_out(u: User, db: Session | None = None) -> UserOut:
     # 延迟导入打破循环依赖:services.permissions 需要 get_current_user
-    from app.services.permissions import list_permissions
+    from app.services.permissions import get_linked_employee_id, list_permissions
 
     return UserOut(
         id=u.id,
@@ -53,6 +56,7 @@ def _user_out(u: User) -> UserOut:
         tenant_id=u.tenant_id,
         org_unit_id=u.org_unit_id,
         permissions=list_permissions(u),
+        employee_id=get_linked_employee_id(db, u) if db is not None else None,
     )
 
 
@@ -74,7 +78,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse:
     user.last_login_at = datetime.now(UTC).replace(tzinfo=None)
     db.commit()
     token = create_access_token(subject=user.id, email=user.email, role=user.role)
-    return LoginResponse(access_token=token, user=_user_out(user))
+    return LoginResponse(access_token=token, user=_user_out(user, db))
 
 
 def get_current_user(token: str | None = Depends(oauth2)) -> User:
@@ -108,5 +112,8 @@ def require_admin(current: User = Depends(get_current_user)) -> User:
 
 
 @router.get("/me", response_model=UserOut)
-def me(current: User = Depends(get_current_user)) -> UserOut:
-    return _user_out(current)
+def me(
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UserOut:
+    return _user_out(current, db)

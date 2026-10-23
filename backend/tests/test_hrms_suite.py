@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 os.environ.setdefault("MACHINE_FINGERPRINT_OVERRIDE", "test-machine-id-hris")
 
@@ -32,7 +32,10 @@ from app.domain.models import (  # noqa: E402
     Attendance,
     AuditLog,
     Base,
+    EmployeeCheckin,
+    LeaveAllocation,
     LeaveApplication,
+    LeaveType,
     OrgUnit,
     Tenant,
     User,
@@ -93,6 +96,8 @@ def _cleanup(db, *tenants: Tenant) -> None:
         m.JobOffer, m.JobRequisition,
         m.LifecycleTask, m.LifecycleEvent, m.LifecycleTemplate,
         m.Attendance, m.EmployeeCheckin,
+        m.AttendanceRequest, m.OvertimeRequest,
+        m.LeavePolicy, m.Holiday, m.WorkCalendar,
         m.LeaveLedgerEntry, m.LeaveApplication, m.LeaveAllocation, m.LeaveType,
         m.Employee,
     )
@@ -111,6 +116,18 @@ def _mk_emp(client, hdr, **kw) -> dict:
     res = client.post("/api/employees", headers=hdr, json=body)
     assert res.status_code == 201, res.text
     return res.json()
+
+
+def _wk_span(n_workdays: int, *, weeks_ahead: int = 2) -> tuple[date, date]:
+    """默认周一~周五工作制下,返回 n 个连续工作日的 (start, end) 区间。
+
+    起点取 ``weeks_ahead`` 周后的下周一,n<=5 时整段落在同一周内,
+    保证区间内工作日数恰为 n(不含节假日覆盖的租户用)。
+    """
+    assert 1 <= n_workdays <= 5, "辅助函数只支持同一周内的区间"
+    s = date.today() + timedelta(weeks=weeks_ahead)
+    s += timedelta(days=(7 - s.weekday()) % 7)  # 对齐到周一
+    return s, s + timedelta(days=n_workdays - 1)
 
 
 # ============ P0: 员工 + ESS ============
@@ -261,9 +278,8 @@ def test_leave_full_chain(db_session):
         )
         assert res.status_code == 201
 
-        # 员工申请 2 天
-        start = date.today() + timedelta(days=7)
-        end = start + timedelta(days=1)
+        # 员工申请 2 天(周一~周二,默认工作制下都是工作日)
+        start, end = _wk_span(2)
         res = client.post(
             "/api/me/leave-applications", headers=ess,
             json={"leave_type_id": lt["id"], "start_date": str(start),
@@ -317,7 +333,8 @@ def test_leave_full_chain(db_session):
                 Attendance.employee_id == emp["id"], Attendance.day == start
             )
         ).first()
-        assert att is None or att.status != "leave"
+        # 撤销后考勤就地重算:工作日、无打卡、无在途请假 → absent,而不是删行留空洞
+        assert att and att.status == "absent"
 
         # 余额恢复
         res = client.get("/api/me/leave-balances", headers=ess)
@@ -357,7 +374,7 @@ def test_leave_manager_team_scope(db_session):
 
         # 下属、路人各发一单
         for hdr_ess in (sub_ess, other_ess):
-            s = date.today() + timedelta(days=10)
+            s, _ = _wk_span(1, weeks_ahead=1)
             client.post(
                 "/api/me/leave-applications", headers=hdr_ess,
                 json={"leave_type_id": lt["id"], "start_date": str(s),
@@ -925,7 +942,7 @@ def test_leave_apps_all_scope_still_row_filtered(db_session):
             json={"email": hm.email},
         )
         for e in (sub_ess, other_ess):
-            s = date.today() + timedelta(days=15)
+            s, _ = _wk_span(1, weeks_ahead=2)
             client.post(
                 "/api/me/leave-applications", headers=e,
                 json={"leave_type_id": lt["id"], "start_date": str(s),
@@ -1233,7 +1250,7 @@ def test_self_approval_blocked(db_session):
         )
 
         # 请假:admin 自提 → 自批 403;hr 代批 200
-        s = date.today() + timedelta(days=20)
+        s, _ = _wk_span(1, weeks_ahead=3)
         app_id = client.post(
             "/api/me/leave-applications", headers=_hdr(admin),
             json={"leave_type_id": lt["id"], "start_date": str(s),
@@ -1392,7 +1409,7 @@ def test_half_day_validation(db_session):
         assert res.status_code == 201
 
         # ESS 申请:0.3 → 422;0.5 → 201
-        s = date.today() + timedelta(days=60)
+        s, _ = _wk_span(1, weeks_ahead=8)
         res = client.post(
             "/api/me/leave-applications", headers=ess,
             json={"leave_type_id": lt["id"], "start_date": str(s),
@@ -1405,5 +1422,848 @@ def test_half_day_validation(db_session):
                   "end_date": str(s), "days": 0.5},
         )
         assert res.status_code == 201, res.text
+    finally:
+        _cleanup(db_session, t)
+
+# ============ 回归修复:ESS 绑定账号 / 请假天数区间 / 台账收回 ============
+
+
+def test_bound_non_employee_ess_access(db_session):
+    """绑定员工档案的非 employee 角色(用人经理等)也能用 /me 自助区。
+
+    回归点:/auth/me 必须返回 employee_id,否则前端无法放行 ESS 路由;
+    绑定后该账号应能走 /api/me/profile、提交自己的请假申请。
+    """
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    hm = _user(db_session, t, role="hiring_manager")
+    client = TestClient(app)
+    try:
+        lt = _mk_leave_type(client, _hdr(admin))
+        mgr_emp = _mk_emp(client, _hdr(admin), name="经理")
+        res = client.post(
+            f"/api/employees/{mgr_emp['id']}/account", headers=_hdr(admin),
+            json={"email": hm.email},
+        )
+        assert res.status_code == 200
+
+        # /auth/me 返回 employee_id
+        res = client.get("/api/auth/me", headers=_hdr(hm))
+        assert res.status_code == 200
+        assert res.json()["employee_id"] == mgr_emp["id"]
+
+        # /api/me/* 可用:读档案 + 自己提交请假
+        res = client.get("/api/me/profile", headers=_hdr(hm))
+        assert res.status_code == 200
+        assert res.json()["name"] == "经理"
+
+        # 提交自己的请假 → 出现在管理端 pending 列表(scope=mine)
+        client.post(
+            "/api/leave/allocations", headers=_hdr(admin),
+            json={"employee_id": mgr_emp["id"], "leave_type_id": lt["id"],
+                  "year": date.today().year, "days": 10},
+        )
+        s, _ = _wk_span(1, weeks_ahead=12)
+        res = client.post(
+            "/api/me/leave-applications", headers=_hdr(hm),
+            json={"leave_type_id": lt["id"], "start_date": str(s),
+                  "end_date": str(s), "days": 1, "reason": "经理自己请假"},
+        )
+        assert res.status_code == 201, res.text
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_leave_days_must_match_span(db_session):
+    """请假天数只允许 = 区间工作日数 或 少一个半天,防止少扣额度换整段休假考勤。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        lt = _mk_leave_type(client, _hdr(admin))
+        emp, ess = _mk_ess_employee(client, _hdr(admin))
+        s, e = _wk_span(3)  # 周一~周三,3 个工作日
+
+        # days=1 对 3 个工作日 → 400
+        res = client.post(
+            "/api/me/leave-applications", headers=ess,
+            json={"leave_type_id": lt["id"], "start_date": str(s),
+                  "end_date": str(e), "days": 1, "reason": "钻空子"},
+        )
+        assert res.status_code == 400
+
+        # days=2.5(少一个半天)→ 201
+        res = client.post(
+            "/api/me/leave-applications", headers=ess,
+            json={"leave_type_id": lt["id"], "start_date": str(s),
+                  "end_date": str(e), "days": 2.5, "reason": "带半天"},
+        )
+        assert res.status_code == 201, res.text
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_leave_span_skips_weekends(db_session):
+    """跨周末的请假:days 按工作日算 — Fri~Mon 是 2 个工作日不是 4 天。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        lt = _mk_leave_type(client, _hdr(admin))
+        emp, ess = _mk_ess_employee(client, _hdr(admin))
+        mon, _ = _wk_span(1)
+        fri, next_mon = mon + timedelta(days=4), mon + timedelta(days=7)
+
+        # Fri~Mon = 4 个日历天但只有 2 个工作日:days=4 超过工作日数 → 400
+        res = client.post(
+            "/api/me/leave-applications", headers=ess,
+            json={"leave_type_id": lt["id"], "start_date": str(fri),
+                  "end_date": str(next_mon), "days": 4},
+        )
+        assert res.status_code == 400
+        # days=2 等于工作日数 → 201;不传 days 服务端也算 2
+        res = client.post(
+            "/api/me/leave-applications", headers=ess,
+            json={"leave_type_id": lt["id"], "start_date": str(fri),
+                  "end_date": str(next_mon), "days": 2},
+        )
+        assert res.status_code == 201, res.text
+
+        # 批准后考勤只标记工作日(Fri/Mon),周末两天无 leave 考勤行
+        app_id = res.json()["id"]
+        res = client.post(
+            f"/api/leave/applications/{app_id}/approve",
+            headers=_hdr(admin), json={},
+        )
+        assert res.status_code == 200
+        for d, want in ((fri, "leave"), (fri + timedelta(days=1), None),
+                        (fri + timedelta(days=2), None), (next_mon, "leave")):
+            att = db_session.scalars(
+                select(Attendance).where(
+                    Attendance.employee_id == emp["id"], Attendance.day == d
+                )
+            ).first()
+            if want is None:
+                assert not att or att.status != "leave"
+            else:
+                assert att and att.status == "leave"
+
+        # 整段重算考勤仍按同一口径:周末不能补出 leave 行(标 holiday),
+        # 否则台账扣 2 天而考勤标 4 天,两边对不上
+        res = client.post(
+            "/api/attendance/summarize", headers=_hdr(admin),
+            json={"start": str(fri), "end": str(next_mon)},
+        )
+        assert res.status_code == 200
+        for d, want in ((fri, "leave"), (fri + timedelta(days=1), "holiday"),
+                        (fri + timedelta(days=2), "holiday"),
+                        (next_mon, "leave")):
+            att = db_session.scalars(
+                select(Attendance).where(
+                    Attendance.employee_id == emp["id"], Attendance.day == d
+                )
+            ).first()
+            assert att and att.status == want, (d, att.status if att else None)
+
+        # 撤销后 leave 行就地重算回考勤口径(工作日 → absent,周末 → holiday),
+        # 不再出现"行被删光、整天无考勤"的空洞
+        res = client.post(
+            f"/api/me/leave-applications/{app_id}/cancel", headers=ess
+        )
+        assert res.status_code == 200
+        for d, want in ((fri, "absent"), (fri + timedelta(days=1), "holiday"),
+                        (fri + timedelta(days=2), "holiday"),
+                        (next_mon, "absent")):
+            att = db_session.scalars(
+                select(Attendance).where(
+                    Attendance.employee_id == emp["id"], Attendance.day == d
+                )
+            ).first()
+            assert att and att.status == want, (d, att.status if att else None)
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_delete_leave_type_leaves_no_orphans(db_session):
+    """删除假期类型:其额度与子台账随 FK CASCADE 清掉,不留孤儿行。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        lt = _mk_leave_type(client, _hdr(admin), name="调休假", days=3)
+        lt2 = _mk_leave_type(client, _hdr(admin), name="年假", days=10)
+        emp = _mk_emp(client, _hdr(admin))
+        res = client.post(
+            "/api/leave/allocations", headers=_hdr(admin),
+            json={"employee_id": emp["id"], "leave_type_id": lt["id"],
+                  "year": date.today().year, "days": 3},
+        )
+        assert res.status_code == 201
+        res = client.post(
+            "/api/leave/allocations", headers=_hdr(admin),
+            json={"employee_id": emp["id"], "leave_type_id": lt2["id"],
+                  "year": date.today().year, "days": 10},
+        )
+        assert res.status_code == 201
+
+        res = client.delete(f"/api/leave/types/{lt['id']}", headers=_hdr(admin))
+        assert res.status_code == 204
+
+        # 台账只剩年假类型的 +10,调休假的 +3 随级联清除(无孤儿行)
+        res = client.get("/api/leave/ledger", headers=_hdr(admin))
+        entries = res.json()["items"]
+        assert len(entries) == 1
+        assert entries[0]["delta_days"] == 10.0
+
+        # 其额度也一并删除
+        res = client.get("/api/leave/allocations", headers=_hdr(admin))
+        allocs = res.json()["items"]
+        assert len(allocs) == 1 and allocs[0]["leave_type_name"] == "年假"
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_delete_leave_type_blocked_by_refs(db_session):
+    """删除被引用的假期类型:挂着加班申请单 / 被假期政策引用的类型都要拒绝。
+
+    overtime_requests.leave_type_id 也是 ON DELETE CASCADE —— 不拦的话
+    删类型会把审批历史和已入账额度一起抹掉。
+    """
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        comp = client.post(
+            "/api/leave/types", headers=_hdr(admin),
+            json={"name": "调休假", "annual_days": 0, "is_paid": True,
+                  "is_comp": True},
+        )
+        assert comp.status_code == 201, comp.text
+        comp = comp.json()
+        emp, ess = _mk_ess_employee(client, _hdr(admin))
+
+        # 有加班申请(任意状态)→ 400
+        res = client.post(
+            "/api/me/overtime-requests", headers=ess,
+            json={"leave_type_id": comp["id"],
+                  "work_date": str(date.today() - timedelta(days=1)),
+                  "hours": 4},
+        )
+        assert res.status_code == 201, res.text
+        res = client.delete(
+            f"/api/leave/types/{comp['id']}", headers=_hdr(admin)
+        )
+        assert res.status_code == 400
+
+        # 被假期政策引用 → 400
+        plain = _mk_leave_type(client, _hdr(admin), name="婚假")
+        res = client.post(
+            "/api/leave/policies", headers=_hdr(admin),
+            json={"name": "含婚假的包",
+                  "items": [{"leave_type_id": plain["id"], "days": 3}]},
+        )
+        assert res.status_code == 201, res.text
+        res = client.delete(
+            f"/api/leave/types/{plain['id']}", headers=_hdr(admin)
+        )
+        assert res.status_code == 400
+
+        # 没有任何引用的普通类型仍可删
+        free = _mk_leave_type(client, _hdr(admin), name="公益假")
+        res = client.delete(
+            f"/api/leave/types/{free['id']}", headers=_hdr(admin)
+        )
+        assert res.status_code == 204
+    finally:
+        _cleanup(db_session, t)
+
+
+# ============ 工作日历 / 补卡 / 加班调休 / 假期政策(0031 workforce)============
+
+
+def test_work_calendar_holidays_and_attendance(db_session):
+    """工作日历配置 + 节假日覆盖 + workday-count + 考勤 holiday/absent 口径。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        # 默认日历:周一~周五 8h
+        res = client.get("/api/work-calendar", headers=_hdr(admin))
+        assert res.status_code == 200
+        assert res.json() == {"workdays": [1, 2, 3, 4, 5], "workday_hours": 8.0}
+
+        # 改成周一~周六、7.5h
+        res = client.put(
+            "/api/work-calendar", headers=_hdr(admin),
+            json={"workdays": [1, 2, 3, 4, 5, 6], "workday_hours": 7.5},
+        )
+        assert res.status_code == 200
+        assert res.json()["workday_hours"] == 7.5
+
+        mon, _ = _wk_span(1)
+        # 周一放假 → 那一周工作日数 = 5(周六补上了)
+        res = client.post(
+            "/api/work-calendar/holidays", headers=_hdr(admin),
+            json={"day": str(mon), "name": "司庆日", "kind": "holiday"},
+        )
+        assert res.status_code == 201
+        hid = res.json()["id"]
+        # 同一天重复 → 409
+        res = client.post(
+            "/api/work-calendar/holidays", headers=_hdr(admin),
+            json={"day": str(mon), "name": "重复", "kind": "holiday"},
+        )
+        assert res.status_code == 409
+        res = client.get(
+            f"/api/work-calendar/count?start={mon}&end={mon + timedelta(days=5)}",
+            headers=_hdr(admin),
+        )
+        assert res.json()["workdays"] == 5  # 6 个工作日制 - 1 天假
+
+        # ESS 端 workday-count 同口径
+        emp, ess = _mk_ess_employee(client, _hdr(admin))
+        res = client.get(
+            f"/api/me/workday-count?start={mon}&end={mon + timedelta(days=5)}",
+            headers=ess,
+        )
+        assert res.status_code == 200
+        assert res.json()["workdays"] == 5
+
+        # 汇总考勤:放假的周一(无打卡)→ holiday;正常工作日 → absent
+        res = client.post(
+            "/api/attendance/summarize", headers=_hdr(admin),
+            json={"start": str(mon), "end": str(mon + timedelta(days=2))},
+        )
+        assert res.status_code == 200
+        for d, want in ((mon, "holiday"), (mon + timedelta(days=1), "absent")):
+            att = db_session.scalars(
+                select(Attendance).where(
+                    Attendance.employee_id == emp["id"], Attendance.day == d
+                )
+            ).first()
+            assert att and att.status == want, (d, att.status if att else None)
+
+        # 删除节假日后重算:周一变回工作日 → absent
+        res = client.delete(
+            f"/api/work-calendar/holidays/{hid}", headers=_hdr(admin)
+        )
+        assert res.status_code == 204
+        res = client.post(
+            "/api/attendance/summarize", headers=_hdr(admin),
+            json={"start": str(mon), "end": str(mon)},
+        )
+        att = db_session.scalars(
+            select(Attendance).where(
+                Attendance.employee_id == emp["id"], Attendance.day == mon
+            )
+        ).first()
+        assert att.status == "absent"
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_attendance_request_chain(db_session):
+    """补卡申请:ESS 发起 → 审批补写 checkin 重算当日;驳回/撤销路径。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        emp, ess = _mk_ess_employee(client, _hdr(admin))
+        day = date.today() - timedelta(days=3)
+        ts = datetime(day.year, day.month, day.day, 9, 5)
+
+        # 未来时刻 → 400
+        res = client.post(
+            "/api/me/attendance-requests", headers=ess,
+            json={"ts": (datetime.now() + timedelta(days=1)).isoformat(),
+                  "kind": "in"},
+        )
+        assert res.status_code == 400
+
+        res = client.post(
+            "/api/me/attendance-requests", headers=ess,
+            json={"ts": ts.isoformat(), "kind": "in", "reason": "早会忘打卡"},
+        )
+        assert res.status_code == 201, res.text
+        req_id = res.json()["id"]
+
+        # 同日同向 pending 去重 → 400
+        res = client.post(
+            "/api/me/attendance-requests", headers=ess,
+            json={"ts": ts.replace(hour=10).isoformat(), "kind": "in"},
+        )
+        assert res.status_code == 400
+
+        # admin 列表可见并批准 → 补写 checkin(method=request)+ 当日 present
+        res = client.get(
+            "/api/attendance/requests?status=pending", headers=_hdr(admin)
+        )
+        assert any(i["id"] == req_id for i in res.json()["items"])
+        res = client.post(
+            f"/api/attendance/requests/{req_id}/approve",
+            headers=_hdr(admin), json={},
+        )
+        assert res.status_code == 200
+        res = client.get(f"/api/me/checkins?day={day}", headers=ess)
+        ck = [c for c in res.json() if c["kind"] == "in"]
+        assert ck and ck[0]["method"] == "request"
+        att = db_session.scalars(
+            select(Attendance).where(
+                Attendance.employee_id == emp["id"], Attendance.day == day
+            )
+        ).first()
+        assert att and att.status == "present" and att.first_in == ts
+
+        # 重复批准 → 400
+        assert client.post(
+            f"/api/attendance/requests/{req_id}/approve",
+            headers=_hdr(admin), json={},
+        ).status_code == 400
+
+        # 撤销已批准的 → 补写的 checkin 删除,考勤重算为非 present,
+        # 且 first_in/last_out/work_hours 一并清掉(不留已撤销的时刻)
+        res = client.post(
+            f"/api/me/attendance-requests/{req_id}/cancel", headers=ess
+        )
+        assert res.status_code == 200
+        db_session.refresh(att)
+        assert att.status in ("absent", "holiday")
+        assert att.first_in is None and att.last_out is None
+        assert att.work_hours is None
+
+        # 驳回路径:不发 checkin
+        ts2 = ts.replace(hour=18)
+        res = client.post(
+            "/api/me/attendance-requests", headers=ess,
+            json={"ts": ts2.isoformat(), "kind": "out", "reason": "忘签退"},
+        )
+        assert res.status_code == 201
+        rid = res.json()["id"]
+        res = client.post(
+            f"/api/attendance/requests/{rid}/reject",
+            headers=_hdr(admin), json={"note": "时间不对"},
+        )
+        assert res.status_code == 200
+        res = client.get(f"/api/me/checkins?day={day}", headers=ess)
+        assert not any(c["kind"] == "out" for c in res.json())
+
+        # 撤销 pending → cancelled
+        res = client.post(
+            "/api/me/attendance-requests", headers=ess,
+            json={"ts": ts2.isoformat(), "kind": "out"},
+        )
+        rid2 = res.json()["id"]
+        res = client.post(
+            f"/api/me/attendance-requests/{rid2}/cancel", headers=ess
+        )
+        assert res.status_code == 200
+        assert res.json()["status"] == "cancelled"
+
+        # 超长事由:批准时补写的 checkin.note 是 VARCHAR(256),截断防 DataError
+        ts3 = ts - timedelta(days=1)
+        res = client.post(
+            "/api/me/attendance-requests", headers=ess,
+            json={"ts": ts3.isoformat(), "kind": "in", "reason": "长" * 300},
+        )
+        assert res.status_code == 201, res.text
+        rid3 = res.json()["id"]
+        res = client.post(
+            f"/api/attendance/requests/{rid3}/approve",
+            headers=_hdr(admin), json={},
+        )
+        assert res.status_code == 200, res.text
+        ck3 = db_session.scalars(
+            select(EmployeeCheckin).where(
+                EmployeeCheckin.employee_id == emp["id"],
+                EmployeeCheckin.ts == ts3,
+            )
+        ).first()
+        assert ck3 and len(ck3.note) == 256
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_attendance_request_manager_scope(db_session):
+    """用人经理只能批直属下属的补卡申请。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    hm = _user(db_session, t, role="hiring_manager")
+    client = TestClient(app)
+    try:
+        mgr_emp = _mk_emp(client, _hdr(admin), name="经理")
+        res = client.post(
+            f"/api/employees/{mgr_emp['id']}/account", headers=_hdr(admin),
+            json={"email": hm.email},
+        )
+        assert res.status_code == 200
+        sub_emp = _mk_emp(client, _hdr(admin), name="下属",
+                          reports_to_id=mgr_emp["id"])
+        other_emp = _mk_emp(client, _hdr(admin), name="外人")
+
+        ts = (datetime.now() - timedelta(days=2)).replace(
+            hour=9, minute=0, second=0, microsecond=0)
+
+        # 给两个员工各绑 ESS 账号并提交补卡申请
+        for emp in (sub_emp, other_emp):
+            email = f"ess-{uuid.uuid4().hex[:6]}@example.com"
+            acct = client.post(
+                f"/api/employees/{emp['id']}/account", headers=_hdr(admin),
+                json={"email": email},
+            ).json()
+            tok = client.post(
+                "/api/auth/login",
+                json={"email": email, "password": acct["password"]},
+            ).json()["access_token"]
+            res = client.post(
+                "/api/me/attendance-requests",
+                headers={"Authorization": f"Bearer {tok}"},
+                json={"ts": ts.isoformat(), "kind": "in"},
+            )
+            assert res.status_code == 201, res.text
+            emp["req_id"] = res.json()["id"]
+
+        hm_hdr = _hdr(hm)
+        # scope=team 只见直属下属
+        res = client.get(
+            "/api/attendance/requests?scope=team", headers=hm_hdr
+        )
+        names = {i["employee_name"] for i in res.json()["items"]}
+        assert "下属" in names and "外人" not in names
+
+        # 批外人 → 403;批下属 → 200
+        assert client.post(
+            f"/api/attendance/requests/{other_emp['req_id']}/approve",
+            headers=hm_hdr, json={},
+        ).status_code == 403
+        assert client.post(
+            f"/api/attendance/requests/{sub_emp['req_id']}/approve",
+            headers=hm_hdr, json={},
+        ).status_code == 200
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_overtime_request_chain(db_session):
+    """加班 → 调休:审批后 upsert 当年额度 + 台账 +;员工端可花调休。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        comp = client.post(
+            "/api/leave/types", headers=_hdr(admin),
+            json={"name": "调休假", "annual_days": 0, "is_paid": True,
+                  "is_comp": True},
+        )
+        assert comp.status_code == 201, comp.text
+        comp = comp.json()
+        normal = _mk_leave_type(client, _hdr(admin), name="年假")
+
+        emp, ess = _mk_ess_employee(client, _hdr(admin))
+        work_date = date.today() - timedelta(days=1)
+
+        # 非调休类型 → 400
+        res = client.post(
+            "/api/me/overtime-requests", headers=ess,
+            json={"leave_type_id": normal["id"], "work_date": str(work_date),
+                  "hours": 4},
+        )
+        assert res.status_code == 400
+
+        # 未来加班日期 → 400(事后申报,不能预提)
+        res = client.post(
+            "/api/me/overtime-requests", headers=ess,
+            json={"leave_type_id": comp["id"],
+                  "work_date": str(date.today() + timedelta(days=3)),
+                  "hours": 4},
+        )
+        assert res.status_code == 400
+
+        # 4h / 8h = 0.5 天
+        res = client.post(
+            "/api/me/overtime-requests", headers=ess,
+            json={"leave_type_id": comp["id"], "work_date": str(work_date),
+                  "hours": 4, "reason": "版本发布"},
+        )
+        assert res.status_code == 201, res.text
+        assert res.json()["comp_days"] == 0.5
+        rid = res.json()["id"]
+
+        # 同一加班日在途申请去重 → 400;换个日期可以,测完撤回
+        res = client.post(
+            "/api/me/overtime-requests", headers=ess,
+            json={"leave_type_id": comp["id"], "work_date": str(work_date),
+                  "hours": 2},
+        )
+        assert res.status_code == 400
+        res = client.post(
+            "/api/me/overtime-requests", headers=ess,
+            json={"leave_type_id": comp["id"],
+                  "work_date": str(work_date - timedelta(days=1)),
+                  "hours": 2},
+        )
+        assert res.status_code == 201
+        client.post(
+            f"/api/me/overtime-requests/{res.json()['id']}/cancel",
+            headers=ess,
+        )
+
+        res = client.post(
+            f"/api/overtime/requests/{rid}/approve",
+            headers=_hdr(admin), json={},
+        )
+        assert res.status_code == 200
+
+        # 额度:当年 allocation 0.5 天;台账 +0.5 ref_type=overtime
+        res = client.get(
+            f"/api/leave/allocations?employee_id={emp['id']}",
+            headers=_hdr(admin),
+        )
+        allocs = [a for a in res.json()["items"]
+                  if a["leave_type_id"] == comp["id"]]
+        assert len(allocs) == 1 and allocs[0]["days"] == 0.5
+        res = client.get("/api/leave/ledger", headers=_hdr(admin))
+        ot = [e for e in res.json()["items"] if e["ref_type"] == "overtime"]
+        assert len(ot) == 1 and ot[0]["delta_days"] == 0.5
+
+        # 再批一单 16h → 2 天,累计 2.5
+        res = client.post(
+            "/api/me/overtime-requests", headers=ess,
+            json={"leave_type_id": comp["id"], "work_date": str(work_date),
+                  "hours": 16},
+        )
+        rid2 = res.json()["id"]
+        assert res.json()["comp_days"] == 2.0
+        client.post(
+            f"/api/overtime/requests/{rid2}/approve",
+            headers=_hdr(admin), json={},
+        )
+        res = client.get("/api/me/leave-balances", headers=ess)
+        bal = next(b for b in res.json() if b["leave_type_id"] == comp["id"])
+        assert bal["allocated"] == 2.5 and bal["balance"] == 2.5
+
+        # 员工可用调休假:请 1 个工作日并由 admin 代批(非自批)
+        s, _ = _wk_span(1)
+        res = client.post(
+            "/api/me/leave-applications", headers=ess,
+            json={"leave_type_id": comp["id"], "start_date": str(s),
+                  "end_date": str(s), "days": 1},
+        )
+        assert res.status_code == 201, res.text
+        leave_id = res.json()["id"]
+        res = client.post(
+            f"/api/leave/applications/{leave_id}/approve",
+            headers=_hdr(admin), json={},
+        )
+        assert res.status_code == 200
+
+        # 调休已花 1 天时撤销 2 天加班 → 拒绝(回冲后余额会变负)
+        res = client.post(
+            f"/api/me/overtime-requests/{rid2}/cancel", headers=ess
+        )
+        assert res.status_code == 400
+
+        # 把请假撤掉(用量吐回)→ 再撤加班放行,额度回冲 2.0,台账 -delta
+        res = client.post(
+            f"/api/me/leave-applications/{leave_id}/cancel", headers=ess
+        )
+        assert res.status_code == 200
+        res = client.post(
+            f"/api/me/overtime-requests/{rid2}/cancel", headers=ess
+        )
+        assert res.status_code == 200
+        res = client.get("/api/me/leave-balances", headers=ess)
+        bal = next(b for b in res.json() if b["leave_type_id"] == comp["id"])
+        assert bal["allocated"] == 0.5
+        res = client.get("/api/leave/ledger", headers=_hdr(admin))
+        oc = [e for e in res.json()["items"]
+              if e["ref_type"] == "overtime_cancel"]
+        assert len(oc) == 1 and oc[0]["delta_days"] == -2.0
+
+        # 驳回路径:不产额度
+        res = client.post(
+            "/api/me/overtime-requests", headers=ess,
+            json={"leave_type_id": comp["id"], "work_date": str(work_date),
+                  "hours": 2},
+        )
+        rid3 = res.json()["id"]
+        client.post(
+            f"/api/overtime/requests/{rid3}/reject",
+            headers=_hdr(admin), json={},
+        )
+        res = client.get("/api/me/leave-balances", headers=ess)
+        bal = next(b for b in res.json() if b["leave_type_id"] == comp["id"])
+        assert bal["allocated"] == 0.5
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_leave_policy_chain(db_session):
+    """假期政策:CRUD + assign 即发额度 + run 年度结转 + 幂等。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        lt_a = _mk_leave_type(client, _hdr(admin), name="年假", days=10)
+        lt_b = _mk_leave_type(client, _hdr(admin), name="病假", days=5)
+        emp, ess = _mk_ess_employee(client, _hdr(admin), name="员工甲")
+        year = date.today().year
+
+        res = client.post(
+            "/api/leave/policies", headers=_hdr(admin),
+            json={"name": "正式员工包",
+                  "items": [{"leave_type_id": lt_a["id"], "days": 10},
+                            {"leave_type_id": lt_b["id"], "days": 5}],
+                  "carry_forward": 5},
+        )
+        assert res.status_code == 201, res.text
+        pid = res.json()["id"]
+        # 重名 → 409;坏类型 → 400
+        assert client.post(
+            "/api/leave/policies", headers=_hdr(admin),
+            json={"name": "正式员工包",
+                  "items": [{"leave_type_id": lt_a["id"], "days": 1}]},
+        ).status_code == 409
+        assert client.post(
+            "/api/leave/policies", headers=_hdr(admin),
+            json={"name": "坏包",
+                  "items": [{"leave_type_id": "no-such", "days": 1}]},
+        ).status_code == 400
+        # 调休类型不能进政策包 — run 的 set-total 会把加班攒的额度清零
+        comp = client.post(
+            "/api/leave/types", headers=_hdr(admin),
+            json={"name": "调休假", "is_comp": True},
+        )
+        assert comp.status_code == 201, comp.text
+        assert client.post(
+            "/api/leave/policies", headers=_hdr(admin),
+            json={"name": "含调休的包",
+                  "items": [{"leave_type_id": comp.json()["id"], "days": 0}]},
+        ).status_code == 400
+        # 已在政策包里的类型也不能改成调休(否则包里出现死配置)
+        assert client.put(
+            f"/api/leave/types/{lt_a['id']}", headers=_hdr(admin),
+            json={"name": "年假", "annual_days": 10, "is_paid": True,
+                  "is_comp": True},
+        ).status_code == 400
+
+        # assign → 立即按当年发放
+        res = client.post(
+            f"/api/leave/policies/{pid}/assign", headers=_hdr(admin),
+            json={"employee_ids": [emp["id"]]},
+        )
+        assert res.status_code == 200 and res.json()["assigned"] == 1
+        res = client.get(
+            f"/api/leave/allocations?employee_id={emp['id']}",
+            headers=_hdr(admin),
+        )
+        alloc = {a["leave_type_id"]: a["days"] for a in res.json()["items"]}
+        assert alloc[lt_a["id"]] == 10 and alloc[lt_b["id"]] == 5
+        res = client.get("/api/leave/ledger", headers=_hdr(admin))
+        pr = [e for e in res.json()["items"] if e["ref_type"] == "policy_run"]
+        assert len(pr) == 2
+
+        # 幂等:同年再 run,天数与台账不变
+        res = client.post(
+            f"/api/leave/policies/{pid}/run", headers=_hdr(admin),
+            json={"year": year},
+        )
+        assert res.json()["applied"] == 1
+        res = client.get("/api/leave/ledger", headers=_hdr(admin))
+        pr = [e for e in res.json()["items"] if e["ref_type"] == "policy_run"]
+        assert len(pr) == 2
+
+        # ---- 结转:补一条上年 allocation(10 天)+ 上年已批 3 天 ----
+        client.post(
+            "/api/leave/allocations", headers=_hdr(admin),
+            json={"employee_id": emp["id"], "leave_type_id": lt_a["id"],
+                  "year": year - 1, "days": 10},
+        )
+        # 上年第一个周一请 3 天(ESS 端发起,admin 代批 — 非自批)
+        prev_mon = date(year - 1, 1, 1)
+        prev_mon += timedelta(days=(7 - prev_mon.weekday()) % 7)
+        res = client.post(
+            "/api/me/leave-applications", headers=ess,
+            json={"leave_type_id": lt_a["id"], "start_date": str(prev_mon),
+                  "end_date": str(prev_mon + timedelta(days=2)),
+                  "days": 3, "reason": "上年已休"},
+        )
+        assert res.status_code == 201, res.text
+        client.post(
+            f"/api/leave/applications/{res.json()['id']}/approve",
+            headers=_hdr(admin), json={},
+        )
+
+        # 再 run 当年:carry = min(10-3, cap=5)=5 → target 15,补 +5
+        res = client.post(
+            f"/api/leave/policies/{pid}/run", headers=_hdr(admin),
+            json={"year": year},
+        )
+        assert res.json()["applied"] == 1
+        res = client.get(
+            f"/api/leave/allocations?employee_id={emp['id']}",
+            headers=_hdr(admin),
+        )
+        alloc = {a["leave_type_id"]: a["days"] for a in res.json()["items"]
+                 if a["year"] == year}
+        assert alloc[lt_a["id"]] == 15
+
+        # 有绑定时不能删;unassign 后可删
+        assert client.delete(
+            f"/api/leave/policies/{pid}", headers=_hdr(admin)
+        ).status_code == 400
+        client.post(
+            f"/api/leave/policies/{pid}/unassign", headers=_hdr(admin),
+            json={"employee_ids": [emp["id"]]},
+        )
+        assert client.delete(
+            f"/api/leave/policies/{pid}", headers=_hdr(admin)
+        ).status_code == 204
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_policy_run_skips_comp_type(db_session):
+    """防御路径:政策项的类型被直改成调休后,run 跳过该类型。
+
+    API 层面已双保险(政策写时拒收调休类型 + 政策引用的类型禁止改成调休),
+    这里是数据层兜底 — 即使出现"调休类型在政策包里"的存量状态,
+    run 也不能把加班攒的额度按政策目标清零。
+    """
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        lt = _mk_leave_type(client, _hdr(admin), name="弹性假")
+        emp, _ess = _mk_ess_employee(client, _hdr(admin))
+        year = date.today().year
+        res = client.post(
+            "/api/leave/policies", headers=_hdr(admin),
+            json={"name": "弹性包",
+                  "items": [{"leave_type_id": lt["id"], "days": 3}]},
+        )
+        assert res.status_code == 201, res.text
+        pid = res.json()["id"]
+        client.post(
+            f"/api/leave/policies/{pid}/assign", headers=_hdr(admin),
+            json={"employee_ids": [emp["id"]]},
+        )
+        # 模拟加班入账过的存量:alloc 7 ≠ 政策目标 3;类型直改成调休
+        alloc = db_session.scalars(
+            select(LeaveAllocation).where(
+                LeaveAllocation.employee_id == emp["id"],
+                LeaveAllocation.leave_type_id == lt["id"],
+            )
+        ).first()
+        alloc.days = 7
+        db_session.get(LeaveType, lt["id"]).is_comp = True
+        db_session.commit()
+
+        res = client.post(
+            f"/api/leave/policies/{pid}/run", headers=_hdr(admin),
+            json={"year": year},
+        )
+        assert res.status_code == 200
+        db_session.refresh(alloc)
+        assert alloc.days == 7
     finally:
         _cleanup(db_session, t)

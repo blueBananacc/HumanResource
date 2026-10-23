@@ -12,7 +12,7 @@ from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, count_total, paginate_params
@@ -124,10 +124,18 @@ def create_goal(
     return _goal_out(g, _emps(db, current.tenant_id))
 
 
+class GoalUpdateIn(BaseModel):
+    """目标编辑 — 归属员工不可改;改归属请删除重建。"""
+
+    title: str
+    description: str = ""
+    due_date: date | None = None
+
+
 @router.patch("/goals/{goal_id}", response_model=GoalOut)
 def update_goal(
     goal_id: str,
-    body: GoalIn,
+    body: GoalUpdateIn,
     db: Session = Depends(get_db),
     current: User = Depends(require_permission(PERM_MANAGE_PERFORMANCE)),
 ):
@@ -181,16 +189,19 @@ def list_cycles(
             AppraisalCycle.tenant_id == current.tenant_id
         ).order_by(AppraisalCycle.created_at.desc())
     ).all()
-    out = []
-    for c in rows:
-        n = len(db.scalars(
-            select(Appraisal.id).where(Appraisal.cycle_id == c.id)
-        ).all())
-        out.append(CycleOut(
+    counts = dict(
+        db.execute(
+            select(Appraisal.cycle_id, func.count()).group_by(Appraisal.cycle_id)
+        ).all()
+    )
+    return [
+        CycleOut(
             id=c.id, name=c.name, period_start=c.period_start,
-            period_end=c.period_end, status=c.status, appraisal_count=n,
-        ))
-    return out
+            period_end=c.period_end, status=c.status,
+            appraisal_count=counts.get(c.id, 0),
+        )
+        for c in rows
+    ]
 
 
 @router.post("/cycles", response_model=CycleOut, status_code=status.HTTP_201_CREATED)
@@ -335,7 +346,15 @@ def spawn_appraisals(
     db: Session = Depends(get_db),
     current: User = Depends(require_permission(PERM_MANAGE_PERFORMANCE)),
 ):
-    cycle = _cycle(db, body.cycle_id, current.tenant_id)
+    # FOR UPDATE 锁周期行:两个并发铺表请求串行化,否则双方都会通过
+    # 查重、各自插入同一 (cycle_id, employee_id) → 第二个 commit 撞唯一约束 500。
+    cycle = db.execute(
+        select(AppraisalCycle)
+        .where(AppraisalCycle.id == body.cycle_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if not cycle or cycle.tenant_id != current.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "考核周期不存在")
     if cycle.status != "open":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅开启中的周期可铺表")
     # 先查重再插:(cycle_id, employee_id) 唯一,重复/非法 id 跳过而不是

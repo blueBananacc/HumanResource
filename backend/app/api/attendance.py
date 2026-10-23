@@ -4,10 +4,12 @@
 - ``PUT /attendance/{id}``               手工修正状态(manage_attendance)
 - ``POST /attendance/summarize``         把指定日期段的 checkin 汇总成 attendance
 - ``GET /attendance/checkins``           打卡流水
+- ``GET /attendance/requests``           补卡申请列表(scope=all/team/mine)
+- ``POST /attendance/requests/{id}/approve|reject`` 审批 → 补写 checkin 重算
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -19,6 +21,7 @@ from app.api._pagination import PageOut, count_total, paginate_params
 from app.api.license import require_feature
 from app.domain.models import (
     Attendance,
+    AttendanceRequest,
     Employee,
     EmployeeCheckin,
     LeaveApplication,
@@ -28,10 +31,20 @@ from app.domain.models import (
 from app.infra.db import get_db
 from app.services.audit import write_audit
 from app.services.permissions import (
+    PERM_APPROVE_LEAVE,
     PERM_MANAGE_ATTENDANCE,
     PERM_VIEW_REPORTS,
+    can_decide_for_employee,
+    get_linked_employee_id,
     require_permission,
+    team_ids_with_self,
     visible_employee_ids,
+)
+from app.services.work_calendar import (
+    holiday_map,
+    is_workday,
+    is_workday_day,
+    workday_set,
 )
 
 router = APIRouter(prefix="/attendance", tags=["hris-attendance"], dependencies=[Depends(require_feature("hr.suite"))])
@@ -94,9 +107,18 @@ def _out(a: Attendance, emps: dict, orgs: dict) -> AttendanceOut:
     )
 
 
-def summarize_day(db: Session, *, tenant_id: str, employee_id: str, day: date) -> Attendance:
-    """单日汇总:checkin → first_in/last_out;approved 请假覆盖 → leave;
-    工作日无记录 → absent;否则 present(有 checkin)。"""
+def summarize_day(
+    db: Session, *, tenant_id: str, employee_id: str, day: date,
+    workdays: frozenset[int] | set[int] | None = None,
+    hols: dict | None = None,
+) -> Attendance:
+    """单日汇总:checkin → first_in/last_out;approved 请假覆盖的工作日 → leave
+    (非工作日即使被请假区间覆盖也只算 holiday,与台账只扣工作日同口径);
+    工作日无记录 → absent;否则 present(有 checkin)。
+
+    ``workdays``/``hols`` 传预先按整段拉好的日历(批量 summarize 防 N+1);
+    不传则按单日查(is_workday_day)。
+    """
     day_start = datetime.combine(day, datetime.min.time())
     day_end = day_start + timedelta(days=1)
     checkins = db.scalars(
@@ -130,24 +152,36 @@ def summarize_day(db: Session, *, tenant_id: str, employee_id: str, day: date) -
         )
         db.add(att)
     if att.source != "manual":
-        if on_leave:
-            att.status = "leave"
-            att.source = "leave"
-        elif first_in:
+        if not on_leave and first_in:
+            # 最常见路径:有打卡无请假 → present,完全不用查日历
             att.status = "present"
             att.source = "checkin"
-        elif day.weekday() >= 5:
-            att.status = "holiday"
-            att.source = "checkin"
         else:
-            att.status = "absent"
-            att.source = "checkin"
-        att.first_in = first_in or att.first_in
-        att.last_out = last_out or att.last_out
-        if att.first_in and att.last_out and att.last_out > att.first_in:
-            att.work_hours = round(
-                (att.last_out - att.first_in).total_seconds() / 3600, 2
-            )
+            # 日历查询只在这一分支发生:leave/absent/holiday 都要判工作日。
+            # 请假覆盖的非工作日不能标 leave —— 台账只扣工作日,
+            # 否则整段重算又会把周末/节假日补成 leave,口径两边对不上。
+            if workdays is not None and hols is not None:
+                wd = is_workday(day, workdays, hols)
+            else:
+                wd = is_workday_day(db, tenant_id, day)
+            if on_leave and wd:
+                att.status = "leave"
+                att.source = "leave"
+            elif first_in:
+                att.status = "present"
+                att.source = "checkin"
+            else:
+                att.status = "absent" if wd else "holiday"
+                att.source = "checkin"
+        # 直接赋计算值而非 or 合并:补卡撤销删 checkin 后重算,旧 first_in /
+        # last_out / work_hours 必须清掉,否则 absent 行上还挂着已撤销的时刻
+        att.first_in = first_in
+        att.last_out = last_out
+        att.work_hours = (
+            round((last_out - first_in).total_seconds() / 3600, 2)
+            if first_in and last_out and last_out > first_in
+            else None
+        )
     return att
 
 
@@ -264,11 +298,17 @@ def summarize(
             Employee.tenant_id == current.tenant_id, Employee.status == "active"
         )
     )]
+    # 日历按整段拉一次传给 summarize_day,避免每个员工每天再查两次
+    wd = workday_set(db, current.tenant_id)
+    hols = holiday_map(db, current.tenant_id, body.start, body.end)
     day = body.start
     n = 0
     while day <= body.end:
         for emp_id in emp_ids:
-            summarize_day(db, tenant_id=current.tenant_id, employee_id=emp_id, day=day)
+            summarize_day(
+                db, tenant_id=current.tenant_id, employee_id=emp_id, day=day,
+                workdays=wd, hols=hols,
+            )
             n += 1
         day += timedelta(days=1)
     db.commit()
@@ -313,3 +353,184 @@ def list_checkins(
         ) for c in rows],
         total=total, limit=limit, offset=offset,
     )
+
+
+# ============ 补卡申请审批(发起端在 hr_me:/me/attendance-requests)============
+
+
+class AttendanceRequestOut(BaseModel):
+    id: str
+    employee_id: str
+    employee_name: str
+    org_unit_name: str | None
+    ts: datetime
+    kind: str
+    reason: str
+    status: str
+    approver_id: str | None
+    approver_email: str | None
+    decided_at: datetime | None
+    decision_note: str | None
+    own_request: bool
+    created_at: datetime
+
+
+class ReqDecisionIn(BaseModel):
+    note: str | None = None
+
+
+def _req_out(
+    r: AttendanceRequest, emps: dict, orgs: dict, users: dict,
+    me_id: str | None = None,
+) -> AttendanceRequestOut:
+    e = emps.get(r.employee_id)
+    return AttendanceRequestOut(
+        id=r.id, employee_id=r.employee_id,
+        employee_name=e.name if e else "?",
+        org_unit_name=orgs.get(e.org_unit_id) if e and e.org_unit_id else None,
+        ts=r.ts, kind=r.kind, reason=r.reason, status=r.status,
+        approver_id=r.approver_id,
+        approver_email=users.get(r.approver_id) if r.approver_id else None,
+        decided_at=r.decided_at, decision_note=r.decision_note,
+        own_request=bool(e and e.user_id == me_id),
+        created_at=r.created_at,
+    )
+
+
+def _req_maps(db: Session, tenant_id: str):
+    emps, orgs = _maps(db, tenant_id)
+    users = {
+        u.id: u.email
+        for u in db.scalars(select(User).where(User.tenant_id == tenant_id))
+    }
+    return emps, orgs, users
+
+
+def _locked_req(db: Session, req_id: str) -> AttendanceRequest | None:
+    """FOR UPDATE:批准会写 checkin,并发双击会记两次。"""
+    return db.execute(
+        select(AttendanceRequest)
+        .where(AttendanceRequest.id == req_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+
+
+@router.get("/requests", response_model=PageOut[AttendanceRequestOut])
+def list_requests(
+    pagination: tuple = Depends(paginate_params),
+    status_filter: str | None = Query(None, alias="status"),
+    scope: Literal["all", "team", "mine"] = "all",
+    employee_id: str | None = None,
+    db: Session = Depends(get_db),
+    current: User = Depends(
+        require_permission(PERM_MANAGE_ATTENDANCE, PERM_APPROVE_LEAVE)),
+):
+    limit, offset, _ = pagination
+    stmt = select(AttendanceRequest).where(
+        AttendanceRequest.tenant_id == current.tenant_id
+    )
+    if status_filter:
+        stmt = stmt.where(AttendanceRequest.status == status_filter)
+    if employee_id:
+        stmt = stmt.where(AttendanceRequest.employee_id == employee_id)
+    if scope == "mine":
+        own = get_linked_employee_id(db, current)
+        stmt = stmt.where(
+            AttendanceRequest.employee_id == (own or "__none__"))
+    elif scope == "team":
+        stmt = stmt.where(
+            AttendanceRequest.employee_id.in_(
+                team_ids_with_self(db, current) or ["__none__"]
+            )
+        )
+    elif current.role not in ("admin", "hr"):
+        # scope=all:非管理角色仍按汇报线过滤(主管只见下属+自己)
+        ids = visible_employee_ids(db, current)
+        stmt = stmt.where(
+            AttendanceRequest.employee_id.in_(ids or ["__none__"]))
+    total = count_total(db, stmt)
+    rows = db.scalars(
+        stmt.order_by(AttendanceRequest.created_at.desc())
+        .limit(limit).offset(offset)
+    ).all()
+    emps, orgs, users = _req_maps(db, current.tenant_id)
+    return PageOut(
+        items=[_req_out(r, emps, orgs, users, current.id) for r in rows],
+        total=total, limit=limit, offset=offset,
+    )
+
+
+@router.post("/requests/{req_id}/approve", response_model=AttendanceRequestOut)
+def approve_request(
+    req_id: str,
+    body: ReqDecisionIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(
+        require_permission(PERM_MANAGE_ATTENDANCE, PERM_APPROVE_LEAVE)),
+):
+    r = _locked_req(db, req_id)
+    if not r or r.tenant_id != current.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "申请不存在")
+    if r.status != "pending":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "该申请已处理")
+    if not can_decide_for_employee(db, current, r.employee_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "只能审批直属下属的申请,不能自批")
+    r.status = "approved"
+    r.approver_id = current.id
+    r.decided_at = datetime.now(UTC).replace(tzinfo=None)
+    r.decision_note = body.note
+    # 补写一条打卡(method=request 标记来源),再重算当日考勤
+    db.add(EmployeeCheckin(
+        tenant_id=current.tenant_id, employee_id=r.employee_id,
+        ts=r.ts, kind=r.kind, method="request",
+        # reason 是 Text 无上限,checkin.note 只有 VARCHAR(256) — 截断防超长
+        note=(r.reason or "补卡审批通过")[:256],
+    ))
+    # autoflush 关闭,先落库让 summarize_day 能读到这条 checkin
+    db.flush()
+    summarize_day(
+        db, tenant_id=current.tenant_id, employee_id=r.employee_id,
+        day=r.ts.date(),
+    )
+    write_audit(
+        db, actor=current, entity_type="attendance_request", entity_id=r.id,
+        action="approve",
+        detail={"employee_id": r.employee_id, "ts": r.ts.isoformat(),
+                "kind": r.kind},
+        request=request,
+    )
+    db.commit()
+    emps, orgs, users = _req_maps(db, current.tenant_id)
+    return _req_out(r, emps, orgs, users, current.id)
+
+
+@router.post("/requests/{req_id}/reject", response_model=AttendanceRequestOut)
+def reject_request(
+    req_id: str,
+    body: ReqDecisionIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(
+        require_permission(PERM_MANAGE_ATTENDANCE, PERM_APPROVE_LEAVE)),
+):
+    r = _locked_req(db, req_id)
+    if not r or r.tenant_id != current.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "申请不存在")
+    if r.status != "pending":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "该申请已处理")
+    if not can_decide_for_employee(db, current, r.employee_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "只能审批直属下属的申请,不能自批")
+    r.status = "rejected"
+    r.approver_id = current.id
+    r.decided_at = datetime.now(UTC).replace(tzinfo=None)
+    r.decision_note = body.note
+    write_audit(
+        db, actor=current, entity_type="attendance_request", entity_id=r.id,
+        action="reject", detail={}, request=request,
+    )
+    db.commit()
+    emps, orgs, users = _req_maps(db, current.tenant_id)
+    return _req_out(r, emps, orgs, users, current.id)

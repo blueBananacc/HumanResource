@@ -10,6 +10,9 @@ export default tseslint.config(
       "node_modules/**",
       "playwright-report/**",
       "test-results/**",
+      // ego-browser 验证脚本 — 跑在注入 taskSpace/document 等全局的浏览器环境里,
+      // 不是应用代码,不走 src 的 lint 口径
+      "verify/**",
     ],
   },
   js.configs.recommended,

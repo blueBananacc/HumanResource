@@ -26,6 +26,9 @@ const REF_TYPE_LABEL: Record<string, string> = {
   allocation_revoke: "额度收回",
   application: "请假扣减",
   application_cancel: "撤销返还",
+  overtime: "加班折算调休",
+  overtime_cancel: "加班撤销回冲",
+  policy_run: "政策发放",
 };
 
 export function LeaveBalances() {

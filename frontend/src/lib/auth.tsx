@@ -16,6 +16,11 @@ export type User = {
   org_unit_id: string | null;
   /** 后端 ``/auth/me.permissions`` —— 前端用来隐藏菜单 / 守卫页面。 */
   permissions: AppPermission[];
+  /**
+   * 绑定的员工档案 id —— 非 employee 角色(如用人经理/HR)绑定后
+   * 也能进 /me 自助区,AppShell / MeGuard / 导航据此放行。
+   */
+  employee_id: string | null;
 };
 
 type AuthState = {

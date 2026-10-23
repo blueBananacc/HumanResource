@@ -978,6 +978,9 @@ class Employee(Base):
     source_candidate_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True
     )
+    leave_policy_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("leave_policies.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -991,7 +994,11 @@ class Employee(Base):
 
 
 class LeaveType(Base):
-    """假期类型:年假 / 病假 / 事假 / 调休 …。``annual_days`` 为年度默认额度。"""
+    """假期类型:年假 / 病假 / 事假 / 调休 …。``annual_days`` 为年度默认额度。
+
+    ``is_comp`` 标记调休类型:加班申请审批通过后把额度结算到这类
+    类型上(写 allocation + 台账),员工再按正常请假流程消耗。
+    """
 
     __tablename__ = "leave_types"
 
@@ -1002,6 +1009,7 @@ class LeaveType(Base):
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     annual_days: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
     is_paid: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sql_false())
+    is_comp: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sql_false())
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -1152,6 +1160,149 @@ class Attendance(Base):
 
     __table_args__ = (
         UniqueConstraint("employee_id", "day", name="uq_attendance_emp_day"),
+    )
+
+
+class WorkCalendar(Base):
+    """租户工作日历(每租户一条)。
+
+    - ``workdays`` JSON 存 ISO  weekday 列表(1=周一…7=周日),默认 [1,2,3,4,5]
+    - ``workday_hours`` 一个工作日的标准工时,加班申请折算调休天数用
+    具体日期是工作日还是节假日由 ``Holiday`` 逐日覆盖
+    (kind=holiday 放假 / kind=workday 调休补班)。
+    """
+
+    __tablename__ = "work_calendars"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False,
+        index=True, unique=True,
+    )
+    workdays: Mapped[list[int]] = mapped_column(
+        JSON, nullable=False, default=lambda: [1, 2, 3, 4, 5]
+    )
+    workday_hours: Mapped[float] = mapped_column(Float, nullable=False, server_default="8")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class Holiday(Base):
+    """节假日历条目:tenant × day 唯一。
+
+    ``kind``: holiday(法定节假日,即使落在工作日也休息)/
+    workday(调休补班,即使落在周末也上班)。
+    """
+
+    __tablename__ = "holidays"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, server_default="holiday")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "day", name="uq_holidays_tenant_day"),
+    )
+
+
+class AttendanceRequest(Base):
+    """补卡申请(ESS 发起,上级审批)。
+
+    status: pending → approved(自动补写 checkin + 重算当日考勤)/
+    rejected / cancelled(员工撤回)。
+    """
+
+    __tablename__ = "attendance_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    ts: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)  # in / out
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="pending", index=True
+    )
+    approver_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class OvertimeRequest(Base):
+    """加班申请:批准后按 workday_hours 折算天数,结算到 ``leave_type_id``
+    指定的调休类型(upsert 当年 allocation + 写台账 +delta)。"""
+
+    __tablename__ = "overtime_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    work_date: Mapped[date] = mapped_column(Date, nullable=False)
+    hours: Mapped[float] = mapped_column(Float, nullable=False)
+    # 批准时按工作日历折算出的入账天数 — 写死在行上,日历后续变更不回算,
+    # 撤销回冲 / 展示都以它为准(pending 时为 None,展示按当前日历预算)
+    comp_days: Mapped[float | None] = mapped_column(Float, nullable=True)
+    leave_type_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("leave_types.id", ondelete="CASCADE"), nullable=False
+    )
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="pending", index=True
+    )
+    approver_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class LeavePolicy(Base):
+    """假期政策:一组 (leave_type × annual_days) + 结转上限。
+
+    ``items`` JSON: [{leave_type_id, days}];``carry_forward`` 为结转到
+    下一年的额度上限,None 表示不结转。员工挂 ``leave_policy_id``
+    后,每年 run 一次自动发放/对齐额度(台账记 policy_run delta)。
+    """
+
+    __tablename__ = "leave_policies"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    items: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    carry_forward: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_leave_policies_tenant_name"),
     )
 
 

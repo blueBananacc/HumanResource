@@ -10,9 +10,14 @@
 - ``GET/POST /me/leave-applications`` 本人请假单 / 新建申请
 - ``POST /me/leave-applications/{id}/cancel``  撤销 pending 申请
 - ``GET /me/leave-types``             可申请的类型
+- ``GET /me/workday-count``           区间工作日数(请假表单按它算天数)
+- ``GET/POST /me/overtime-requests``  加班申请(批准 → 折算调休入账)
+- ``POST /me/overtime-requests/{id}/cancel``   撤回/撤销加班申请
 - ``POST /me/checkins``               打卡(in/out)
 - ``GET /me/checkins``                今日流水
 - ``GET /me/attendance``              本人考勤(按月)
+- ``GET/POST /me/attendance-requests``补卡申请(批准 → 补写打卡重算)
+- ``POST /me/attendance-requests/{id}/cancel`` 撤回/撤销补卡申请
 - ``GET /me/salary-slips``            本人已发放工资条
 - ``GET /me/salary-slips/{id}``       工资条详情
 - ``GET/POST /me/expense-claims``     本人报销单 / 新建
@@ -37,6 +42,7 @@ from app.domain.models import (
     Appraisal,
     AppraisalCycle,
     Attendance,
+    AttendanceRequest,
     Employee,
     EmployeeCheckin,
     ExpenseClaim,
@@ -50,11 +56,13 @@ from app.domain.models import (
     LifecycleEvent,
     LifecycleTask,
     OrgUnit,
+    OvertimeRequest,
     SalarySlip,
     User,
 )
 from app.infra.db import get_db
 from app.services.permissions import require_linked_employee
+from app.services.work_calendar import count_workdays, workday_hours
 
 router = APIRouter(prefix="/me", tags=["hris-ess"], dependencies=[Depends(require_feature("hr.suite"))])
 
@@ -129,6 +137,7 @@ class MeLeaveTypeOut(BaseModel):
     id: str
     name: str
     is_paid: bool
+    is_comp: bool = False
 
 
 @router.get("/leave-types", response_model=list[MeLeaveTypeOut])
@@ -137,7 +146,24 @@ def me_leave_types(db: Session = Depends(get_db), current: User = Depends(get_cu
     rows = db.scalars(
         select(LeaveType).where(LeaveType.tenant_id == current.tenant_id)
     ).all()
-    return [MeLeaveTypeOut(id=t.id, name=t.name, is_paid=t.is_paid) for t in rows]
+    return [MeLeaveTypeOut(id=t.id, name=t.name, is_paid=t.is_paid,
+                           is_comp=t.is_comp) for t in rows]
+
+
+@router.get("/workday-count")
+def me_workday_count(
+    start: date,
+    end: date,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """区间内工作日数 — 请假表单按它自动算天数(节假日历感知)。"""
+    _me(db, current)
+    if end < start:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "结束日期不能早于开始日期")
+    if (end - start).days > 366:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "区间最长 366 天")
+    return {"workdays": count_workdays(db, current.tenant_id, start, end)}
 
 
 class MeBalanceOut(BaseModel):
@@ -147,6 +173,25 @@ class MeBalanceOut(BaseModel):
     used: float
     pending: float
     balance: float
+
+
+def _used_pending_days(
+    db: Session, *, employee_id: str, leave_type_id: str, year: int
+) -> tuple[float, float]:
+    """某年某类型 (已批天数, 待批天数) — 余额与撤销回冲共用口径,
+    balance 一律按 allocated - used - pending 算。"""
+
+    def _sum(st: str) -> float:
+        return float(db.scalar(
+            select(func.coalesce(func.sum(LeaveApplication.days), 0)).where(
+                LeaveApplication.employee_id == employee_id,
+                LeaveApplication.leave_type_id == leave_type_id,
+                LeaveApplication.status == st,
+                func.extract("year", LeaveApplication.start_date) == year,
+            )
+        ) or 0)
+
+    return _sum("approved"), _sum("pending")
 
 
 @router.get("/leave-balances", response_model=list[MeBalanceOut])
@@ -165,22 +210,9 @@ def me_leave_balances(
     out = []
     for a in allocs:
         lt = db.get(LeaveType, a.leave_type_id)
-        used = db.scalar(
-            select(func.coalesce(func.sum(LeaveApplication.days), 0)).where(
-                LeaveApplication.employee_id == e.id,
-                LeaveApplication.leave_type_id == a.leave_type_id,
-                LeaveApplication.status == "approved",
-                func.extract("year", LeaveApplication.start_date) == y,
-            )
-        ) or 0
-        pending = db.scalar(
-            select(func.coalesce(func.sum(LeaveApplication.days), 0)).where(
-                LeaveApplication.employee_id == e.id,
-                LeaveApplication.leave_type_id == a.leave_type_id,
-                LeaveApplication.status == "pending",
-                func.extract("year", LeaveApplication.start_date) == y,
-            )
-        ) or 0
+        used, pending = _used_pending_days(
+            db, employee_id=e.id, leave_type_id=a.leave_type_id, year=y
+        )
         out.append(MeBalanceOut(
             leave_type_id=a.leave_type_id,
             leave_type_name=lt.name if lt else "?",
@@ -194,7 +226,8 @@ class MeApplicationIn(BaseModel):
     leave_type_id: str
     start_date: date
     end_date: date
-    days: float = Field(..., gt=0, le=365)
+    # 不传则由服务端按工作日历自动计算(推荐;客户端算不准节假日)
+    days: float | None = Field(None, gt=0, le=365)
     reason: str = ""
 
     @field_validator("end_date")
@@ -207,8 +240,8 @@ class MeApplicationIn(BaseModel):
 
     @field_validator("days")
     @classmethod
-    def _v_days(cls, v: float) -> float:
-        if (v * 2) != int(v * 2):
+    def _v_days(cls, v: float | None) -> float | None:
+        if v is not None and (v * 2) != int(v * 2):
             raise ValueError("请假天数须以 0.5 天为步长")
         return v
 
@@ -265,9 +298,22 @@ def me_leave_create(
     lt = db.get(LeaveType, body.leave_type_id)
     if not lt or lt.tenant_id != current.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "假期类型不存在")
-    span = (body.end_date - body.start_date).days + 1
-    if body.days > span:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "请假天数超过日期区间")
+    # 天数按工作日历校验:周末/节假日不算请假,考勤也只标记工作日,
+    # 台账扣的天数与考勤标记的天数口径一致。days 只允许等于工作日数
+    # 或少一个半天 —— 允许更小值就能用半天额度换整段休假考勤。
+    workdays = count_workdays(db, current.tenant_id, body.start_date, body.end_date)
+    if workdays == 0:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "日期区间内没有工作日")
+    days = body.days if body.days is not None else float(workdays)
+    if days > workdays:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "请假天数超过区间内工作日数")
+    if days < workdays - 0.5:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "请假天数须与工作日一致(至多相差一个半天)",
+        )
     overlap = db.scalars(
         select(LeaveApplication.id).where(
             LeaveApplication.employee_id == e.id,
@@ -281,7 +327,7 @@ def me_leave_create(
     a = LeaveApplication(
         tenant_id=current.tenant_id, employee_id=e.id,
         leave_type_id=lt.id, start_date=body.start_date, end_date=body.end_date,
-        days=body.days, reason=body.reason, status="pending",
+        days=days, reason=body.reason, status="pending",
     )
     db.add(a)
     db.commit()
@@ -308,6 +354,10 @@ def me_leave_cancel(
     was_approved = a.status == "approved"
     a.status = "cancelled"
     if was_approved:
+        # autoflush 关闭:先把 cancelled 落库,_cancel_ledger_and_attendance
+        # 里的 summarize_day 才查不到 approved 请假(on_leave=False),否则
+        # 重算又会把这行标回 leave。
+        db.flush()
         _cancel_ledger_and_attendance(db, a)
     db.commit()
     db.refresh(a)
@@ -335,11 +385,175 @@ def _cancel_ledger_and_attendance(db: Session, a: LeaveApplication) -> None:
             )
         ).first()
         if att and att.source == "leave":
-            db.delete(att)
+            # 就地重算而不是 delete+重算:autoflush 关闭时 delete 未落库,
+            # summarize_day 读到的是同一行(已标删除),改的状态在 flush 时
+            # 被 DELETE 吞掉 —— 原实现实际只留了"行被删光"的效果。
             summarize_day(
                 db, tenant_id=a.tenant_id, employee_id=a.employee_id, day=day
             )
         day += timedelta(days=1)
+
+
+# ============ overtime requests(加班 → 调休)============
+
+
+class MeOvertimeIn(BaseModel):
+    leave_type_id: str  # 须为 is_comp=True 的调休类型
+    work_date: date
+    hours: float = Field(..., gt=0, le=24)
+    reason: str = ""
+
+    @field_validator("hours")
+    @classmethod
+    def _v_hours(cls, v: float) -> float:
+        if (v * 2) != int(v * 2):
+            raise ValueError("加班时长须以 0.5 小时为步长")
+        return v
+
+
+class MeOvertimeOut(BaseModel):
+    id: str
+    work_date: date
+    hours: float
+    leave_type_id: str
+    leave_type_name: str
+    comp_days: float
+    reason: str
+    status: str
+    decided_at: datetime | None
+    decision_note: str | None
+    created_at: datetime
+
+
+def _me_ot_out(db: Session, r: OvertimeRequest, types: dict) -> MeOvertimeOut:
+    # 已批准的行读写入库的 comp_days;未批准的按当前日历预算(预览)
+    if r.comp_days is not None:
+        comp_days = r.comp_days
+    else:
+        wh = workday_hours(db, r.tenant_id) or 8.0
+        comp_days = max(0.5, round(r.hours / wh * 2) / 2)
+    return MeOvertimeOut(
+        id=r.id, work_date=r.work_date, hours=r.hours,
+        leave_type_id=r.leave_type_id,
+        leave_type_name=types[r.leave_type_id].name
+        if r.leave_type_id in types else "?",
+        comp_days=comp_days,
+        reason=r.reason, status=r.status, decided_at=r.decided_at,
+        decision_note=r.decision_note, created_at=r.created_at,
+    )
+
+
+@router.get("/overtime-requests", response_model=list[MeOvertimeOut])
+def me_overtime_list(
+    db: Session = Depends(get_db), current: User = Depends(get_current_user)
+):
+    e = _me(db, current)
+    rows = db.scalars(
+        select(OvertimeRequest)
+        .where(OvertimeRequest.employee_id == e.id)
+        .order_by(OvertimeRequest.created_at.desc())
+        .limit(100)
+    ).all()
+    types = {t.id: t for t in db.scalars(
+        select(LeaveType).where(LeaveType.tenant_id == current.tenant_id)
+    )}
+    return [_me_ot_out(db, r, types) for r in rows]
+
+
+@router.post("/overtime-requests", response_model=MeOvertimeOut,
+             status_code=status.HTTP_201_CREATED)
+def me_overtime_create(
+    body: MeOvertimeIn,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    e = _me(db, current)
+    lt = db.get(LeaveType, body.leave_type_id)
+    if not lt or lt.tenant_id != current.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "假期类型不存在")
+    if not lt.is_comp:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "该类型不是调休类型,不能结算加班")
+    # 加班是事后申报,日期不能在未来(与补卡申请的未来时刻拦截同口径)
+    if body.work_date > _now().date():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "加班日期不能是未来")
+    # 同一加班日只允许一条在途申请,与补卡申请同口径
+    dup = db.scalars(
+        select(OvertimeRequest.id).where(
+            OvertimeRequest.employee_id == e.id,
+            OvertimeRequest.status == "pending",
+            OvertimeRequest.work_date == body.work_date,
+        ).limit(1)
+    ).first()
+    if dup:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "该日期已有待审批的加班申请")
+    r = OvertimeRequest(
+        tenant_id=current.tenant_id, employee_id=e.id,
+        work_date=body.work_date, hours=body.hours,
+        leave_type_id=lt.id, reason=body.reason, status="pending",
+    )
+    db.add(r)
+    db.commit()
+    db.refresh(r)
+    return _me_ot_out(db, r, {lt.id: lt})
+
+
+@router.post("/overtime-requests/{req_id}/cancel", response_model=MeOvertimeOut)
+def me_overtime_cancel(
+    req_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    e = _me(db, current)
+    r = db.execute(
+        select(OvertimeRequest).where(OvertimeRequest.id == req_id).with_for_update()
+    ).scalar_one_or_none()
+    if not r or r.employee_id != e.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "申请不存在")
+    if r.status not in ("pending", "approved"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "当前状态不能撤销")
+    was_approved = r.status == "approved"
+    r.status = "cancelled"
+    if was_approved:
+        # 回冲调休:allocation -comp_days + 台账 -delta。comp_days 用批准时
+        # 写入行的值 — 审批后改过日标准工时,重算会回冲错数。
+        if r.comp_days is not None:
+            comp_days = r.comp_days
+        else:
+            wh = workday_hours(db, current.tenant_id) or 8.0
+            comp_days = max(0.5, round(r.hours / wh * 2) / 2)
+        year = r.work_date.year
+        # FOR UPDATE 锁额度行:校验余额与扣减必须原子
+        alloc = db.execute(
+            select(LeaveAllocation).where(
+                LeaveAllocation.employee_id == e.id,
+                LeaveAllocation.leave_type_id == r.leave_type_id,
+                LeaveAllocation.year == year,
+            ).with_for_update()
+        ).scalar_one_or_none()
+        if alloc is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "调休额度已使用,不能撤销")
+        # 剩余额度(alloc - 已批 - 待批)不够回冲则拒绝 — 只比 alloc.days
+        # 会把已花掉的天数又吐回来,余额变负。
+        used, pending = _used_pending_days(
+            db, employee_id=e.id, leave_type_id=r.leave_type_id, year=year
+        )
+        if alloc.days - used - pending - comp_days < 0:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "调休额度已使用,不能撤销")
+        alloc.days -= comp_days
+        db.add(LeaveLedgerEntry(
+            tenant_id=current.tenant_id, employee_id=e.id,
+            leave_type_id=r.leave_type_id, year=year,
+            delta_days=-comp_days, ref_type="overtime_cancel", ref_id=r.id,
+            note="加班撤销回冲调休",
+        ))
+    db.commit()
+    db.refresh(r)
+    lt = db.get(LeaveType, r.leave_type_id)
+    return _me_ot_out(db, r, {r.leave_type_id: lt})
 
 
 # ============ checkins / attendance ============
@@ -437,6 +651,126 @@ def me_attendance(
         day=a.day, status=a.status, first_in=a.first_in,
         last_out=a.last_out, work_hours=a.work_hours,
     ) for a in rows]
+
+
+# ============ attendance requests(补卡申请)============
+
+
+class MeAttRequestIn(BaseModel):
+    ts: datetime  # 要补打的时刻
+    kind: Literal["in", "out"]
+    reason: str = ""
+
+
+class MeAttRequestOut(BaseModel):
+    id: str
+    ts: datetime
+    kind: str
+    reason: str
+    status: str
+    decided_at: datetime | None
+    decision_note: str | None
+    created_at: datetime
+
+
+def _me_atr_out(r: AttendanceRequest) -> MeAttRequestOut:
+    return MeAttRequestOut(
+        id=r.id, ts=r.ts, kind=r.kind, reason=r.reason, status=r.status,
+        decided_at=r.decided_at, decision_note=r.decision_note,
+        created_at=r.created_at,
+    )
+
+
+@router.get("/attendance-requests", response_model=list[MeAttRequestOut])
+def me_att_requests(
+    db: Session = Depends(get_db), current: User = Depends(get_current_user)
+):
+    e = _me(db, current)
+    rows = db.scalars(
+        select(AttendanceRequest)
+        .where(AttendanceRequest.employee_id == e.id)
+        .order_by(AttendanceRequest.created_at.desc())
+        .limit(100)
+    ).all()
+    return [_me_atr_out(r) for r in rows]
+
+
+@router.post("/attendance-requests", response_model=MeAttRequestOut,
+             status_code=status.HTTP_201_CREATED)
+def me_att_request_create(
+    body: MeAttRequestIn,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    e = _me(db, current)
+    # 入参可能带时区(ISO Z),统一压成与 DB 一致的 naive UTC
+    ts = body.ts
+    if ts.tzinfo is not None:
+        ts = ts.astimezone(UTC).replace(tzinfo=None)
+    # 补卡只补过去/当下的打卡时刻(留 5 分钟钟差余量)
+    if ts > _now() + timedelta(minutes=5):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "补卡时刻不能是未来")
+    day_start = datetime.combine(ts.date(), datetime.min.time())
+    dup = db.scalars(
+        select(AttendanceRequest.id).where(
+            AttendanceRequest.employee_id == e.id,
+            AttendanceRequest.status == "pending",
+            AttendanceRequest.kind == body.kind,
+            AttendanceRequest.ts >= day_start,
+            AttendanceRequest.ts < day_start + timedelta(days=1),
+        ).limit(1)
+    ).first()
+    if dup:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "该时段已有待审批的同向补卡申请")
+    r = AttendanceRequest(
+        tenant_id=current.tenant_id, employee_id=e.id, ts=ts,
+        kind=body.kind, reason=body.reason, status="pending",
+    )
+    db.add(r)
+    db.commit()
+    db.refresh(r)
+    return _me_atr_out(r)
+
+
+@router.post("/attendance-requests/{req_id}/cancel", response_model=MeAttRequestOut)
+def me_att_request_cancel(
+    req_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    e = _me(db, current)
+    r = db.execute(
+        select(AttendanceRequest)
+        .where(AttendanceRequest.id == req_id).with_for_update()
+    ).scalar_one_or_none()
+    if not r or r.employee_id != e.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "申请不存在")
+    if r.status not in ("pending", "approved"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "当前状态不能撤销")
+    was_approved = r.status == "approved"
+    r.status = "cancelled"
+    if was_approved:
+        # 批准时补写的那条 checkin(method=request)删掉,再重算当天
+        from app.api.attendance import summarize_day
+
+        ck = db.scalars(
+            select(EmployeeCheckin).where(
+                EmployeeCheckin.employee_id == e.id,
+                EmployeeCheckin.ts == r.ts,
+                EmployeeCheckin.kind == r.kind,
+                EmployeeCheckin.method == "request",
+            ).limit(1)
+        ).first()
+        if ck:
+            db.delete(ck)
+            db.flush()
+        summarize_day(
+            db, tenant_id=current.tenant_id, employee_id=e.id, day=r.ts.date()
+        )
+    db.commit()
+    db.refresh(r)
+    return _me_atr_out(r)
 
 
 # ============ salary slips ============

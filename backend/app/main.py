@@ -47,6 +47,7 @@ from app.api import llm as llm_api
 from app.api import matches as matches_api
 from app.api import metrics as metrics_api
 from app.api import org as org_api
+from app.api import overtime as overtime_api
 from app.api import payroll as payroll_api
 from app.api import performance as performance_api
 from app.api import question_library as question_library_api
@@ -58,6 +59,7 @@ from app.api import sso as sso_api
 from app.api import talents as talents_api
 from app.api import users as users_api
 from app.api import voice as voice_api
+from app.api import work_calendar as work_calendar_api
 from app.config import settings
 from app.domain.models import Job, Tenant, User
 from app.infra.db import SessionLocal
@@ -294,6 +296,8 @@ def create_app() -> FastAPI:
     app.include_router(hr_me_api.router, prefix="/api")
     app.include_router(leave_api.router, prefix="/api")
     app.include_router(attendance_api.router, prefix="/api")
+    app.include_router(overtime_api.router, prefix="/api")
+    app.include_router(work_calendar_api.router, prefix="/api")
     app.include_router(lifecycle_api.router, prefix="/api")
     app.include_router(hiring_api.req_router, prefix="/api")
     app.include_router(hiring_api.offer_router, prefix="/api")

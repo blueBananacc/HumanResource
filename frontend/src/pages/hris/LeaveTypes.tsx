@@ -75,6 +75,11 @@ export function LeaveTypes() {
               >
                 {t.is_paid ? "带薪" : "无薪"}
               </span>
+              {t.is_comp && (
+                <span className="px-2 py-0.5 rounded-md text-[11px] font-body bg-[var(--color-info-soft)] text-[var(--color-info)]">
+                  调休
+                </span>
+              )}
               <span className="text-[12px] text-[var(--color-text-secondary)] font-body">
                 年度默认 {t.annual_days} 天
               </span>
@@ -129,6 +134,7 @@ function TypeCreateModal({
       name: String(fd.get("name") || "").trim(),
       annual_days: Number(fd.get("annual_days") || 0),
       is_paid: fd.get("is_paid") === "on",
+      is_comp: fd.get("is_comp") === "on",
     });
   }
 
@@ -164,6 +170,10 @@ function TypeCreateModal({
         <label className="flex items-center gap-2 text-[13px] font-body text-[var(--color-text-primary)]">
           <input type="checkbox" name="is_paid" defaultChecked />
           带薪假
+        </label>
+        <label className="flex items-center gap-2 text-[13px] font-body text-[var(--color-text-primary)]">
+          <input type="checkbox" name="is_comp" />
+          调休类型(加班申请批准后把额度结算到这类类型)
         </label>
         {err && (
           <div className="text-[13px] text-[var(--color-danger)] font-body">

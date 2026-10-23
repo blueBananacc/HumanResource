@@ -182,6 +182,7 @@ export const mainModules: NavModule[] = [
           { to: "/leave", label: "请假审批", permission: PERM.APPROVE_LEAVE, keywords: "请假 审批 leave" },
           { to: "/leave/balances", label: "假期额度", permission: PERM.MANAGE_LEAVE, keywords: "额度 余额 年假" },
           { to: "/leave/types", label: "假期类型", permission: PERM.MANAGE_LEAVE, keywords: "类型 设置" },
+          { to: "/leave/policies", label: "假期政策", permission: PERM.MANAGE_LEAVE, keywords: "政策 发放 结转 policy" },
         ],
       },
       {
@@ -189,6 +190,9 @@ export const mainModules: NavModule[] = [
         items: [
           { to: "/attendance", label: "考勤记录", permission: PERM.VIEW_REPORTS, keywords: "出勤 考勤 attendance" },
           { to: "/attendance/checkins", label: "打卡流水", permission: PERM.VIEW_REPORTS, keywords: "打卡 签到 checkin" },
+          { to: "/attendance/requests", label: "补卡审批", permission: PERM.APPROVE_LEAVE, keywords: "补卡 漏打卡 申诉" },
+          { to: "/overtime", label: "加班审批", permission: PERM.APPROVE_LEAVE, keywords: "加班 调休 overtime" },
+          { to: "/attendance/calendar", label: "节假日历", permission: PERM.MANAGE_ATTENDANCE, keywords: "节假日 工作日历 调休" },
         ],
       },
     ],
@@ -305,6 +309,30 @@ export const essModules: NavModule[] = [
   { key: "me-profile", label: "我的资料", icon: Users, to: "/me/profile", keywords: "档案 资料 个人信息" },
 ];
 
+/**
+ * 绑定了员工档案的非 employee 角色(用人经理/HR 等)追加的「我的」模块:
+ * 二级面板放整套 ESS 页面 —— 他们可以审批下属,也需要给自己提请假/报销。
+ */
+const boundEssModule: NavModule = {
+  key: "me",
+  label: "我的",
+  icon: Home,
+  feature: "hr.suite",
+  groups: [
+    {
+      items: [
+        { to: "/me", label: "我的工作台", keywords: "员工 自助 ess" },
+        { to: "/me/leave", label: "我的请假", keywords: "请假 年假 休假" },
+        { to: "/me/attendance", label: "我的考勤", keywords: "打卡 考勤 出勤" },
+        { to: "/me/payslips", label: "我的工资条", keywords: "工资 薪资 工资条" },
+        { to: "/me/expenses", label: "我的报销", keywords: "报销 费用" },
+        { to: "/me/goals", label: "我的目标", keywords: "目标 绩效 okr" },
+        { to: "/me/profile", label: "我的资料", keywords: "档案 资料 个人信息" },
+      ],
+    },
+  ],
+};
+
 export function isItemActive(it: NavItem, pathname: string, search: URLSearchParams) {
   if (it.soon) return false;
   if (it.activeWhen) return it.activeWhen(pathname, search);
@@ -365,8 +393,11 @@ export function useVisibleNav() {
       if (!groups.some((g) => g.items.some((it) => !it.soon))) return [];
       return [{ ...m, groups }];
     });
-  // 员工账号:整组换 ESS 导航
-  const main = isEmployee ? essModules : filter(mainModules);
+  // 员工账号:整组换 ESS 导航;非员工但绑定了员工档案的账号
+  // (用人经理等)在正常导航尾部追加「我的」入口。
+  const main = isEmployee
+    ? essModules
+    : [...filter(mainModules), ...(user?.employee_id ? filter([boundEssModule]) : [])];
   const bottom = isEmployee ? [] : filter(bottomModules);
   const pages: FlatPage[] = [...main, ...bottom].flatMap((m) =>
     m.to

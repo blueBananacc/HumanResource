@@ -35,10 +35,14 @@ import { EmployeeDetail } from "@/pages/hris/EmployeeDetail";
 import { OrgChart } from "@/pages/hris/OrgChart";
 import { Lifecycle } from "@/pages/hris/Lifecycle";
 import { LeaveAdmin } from "@/pages/hris/LeaveAdmin";
+import { LeavePolicies } from "@/pages/hris/LeavePolicies";
+import { OvertimeRequests } from "@/pages/hris/OvertimeRequests";
 import { LeaveBalances } from "@/pages/hris/LeaveBalances";
 import { LeaveTypes } from "@/pages/hris/LeaveTypes";
 import { AttendanceAdmin } from "@/pages/hris/AttendanceAdmin";
 import { Checkins } from "@/pages/hris/Checkins";
+import { AttendanceRequests } from "@/pages/hris/AttendanceRequests";
+import { WorkCalendarPage } from "@/pages/hris/WorkCalendarPage";
 import { Requisitions } from "@/pages/hris/Requisitions";
 import { Offers } from "@/pages/hris/Offers";
 import { Performance } from "@/pages/hris/Performance";
@@ -62,10 +66,12 @@ function IndexByRole() {
   return <Dashboard />;
 }
 
-/** 员工自助路由守卫:非员工角色访问 /me/* 一律回首页 */
+/** 员工自助路由守卫:employee 账号,或绑定了员工档案的其他角色(用人经理等)可进 */
 function MeGuard({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  if (user && user.role !== "employee") return <Navigate to="/" replace />;
+  if (user && user.role !== "employee" && !user.employee_id) {
+    return <Navigate to="/" replace />;
+  }
   return <>{children}</>;
 }
 
@@ -90,8 +96,12 @@ export const router = createBrowserRouter([
       { path: "leave", element: <LeaveAdmin /> },
       { path: "leave/balances", element: <LeaveBalances /> },
       { path: "leave/types", element: <LeaveTypes /> },
+      { path: "leave/policies", element: <LeavePolicies /> },
       { path: "attendance", element: <AttendanceAdmin /> },
       { path: "attendance/checkins", element: <Checkins /> },
+      { path: "attendance/requests", element: <AttendanceRequests /> },
+      { path: "attendance/calendar", element: <WorkCalendarPage /> },
+      { path: "overtime", element: <OvertimeRequests /> },
       // ── HRIS 招聘扩展 ──
       { path: "requisitions", element: <Requisitions /> },
       { path: "offers", element: <Offers /> },

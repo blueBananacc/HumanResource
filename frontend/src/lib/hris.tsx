@@ -20,6 +20,7 @@ export type Employee = {
   status: string;
   personal: Record<string, unknown> | null;
   source_candidate_id: string | null;
+  leave_policy_id: string | null;
   has_account: boolean;
   created_at: string;
   updated_at: string;
@@ -37,6 +38,8 @@ export type LeaveType = {
   name: string;
   annual_days: number;
   is_paid: boolean;
+  /** 调休类型 — 加班申请批准后把额度结算到这类类型 */
+  is_comp: boolean;
   allocated_days: number;
   used_days: number;
 };
@@ -121,6 +124,76 @@ export type Checkin = {
   kind: string;
   method: string;
   note: string | null;
+};
+
+export type AttendanceRequest = {
+  id: string;
+  employee_id: string;
+  employee_name: string;
+  org_unit_name: string | null;
+  ts: string;
+  kind: string;
+  reason: string;
+  status: string;
+  approver_id: string | null;
+  approver_email: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  /** 申请人即当前登录账号 — 不能自批,前端据此隐藏审批按钮 */
+  own_request: boolean;
+  created_at: string;
+};
+
+export type OvertimeRequest = {
+  id: string;
+  employee_id: string;
+  employee_name: string;
+  org_unit_name: string | null;
+  work_date: string;
+  hours: number;
+  leave_type_id: string;
+  leave_type_name: string;
+  /** 按工作日历折算后的调休天数(服务端计算) */
+  comp_days: number;
+  reason: string;
+  status: string;
+  approver_id: string | null;
+  approver_email: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  own_request: boolean;
+  created_at: string;
+};
+
+export type Holiday = {
+  id: string;
+  day: string;
+  name: string;
+  /** holiday 放假 / workday 调休补班 */
+  kind: string;
+};
+
+export type WorkCalendar = {
+  /** ISO weekday 工作日集合:1=周一 … 7=周日 */
+  workdays: number[];
+  /** 日标准工时,加班折算调休用 */
+  workday_hours: number;
+};
+
+export type LeavePolicyItem = {
+  leave_type_id: string;
+  leave_type_name: string;
+  days: number;
+};
+
+export type LeavePolicy = {
+  id: string;
+  name: string;
+  items: LeavePolicyItem[];
+  /** 结转上限;null = 不结转 */
+  carry_forward: number | null;
+  assigned_count: number;
+  created_at: string;
 };
 
 export type LifecycleTemplate = {
@@ -312,7 +385,37 @@ export type MeProfile = {
   personal: Record<string, unknown> | null;
 };
 
-export type MeLeaveType = { id: string; name: string; is_paid: boolean };
+export type MeLeaveType = {
+  id: string;
+  name: string;
+  is_paid: boolean;
+  is_comp: boolean;
+};
+
+export type MeAttRequest = {
+  id: string;
+  ts: string;
+  kind: string;
+  reason: string;
+  status: string;
+  decided_at: string | null;
+  decision_note: string | null;
+  created_at: string;
+};
+
+export type MeOvertimeRequest = {
+  id: string;
+  work_date: string;
+  hours: number;
+  leave_type_id: string;
+  leave_type_name: string;
+  comp_days: number;
+  reason: string;
+  status: string;
+  decided_at: string | null;
+  decision_note: string | null;
+  created_at: string;
+};
 
 export type MeBalance = {
   leave_type_id: string;

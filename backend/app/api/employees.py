@@ -73,6 +73,7 @@ class EmployeeOut(BaseModel):
     status: str
     personal: dict[str, Any] | None
     source_candidate_id: str | None
+    leave_policy_id: str | None
     has_account: bool
     created_at: datetime
     updated_at: datetime
@@ -187,6 +188,7 @@ def _serialize(e: Employee, orgs: dict, emps: dict) -> EmployeeOut:
         status=e.status,
         personal=e.personal,
         source_candidate_id=e.source_candidate_id,
+        leave_policy_id=e.leave_policy_id,
         has_account=e.user_id is not None,
         created_at=e.created_at,
         updated_at=e.updated_at,
@@ -210,6 +212,7 @@ def _has_dependents(db: Session, emp_id: str, tenant_id: str) -> str | None:
     from app.domain.models import (
         Appraisal,
         Attendance,
+        AttendanceRequest,
         EmployeeCheckin,
         ExpenseClaim,
         Goal,
@@ -217,6 +220,7 @@ def _has_dependents(db: Session, emp_id: str, tenant_id: str) -> str | None:
         LeaveApplication,
         LeaveLedgerEntry,
         LifecycleEvent,
+        OvertimeRequest,
         SalarySlip,
     )
 
@@ -226,6 +230,8 @@ def _has_dependents(db: Session, emp_id: str, tenant_id: str) -> str | None:
         (LeaveLedgerEntry, "假期台账"),
         (Attendance, "考勤记录"),
         (EmployeeCheckin, "打卡记录"),
+        (AttendanceRequest, "补卡申请"),
+        (OvertimeRequest, "加班申请"),
         (LifecycleEvent, "生命周期事件"),
         (Goal, "目标"),
         (Appraisal, "考核表"),

@@ -334,6 +334,25 @@ def visible_employee_ids(
     return out
 
 
+def can_decide_for_employee(db: Session, user: User, employee_id: str) -> bool:
+    """审批链通用判定:谁可以决定这个员工的申请。
+
+    - admin / hr → 可批
+    - hiring_manager → 仅直属下属(reports_to_id == 自己绑定的员工档案)
+    - 任何角色不能批自己的申请(申请人绑定 user_id == 当前用户 → False)
+    与 leave._can_approve / expenses 的审批边界同一语义。
+    """
+    target = db.get(Employee, employee_id)
+    if not target or target.user_id == user.id:
+        return False
+    if user.role in ("admin", "hr"):
+        return True
+    if user.role == "hiring_manager":
+        mgr_emp = get_linked_employee_id(db, user)
+        return bool(mgr_emp and target.reports_to_id == mgr_emp)
+    return False
+
+
 def team_ids_with_self(db: Session, user: User) -> list[str]:
     """直属下属 + 自己 — 显式 scope=team 用语义,admin/hr 也按汇报线过滤。"""
     own = get_linked_employee_id(db, user)
@@ -377,6 +396,7 @@ __all__ = [
     "PERM_MANAGE_PAYROLL",
     "ROLE_PERMISSIONS",
     "apply_org_filter",
+    "can_decide_for_employee",
     "ensure_can_see",
     "get_linked_employee_id",
     "get_org_scope",
