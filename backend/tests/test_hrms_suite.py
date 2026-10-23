@@ -1366,3 +1366,44 @@ def test_unbind_disables_ess_account(db_session):
         assert u.status == "active"
     finally:
         _cleanup(db_session, t)
+
+
+def test_half_day_validation(db_session):
+    """半天粒度:0.3 天申请/额度 422,0.5 合法。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        lt = _mk_leave_type(client, _hdr(admin))
+        emp, ess = _mk_ess_employee(client, _hdr(admin))
+
+        # 额度:0.3 → 422;7.5 → 201
+        res = client.post(
+            "/api/leave/allocations", headers=_hdr(admin),
+            json={"employee_id": emp["id"], "leave_type_id": lt["id"],
+                  "year": date.today().year, "days": 0.3},
+        )
+        assert res.status_code == 422
+        res = client.post(
+            "/api/leave/allocations", headers=_hdr(admin),
+            json={"employee_id": emp["id"], "leave_type_id": lt["id"],
+                  "year": date.today().year, "days": 7.5},
+        )
+        assert res.status_code == 201
+
+        # ESS 申请:0.3 → 422;0.5 → 201
+        s = date.today() + timedelta(days=60)
+        res = client.post(
+            "/api/me/leave-applications", headers=ess,
+            json={"leave_type_id": lt["id"], "start_date": str(s),
+                  "end_date": str(s), "days": 0.3},
+        )
+        assert res.status_code == 422
+        res = client.post(
+            "/api/me/leave-applications", headers=ess,
+            json={"leave_type_id": lt["id"], "start_date": str(s),
+                  "end_date": str(s), "days": 0.5},
+        )
+        assert res.status_code == 201, res.text
+    finally:
+        _cleanup(db_session, t)

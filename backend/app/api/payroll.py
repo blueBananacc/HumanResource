@@ -17,9 +17,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, count_total, paginate_params
-from app.domain.models import Employee, OrgUnit, SalarySlip, User
-from app.api.auth import get_current_user
 from app.api.license import require_feature
+from app.domain.models import Employee, OrgUnit, SalarySlip, User
 from app.infra.db import get_db
 from app.services.audit import write_audit
 from app.services.permissions import (

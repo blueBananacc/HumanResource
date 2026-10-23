@@ -21,7 +21,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, apply_q_ilike, count_total, paginate_params
-from app.api.auth import get_current_user
 from app.api.license import require_feature
 from app.domain.models import (
     Attendance,
@@ -41,6 +40,7 @@ from app.services.permissions import (
     PERM_VIEW_REPORTS,
     get_linked_employee_id,
     require_permission,
+    team_ids_with_self,
     visible_employee_ids,
 )
 
@@ -73,6 +73,12 @@ class LeaveTypeOut(BaseModel):
     used_days: float = 0
 
 
+def _validate_half_day(v: float) -> float:
+    if (v * 2) != int(v * 2):
+        raise ValueError("天数须以 0.5 天为步长")
+    return v
+
+
 class AllocationIn(BaseModel):
     employee_id: str
     leave_type_id: str
@@ -80,10 +86,20 @@ class AllocationIn(BaseModel):
     days: float = Field(..., ge=0, le=365)
     note: str | None = None
 
+    @field_validator("days")
+    @classmethod
+    def _v_days(cls, v: float) -> float:
+        return _validate_half_day(v)
+
 
 class AllocationUpdateIn(BaseModel):
     days: float = Field(..., ge=0, le=365)
     note: str | None = None
+
+    @field_validator("days")
+    @classmethod
+    def _v_days(cls, v: float) -> float:
+        return _validate_half_day(v)
 
 
 class AllocationOut(BaseModel):
@@ -223,23 +239,6 @@ def _can_approve(db: Session, user: User, app: LeaveApplication) -> bool:
         mgr_emp = get_linked_employee_id(db, user)
         return bool(mgr_emp and target.reports_to_id == mgr_emp)
     return False
-
-
-def _team_ids_with_self(db: Session, user: User) -> list[str]:
-    """直属下属 + 自己 — 显式 scope=team 用语义,admin/hr 也按汇报线过滤。"""
-    own = get_linked_employee_id(db, user)
-    ids = [
-        r[0]
-        for r in db.execute(
-            select(Employee.id).where(
-                Employee.tenant_id == user.tenant_id,
-                Employee.reports_to_id == (own or "__none__"),
-            )
-        ).all()
-    ]
-    if own:
-        ids.append(own)
-    return ids
 
 
 def _write_ledger(
@@ -532,7 +531,7 @@ def list_applications(
     elif scope == "team":
         stmt = stmt.where(
             LeaveApplication.employee_id.in_(
-                _team_ids_with_self(db, current) or ["__none__"]
+                team_ids_with_self(db, current) or ["__none__"]
             )
         )
     elif current.role not in ("admin", "hr"):
@@ -639,7 +638,7 @@ def balances(
     y = year or datetime.now().year
     emp_ids: list[str] | None
     if scope == "team":
-        emp_ids = _team_ids_with_self(db, current)
+        emp_ids = team_ids_with_self(db, current)
     else:
         if current.role in ("admin", "hr"):
             emp_ids = None

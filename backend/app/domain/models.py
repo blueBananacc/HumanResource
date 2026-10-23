@@ -28,9 +28,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    false as sql_false,
     func,
 )
+from sqlalchemy import false as sql_false
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 

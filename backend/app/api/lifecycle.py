@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, count_total, paginate_params
+from app.api.license import require_feature
 from app.domain.models import (
     Employee,
     LifecycleEvent,
@@ -28,8 +29,6 @@ from app.domain.models import (
     OrgUnit,
     User,
 )
-from app.api.auth import get_current_user
-from app.api.license import require_feature
 from app.infra.db import get_db
 from app.services.audit import write_audit
 from app.services.permissions import (

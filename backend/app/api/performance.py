@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
@@ -17,7 +16,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, count_total, paginate_params
-from app.api.auth import get_current_user
 from app.api.license import require_feature
 from app.domain.models import (
     Appraisal,

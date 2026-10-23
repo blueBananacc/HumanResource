@@ -334,6 +334,23 @@ def visible_employee_ids(
     return out
 
 
+def team_ids_with_self(db: Session, user: User) -> list[str]:
+    """直属下属 + 自己 — 显式 scope=team 用语义,admin/hr 也按汇报线过滤。"""
+    own = get_linked_employee_id(db, user)
+    ids = [
+        r[0]
+        for r in db.execute(
+            select(Employee.id).where(
+                Employee.tenant_id == user.tenant_id,
+                Employee.reports_to_id == (own or "__none__"),
+            )
+        ).all()
+    ]
+    if own:
+        ids.append(own)
+    return ids
+
+
 __all__ = [
     "PERM_MANAGE_ORG",
     "PERM_MANAGE_TEAM",
@@ -369,6 +386,7 @@ __all__ = [
     "require_permission",
     "require_role",
     "team_employee_ids",
+    "team_ids_with_self",
     "visible_employee_ids",
     "visible_org_ids",
 ]

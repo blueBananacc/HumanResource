@@ -21,14 +21,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, count_total, paginate_params
-from app.api.auth import get_current_user
 from app.api.license import require_feature
 from app.domain.models import (
     Candidate,
     Employee,
     Job,
-    JobRequisition,
     JobOffer,
+    JobRequisition,
     LifecycleEvent,
     LifecycleTask,
     LifecycleTemplate,
@@ -40,8 +39,8 @@ from app.services.audit import write_audit
 from app.services.permissions import (
     PERM_APPROVE_REQUISITIONS,
     PERM_MANAGE_OFFERS,
-    PERM_WRITE_REQUISITIONS,
     PERM_VIEW_REPORTS,
+    PERM_WRITE_REQUISITIONS,
     require_permission,
 )
 

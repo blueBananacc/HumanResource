@@ -140,7 +140,7 @@ class OrgChartNode(BaseModel):
     designation: str | None
     org_unit_name: str | None
     status: str
-    children: list["OrgChartNode"] = Field(default_factory=list)
+    children: list[OrgChartNode] = Field(default_factory=list)
 
 
 # ============ helpers ============

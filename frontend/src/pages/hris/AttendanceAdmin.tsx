@@ -29,6 +29,18 @@ const STATUS_OPTIONS = [
 ];
 const EDIT_STATUS = STATUS_OPTIONS.slice(1);
 
+/** "YYYY-MM" → 该月最后一天 "YYYY-MM-DD";非法输入返回 null(禁用重算)。 */
+function monthEnd(month: string): string | null {
+  const m = /^(\d{4})-(\d{2})$/.exec(month);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  if (mo < 1 || mo > 12) return null;
+  // day 0 of month (mo+1) = 当月最后一天,本地时区手拼避免 toISOString 跨日
+  const last = new Date(y, mo, 0).getDate();
+  return `${m[1]}-${m[2]}-${String(last).padStart(2, "0")}`;
+}
+
 export function AttendanceAdmin() {
   const [sp, setSp] = useSearchParams();
   const month =
@@ -59,14 +71,17 @@ export function AttendanceAdmin() {
   }
 
   const summarize = useMutation({
-    mutationFn: () =>
-      fetchJSON("/api/attendance/summarize", {
+    mutationFn: () => {
+      const end = monthEnd(month);
+      if (!end) return Promise.reject(new ApiError(400, "月份格式无效"));
+      return fetchJSON("/api/attendance/summarize", {
         method: "POST",
         body: JSON.stringify({
           start: `${month}-01`,
-          end: `${month}-31`,
+          end,
         }),
-      }),
+      });
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["attendance"] }),
   });
 
@@ -85,7 +100,7 @@ export function AttendanceAdmin() {
           <Button
             variant="secondary"
             onClick={() => summarize.mutate()}
-            disabled={summarize.isPending}
+            disabled={summarize.isPending || !monthEnd(month)}
           >
             <RefreshCw className="w-4 h-4" />
             {summarize.isPending ? "汇总中…" : "重算本月"}

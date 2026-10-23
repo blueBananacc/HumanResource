@@ -43,14 +43,14 @@ from app.domain.models import (
     ExpenseItem,
     ExpenseType,
     Goal,
+    LeaveAllocation,
     LeaveApplication,
     LeaveLedgerEntry,
     LeaveType,
     LifecycleEvent,
     LifecycleTask,
-    SalarySlip,
-    LeaveAllocation,
     OrgUnit,
+    SalarySlip,
     User,
 )
 from app.infra.db import get_db
@@ -205,6 +205,13 @@ class MeApplicationIn(BaseModel):
             raise ValueError("结束日期不能早于开始日期")
         return v
 
+    @field_validator("days")
+    @classmethod
+    def _v_days(cls, v: float) -> float:
+        if (v * 2) != int(v * 2):
+            raise ValueError("请假天数须以 0.5 天为步长")
+        return v
+
 
 class MeApplicationOut(BaseModel):
     id: str
@@ -310,8 +317,9 @@ def me_leave_cancel(
 
 def _cancel_ledger_and_attendance(db: Session, a: LeaveApplication) -> None:
     """撤销已批准申请:回写台账 +,恢复考勤。"""
-    from app.api.attendance import summarize_day
     from datetime import timedelta
+
+    from app.api.attendance import summarize_day
 
     db.add(LeaveLedgerEntry(
         tenant_id=a.tenant_id, employee_id=a.employee_id,

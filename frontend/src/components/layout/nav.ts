@@ -337,12 +337,17 @@ export function useVisibleNav() {
   const isAdmin = user?.role === "admin";
   const isEmployee = user?.role === "employee";
   // license 功能位:hris 模块挂在 hr.suite 上
-  const { data: lic } = useQuery<{ features: Record<string, boolean> }>({
+  const { data: lic, isError: licError } = useQuery<{
+    features: Record<string, boolean>;
+  }>({
     queryKey: ["license-status"],
     queryFn: () => fetchJSON("/api/license/status"),
     staleTime: 60_000,
   });
-  const featureOn = (f?: string) => !f || (lic?.features?.[f] ?? true);
+  // 未加载完成时隐藏功能模块,避免社区版闪现不可用的 HRIS 导航;
+  // 接口报错则 fail-open 保持原有行为(后端仍会 402 兜底)。
+  const featureOn = (f?: string) =>
+    !f || (lic ? (lic.features?.[f] ?? false) : licError);
   const allowed = (it: NavItem) => {
     if (!featureOn(it.feature)) return false;
     if (it.adminOnly) return isAdmin;

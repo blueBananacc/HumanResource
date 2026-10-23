@@ -17,7 +17,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, count_total, paginate_params
-from app.api.auth import get_current_user
 from app.api.license import require_feature
 from app.domain.models import (
     Employee,
@@ -35,6 +34,7 @@ from app.services.permissions import (
     PERM_VIEW_REPORTS,
     get_linked_employee_id,
     require_permission,
+    team_ids_with_self,
     visible_employee_ids,
 )
 
@@ -190,7 +190,7 @@ def list_claims(
     if scope == "team":
         stmt = stmt.where(
             ExpenseClaim.employee_id.in_(
-                _team_ids_with_self(db, current) or ["__none__"]
+                team_ids_with_self(db, current) or ["__none__"]
             )
         )
     elif current.role not in ("admin", "hr"):
@@ -234,23 +234,6 @@ def get_claim(
         select(ExpenseItem).where(ExpenseItem.claim_id == c.id)
     ))
     return _claim_out(c, items, emps, orgs, types, current.id)
-
-
-def _team_ids_with_self(db: Session, user: User) -> list[str]:
-    """直属下属 + 自己 — 显式 scope=team 用语义,admin/hr 也按汇报线过滤。"""
-    own = get_linked_employee_id(db, user)
-    ids = [
-        r[0]
-        for r in db.execute(
-            select(Employee.id).where(
-                Employee.tenant_id == user.tenant_id,
-                Employee.reports_to_id == (own or "__none__"),
-            )
-        ).all()
-    ]
-    if own:
-        ids.append(own)
-    return ids
 
 
 def _can_decide(db: Session, user: User, c: ExpenseClaim) -> bool:
