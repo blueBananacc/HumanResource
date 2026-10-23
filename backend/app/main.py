@@ -26,11 +26,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
+from app.api import applications as applications_api
 from app.api import assistant as assistant_api
 from app.api import attendance as attendance_api
 from app.api import audit as audit_api
 from app.api import auth as auth_api
 from app.api import email as email_api
+from app.api import email_templates as email_templates_api
 from app.api import employees as employees_api
 from app.api import expenses as expenses_api
 from app.api import healthz
@@ -50,12 +52,16 @@ from app.api import org as org_api
 from app.api import overtime as overtime_api
 from app.api import payroll as payroll_api
 from app.api import performance as performance_api
+from app.api import prompt_templates as prompt_templates_api
 from app.api import question_library as question_library_api
 from app.api import question_sets as question_sets_api
 from app.api import reports as reports_api
 from app.api import resumes as resumes_api
+from app.api import rooms as rooms_api
+from app.api import skills as skills_api
 from app.api import smtp as smtp_api
 from app.api import sso as sso_api
+from app.api import surveys as surveys_api
 from app.api import talents as talents_api
 from app.api import users as users_api
 from app.api import voice as voice_api
@@ -301,9 +307,22 @@ def create_app() -> FastAPI:
     app.include_router(lifecycle_api.router, prefix="/api")
     app.include_router(hiring_api.req_router, prefix="/api")
     app.include_router(hiring_api.offer_router, prefix="/api")
+    app.include_router(applications_api.router, prefix="/api")
+    app.include_router(applications_api.pipeline_router, prefix="/api")
     app.include_router(performance_api.router, prefix="/api")
     app.include_router(expenses_api.router, prefix="/api")
     app.include_router(payroll_api.router, prefix="/api")
+    app.include_router(prompt_templates_api.router, prefix="/api")
+    app.include_router(email_templates_api.router, prefix="/api")
+    app.include_router(skills_api.router, prefix="/api")
+    app.include_router(skills_api.job_router, prefix="/api")
+    app.include_router(skills_api.cand_router, prefix="/api")
+    app.include_router(rooms_api.router, prefix="/api")
+    app.include_router(rooms_api.rooms_router, prefix="/api")
+    app.include_router(rooms_api.resources_router, prefix="/api")
+    app.include_router(rooms_api.interviewers_router, prefix="/api")
+    app.include_router(surveys_api.router, prefix="/api")
+    app.include_router(surveys_api.public_router, prefix="/api")
 
     return app
 

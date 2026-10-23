@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.models import Job, Resume
 from app.integrations.llm.provider import LLMError, Message, chat, parse_json
+from app.services.prompting import render_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,11 @@ def evaluate_match(
     模式;失败给基于 skills 重叠度的兜底,**不抛**到调用方。
     """
     messages: list[Message] = [
-        {"role": "system", "content": _system_prompt()},
+        {
+            "role": "system",
+            "content": render_prompt(db, job.tenant_id, "match.evaluate")
+            or _system_prompt(),
+        },
         {"role": "user", "content": _user_message(resume, job)},
     ]
     try:

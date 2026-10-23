@@ -1,0 +1,329 @@
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Eye,
+  History,
+  Pencil,
+  RotateCcw,
+  Save,
+  Sparkles,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Drawer } from "@/components/ui/drawer";
+import { Empty } from "@/components/ui/empty";
+import { ApiError, fetchJSON } from "@/lib/api";
+import { formatRelative } from "@/lib/format";
+
+/**
+ * 设置 → AI 提示词(T1-2,MintHCM AIPromptTemplates 移植)。
+ *
+ * 列表 = 注册表里所有用途,每条显示「默认 / 自定义 vN」;
+ * 抽屉里编辑 content(支持 {{var}} 占位)+ 变量文档 + 渲染预览 +
+ * 版本回滚 + 恢复默认。
+ */
+
+type VarSpec = { name: string; desc: string };
+
+type Template = {
+  key: string;
+  name: string;
+  description: string;
+  variables: VarSpec[];
+  content: string;
+  is_custom: boolean;
+  version: number | null;
+  updated_at: string | null;
+  updated_by: string | null;
+};
+
+type Version = { id: string; version: number; created_at: string };
+
+export function PromptSettings() {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState<Template | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+
+  const listQuery = useQuery({
+    queryKey: ["prompt-templates"],
+    queryFn: () => fetchJSON<Template[]>("/api/prompt-templates"),
+  });
+  const items = listQuery.data ?? [];
+
+  return (
+    <main className="p-8 flex flex-col gap-6 max-w-[1000px] mx-auto w-full">
+      <div className="flex flex-col gap-1.5">
+        <h2 className="font-heading font-semibold text-2xl text-[var(--color-text-primary)]">
+          AI 提示词
+        </h2>
+        <p className="text-sm text-[var(--color-text-secondary)] font-body">
+          按用途管理各 AI 能力的系统提示词 · 支持 {"{{变量}}"} 占位与版本回滚
+        </p>
+      </div>
+
+      {feedback && (
+        <div className="text-[13px] bg-[var(--color-info-soft)] text-[var(--color-info)] px-3 py-2 rounded-md font-body">
+          {feedback}
+        </div>
+      )}
+
+      <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
+        {listQuery.isLoading ? (
+          <div className="p-12 text-center text-sm text-[var(--color-text-tertiary)] font-body">
+            加载中…
+          </div>
+        ) : items.length === 0 ? (
+          <Empty icon={Sparkles} title="没有可管理的提示词" />
+        ) : (
+          items.map((t, i) => (
+            <div
+              key={t.key}
+              className={`flex items-center gap-4 px-6 py-4 ${
+                i < items.length - 1
+                  ? "border-b border-[var(--color-border-row)]"
+                  : ""
+              }`}
+            >
+              <div className="flex flex-col gap-1 flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-sm text-[var(--color-text-primary)] font-body">
+                    {t.name}
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded-md text-[11px] font-body ${
+                      t.is_custom
+                        ? "bg-[var(--color-accent-soft,rgba(238,22,79,0.08))] text-[var(--color-accent)]"
+                        : "bg-[var(--color-bg-subtle)] text-[var(--color-text-tertiary)]"
+                    }`}
+                  >
+                    {t.is_custom ? `自定义 v${t.version}` : "默认"}
+                  </span>
+                </div>
+                <p className="text-[12px] text-[var(--color-text-secondary)] font-body truncate">
+                  {t.description}
+                </p>
+                {t.is_custom && t.updated_at && (
+                  <span className="text-[11px] text-[var(--color-text-tertiary)] font-body">
+                    更新于 {formatRelative(t.updated_at)}
+                  </span>
+                )}
+              </div>
+              <code className="text-[11px] text-[var(--color-text-tertiary)] font-mono bg-[var(--color-bg-subtle)] px-2 py-1 rounded hidden md:block">
+                {t.key}
+              </code>
+              <Button
+                variant="secondary"
+                className="!px-3 !py-1.5 !text-[12px] shrink-0"
+                onClick={() => setEditing(t)}
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                编辑
+              </Button>
+            </div>
+          ))
+        )}
+      </div>
+
+      {editing && (
+        <TemplateDrawer
+          tpl={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(msg) => {
+            setEditing(null);
+            setFeedback(msg);
+            qc.invalidateQueries({ queryKey: ["prompt-templates"] });
+          }}
+        />
+      )}
+    </main>
+  );
+}
+
+function TemplateDrawer({
+  tpl,
+  onClose,
+  onSaved,
+}: {
+  tpl: Template;
+  onClose: () => void;
+  onSaved: (msg: string) => void;
+}) {
+  const [content, setContent] = useState(tpl.content);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [showVersions, setShowVersions] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const versionsQuery = useQuery({
+    queryKey: ["prompt-versions", tpl.key],
+    queryFn: () =>
+      fetchJSON<Version[]>(`/api/prompt-templates/${tpl.key}/versions`),
+    enabled: showVersions,
+  });
+
+  const save = useMutation({
+    mutationFn: () =>
+      fetchJSON<Template>(`/api/prompt-templates/${tpl.key}`, {
+        method: "PUT",
+        body: JSON.stringify({ content }),
+      }),
+    onSuccess: (t) => onSaved(`已保存为 v${t.version}`),
+    onError: (e) =>
+      setError(e instanceof ApiError ? e.message : "保存失败"),
+  });
+
+  const previewMut = useMutation({
+    mutationFn: () =>
+      fetchJSON<{ rendered: string }>(
+        `/api/prompt-templates/${tpl.key}/preview`,
+        { method: "POST", body: JSON.stringify({ vars: {} }) },
+      ),
+    onSuccess: (r) => setPreview(r.rendered),
+  });
+
+  const reset = useMutation({
+    mutationFn: () =>
+      fetchJSON<Template>(`/api/prompt-templates/${tpl.key}/reset`, {
+        method: "POST",
+      }),
+    onSuccess: () => onSaved("已恢复默认提示词"),
+    onError: (e) =>
+      setError(e instanceof ApiError ? e.message : "恢复失败"),
+  });
+
+  const rollback = useMutation({
+    mutationFn: (version: number) =>
+      fetchJSON<Template>(`/api/prompt-templates/${tpl.key}/rollback`, {
+        method: "POST",
+        body: JSON.stringify({ version }),
+      }),
+    onSuccess: (t) => onSaved(`已回滚,当前 v${t.version}`),
+    onError: (e) =>
+      setError(e instanceof ApiError ? e.message : "回滚失败"),
+  });
+
+  return (
+    <Drawer
+      open
+      onClose={onClose}
+      title={tpl.name}
+      description={`${tpl.key} · ${tpl.description}`}
+      width={680}
+    >
+      <div className="flex flex-col gap-4">
+        {tpl.variables.length > 0 && (
+          <div className="bg-[var(--color-bg-subtle)] rounded-lg p-3 flex flex-col gap-1.5">
+            <span className="text-[12px] font-medium text-[var(--color-text-secondary)] font-body">
+              可用变量(双花括号引用,如 {"{{job_title}}"})
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              {tpl.variables.map((v) => (
+                <span
+                  key={v.name}
+                  title={v.desc}
+                  className="px-2 py-0.5 rounded bg-white border border-[var(--color-border-subtle)] text-[11px] font-mono text-[var(--color-text-secondary)]"
+                >
+                  {`{{${v.name}}}`} · {v.desc}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <textarea
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          rows={18}
+          spellCheck={false}
+          className="w-full rounded-lg border border-[var(--color-border-subtle)] p-3 text-[13px] font-mono leading-relaxed focus:outline-none focus:border-[var(--color-accent)] resize-y"
+        />
+
+        {error && (
+          <div className="text-[12px] text-[var(--color-error)] font-body">
+            {error}
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            onClick={() => save.mutate()}
+            disabled={save.isPending || content.trim().length < 10}
+          >
+            <Save className="w-4 h-4" />
+            {save.isPending ? "保存中…" : "保存"}
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => previewMut.mutate()}
+            disabled={previewMut.isPending}
+          >
+            <Eye className="w-4 h-4" />
+            预览渲染
+          </Button>
+          {tpl.is_custom && (
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => setShowVersions((v) => !v)}
+              >
+                <History className="w-4 h-4" />
+                版本
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => reset.mutate()}
+                disabled={reset.isPending}
+              >
+                <RotateCcw className="w-4 h-4" />
+                恢复默认
+              </Button>
+            </>
+          )}
+        </div>
+
+        {showVersions && (
+          <div className="border border-[var(--color-border-subtle)] rounded-lg divide-y divide-[var(--color-border-row)]">
+            {(versionsQuery.data ?? []).map((v) => (
+              <div
+                key={v.id}
+                className="flex items-center justify-between px-3 py-2 text-[12px] font-body"
+              >
+                <span className="text-[var(--color-text-secondary)]">
+                  v{v.version} · {formatRelative(v.created_at)}
+                  {v.version === tpl.version && (
+                    <span className="ml-2 text-[var(--color-success)]">
+                      当前
+                    </span>
+                  )}
+                </span>
+                {v.version !== tpl.version && (
+                  <button
+                    type="button"
+                    onClick={() => rollback.mutate(v.version)}
+                    className="text-[var(--color-accent)] hover:underline"
+                  >
+                    回滚到此版
+                  </button>
+                )}
+              </div>
+            ))}
+            {versionsQuery.data?.length === 0 && (
+              <div className="px-3 py-4 text-center text-[12px] text-[var(--color-text-tertiary)]">
+                暂无历史版本
+              </div>
+            )}
+          </div>
+        )}
+
+        {preview && (
+          <div className="border border-[var(--color-border-subtle)] rounded-lg">
+            <div className="px-3 py-2 text-[12px] font-medium text-[var(--color-text-secondary)] border-b border-[var(--color-border-subtle)] font-body">
+              渲染预览(变量以 &lt;占位&gt; 显示)
+            </div>
+            <pre className="px-3 py-3 text-[12px] font-mono text-[var(--color-text-secondary)] whitespace-pre-wrap max-h-[300px] overflow-y-auto">
+              {preview}
+            </pre>
+          </div>
+        )}
+      </div>
+    </Drawer>
+  );
+}

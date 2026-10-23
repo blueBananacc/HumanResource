@@ -32,6 +32,7 @@ from app.config import settings
 from app.domain.models import Candidate, Interview, Job
 from app.infra.db import SessionLocal
 from app.integrations.email.smtp_sender import SMTPSendError, send_email
+from app.services.mail_templates import render_email
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -213,13 +214,23 @@ def send_invite_email(
             "question_count": interview.question_count,
             "sender_name": smtp.from_name,
         }
+        # 租户自定义邮件模板(设置 → 邮件模板)优先,否则内置文案
+        rendered = render_email(
+            db, interview.tenant_id, "interview.invite", kwargs
+        )
+        if rendered:
+            subject, text, html = rendered
+        else:
+            subject = f"[面试邀请] {job.title}"
+            text = _format_invite_text(**kwargs)
+            html = _format_invite_html(**kwargs)
         try:
             send_email(
                 cfg,
                 to=interview.notify_email,
-                subject=f"[面试邀请] {job.title}",
-                text=_format_invite_text(**kwargs),
-                html=_format_invite_html(**kwargs),
+                subject=subject,
+                text=text,
+                html=html,
             )
         except SMTPSendError as e:
             logger.warning(
@@ -296,17 +307,38 @@ def send_hr_done_email(self: Any, interview_id: str) -> dict[str, Any]:
         kwargs = {
             "candidate_name": cand.name,
             "job_title": job.title,
-            "average": average,
-            "recommendation": recommendation,
+            "average": average if average is not None else "—",
+            "recommendation": recommendation or "(待审阅)",
             "report_url": report_url,
         }
+        rendered = render_email(
+            db, interview.tenant_id, "interview.done", kwargs
+        )
+        if rendered:
+            subject, text, html = rendered
+        else:
+            subject = f"[面试完成] {cand.name} · {job.title}"
+            text = _format_done_text(
+                candidate_name=cand.name,
+                job_title=job.title,
+                average=average,
+                recommendation=recommendation,
+                report_url=report_url,
+            )
+            html = _format_done_html(
+                candidate_name=cand.name,
+                job_title=job.title,
+                average=average,
+                recommendation=recommendation,
+                report_url=report_url,
+            )
         try:
             send_email(
                 cfg,
                 to=creator.email,
-                subject=f"[面试完成] {cand.name} · {job.title}",
-                text=_format_done_text(**kwargs),
-                html=_format_done_html(**kwargs),
+                subject=subject,
+                text=text,
+                html=html,
             )
         except SMTPSendError as e:
             logger.warning(

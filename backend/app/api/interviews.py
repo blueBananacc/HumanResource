@@ -369,6 +369,19 @@ def start(
     db.commit()
     db.refresh(interview)
 
+    # 管道联动:发起面试 → 管道卡推进到 interview(无卡则补建,失败不阻塞)
+    try:
+        from app.services.applications import advance_application
+
+        advance_application(
+            db, current.tenant_id, cand.id, job.id, "interview",
+            actor_user_id=current.id, note="发起面试", create_if_missing=True,
+        )
+        db.commit()
+    except Exception:  # noqa: BLE001
+        logger.warning("[interviews] pipeline advance failed", exc_info=True)
+        db.rollback()
+
     write_audit(db, actor=current, entity_type="interview", entity_id=interview.id, action="create",
                 detail={"job_id": body.job_id, "candidate_id": body.candidate_id,
                         "modality": body.modality, "question_count": body.question_count},

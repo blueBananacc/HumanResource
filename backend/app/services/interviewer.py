@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.models import Candidate, Interview, InterviewTurn, Job, Resume
 from app.integrations.llm.provider import LLMError, Message, chat, parse_json
+from app.services.prompting import render_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -114,13 +115,20 @@ def _generate_question(
         + (f"已经问过的问答:\n{prior}\n\n" if prior else "")
         + f"现在请提出第 {n}/{question_count} 题。直接返回题目文本,不要前缀编号或解释。"
     )
+    sys_prompt = render_prompt(
+        db,
+        job.tenant_id,
+        "interview.question",
+        job_title=job.title,
+        level=level,
+        skills="、".join(job.skills) if job.skills else "(未填)",
+        candidate_name=candidate.name,
+        job_description=job.description[:500],
+        question_count=question_count,
+        kinds_brief=_kinds_brief(kinds),
+    ) or _system_prompt(job, candidate, level, kinds=kinds, question_count=question_count)
     messages: list[Message] = [
-        {
-            "role": "system",
-            "content": _system_prompt(
-                job, candidate, level, kinds=kinds, question_count=question_count
-            ),
-        },
+        {"role": "system", "content": sys_prompt},
         {"role": "user", "content": user_msg},
     ]
     try:
@@ -139,7 +147,10 @@ def _score_answer(
     level: str,
 ) -> tuple[dict[str, int], str, dict[str, object]]:
     """单轮评分:返回 ({accuracy/completeness/clarity}, evidence, llm_raw)。"""
-    sys = (
+    sys = render_prompt(
+        db, job.tenant_id, "interview.score",
+        job_title=job.title, level=level,
+    ) or (
         "你是招聘评估师,为下面的题目和答案打分(整数 0-100)。\n"
         "评估维度:\n"
         "- accuracy   答案的事实正确性与岗位匹配度\n"
@@ -528,7 +539,7 @@ def _finish(
     avg = sum(dim.values()) / len(dim)
 
     # 让 LLM 给一句总结(mock 也支持)
-    sys = (
+    sys = render_prompt(db, job.tenant_id, "interview.report") or (
         "你是招聘官,基于多维度评分对候选人这场面试给出推荐结论。\n"
         '只输出 JSON: {"recommendation": "推荐进入下一轮 / 保留 / 不推荐", "comment": "<=120 字"}'
     )

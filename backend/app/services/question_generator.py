@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.models import Job, Resume
 from app.integrations.llm.provider import LLMError, Message, chat, parse_json
+from app.services.prompting import render_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,24 @@ def generate_questions(
     count: int,
     kinds: list[str],
 ) -> list[dict[str, Any]]:
-    sys_prompt = _system_prompt(level=level, count=count, kinds=kinds, job=job)
+    sys_prompt = render_prompt(
+        db,
+        (job.tenant_id if job else resume.tenant_id),
+        "question.generate",
+        count=count,
+        level=level,
+        kinds_clause=(
+            f"题目类型应覆盖以下分类(至少 1 题/类): {' / '.join(kinds)}"
+            if kinds
+            else "题目类型自由分配,只要贴合简历与候选人背景"
+        ),
+        job_clause=(
+            f"目标岗位: {job.title} (技能要求: {', '.join(job.skills) if job.skills else '未填'})\n"
+            f"岗位描述: {(job.description or '')[:400]}\n"
+            if job
+            else "无指定岗位,完全按简历技能 / 经历出题。\n"
+        ),
+    ) or _system_prompt(level=level, count=count, kinds=kinds, job=job)
     user_msg = f"候选人简历摘录:\n{_resume_excerpt(resume)}\n\n请按要求出 {count} 道题。"
 
     messages: list[Message] = [

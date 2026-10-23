@@ -1,0 +1,441 @@
+"""问卷 API(参考 MintHCM Surveys)。
+
+管理端(登录 + 权限):
+- ``GET/POST /surveys``;``PUT /surveys/{id}``(title/desc/题目整组替换)
+- ``POST /surveys/{id}/status``  draft→published→closed
+- ``GET  /surveys/{id}/results`` 每题聚合(选项计数 / 评分均值 / 文本采样)
+
+公开端(免认证,仅 published):
+- ``GET  /public/surveys/{id}`` 题目 + 描述(不含任何租户数据)
+- ``POST /public/surveys/{id}/responses`` 提交答卷
+  ``respondent_key`` 由前端 localStorage 生成 → UNIQUE 防重复
+"""
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.api.auth import get_current_user
+from app.domain.models import (
+    Survey,
+    SurveyQuestion,
+    SurveyResponse,
+    SurveyResponseAnswer,
+    User,
+)
+from app.infra.db import get_db
+from app.services.audit import write_audit
+from app.services.permissions import (
+    PERM_VIEW_REPORTS,
+    PERM_WRITE_INTERVIEW,
+    require_permission,
+)
+
+router = APIRouter(prefix="/surveys", tags=["surveys"])
+public_router = APIRouter(prefix="/public/surveys", tags=["surveys-public"])
+
+QTYPES = SurveyQuestion.TYPES
+
+
+def _now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+# ============ schemas ============
+
+
+class QuestionIn(BaseModel):
+    type: str
+    text: str = Field(..., min_length=1, max_length=256)
+    options: list[str] = Field(default_factory=list, max_length=20)
+    required: bool = True
+    order: int = 0
+
+
+class QuestionOut(BaseModel):
+    id: str
+    type: str
+    text: str
+    options: list
+    required: bool
+    order: int
+
+
+class SurveyIn(BaseModel):
+    title: str = Field(..., min_length=1, max_length=128)
+    description: str | None = Field(None, max_length=2000)
+
+
+class SurveySaveIn(SurveyIn):
+    questions: list[QuestionIn] = Field(default_factory=list, max_length=50)
+
+
+class SurveyOut(BaseModel):
+    id: str
+    title: str
+    description: str | None
+    status: str
+    question_count: int
+    response_count: int
+    created_at: datetime
+
+
+class SurveyDetailOut(SurveyOut):
+    questions: list[QuestionOut]
+
+
+class StatusIn(BaseModel):
+    status: str
+
+
+class ResponseIn(BaseModel):
+    respondent_key: str = Field(..., min_length=8, max_length=64)
+    respondent_name: str | None = Field(None, max_length=64)
+    happiness: int | None = Field(None, ge=1, le=5)
+    answers: dict[str, object] = Field(default_factory=dict)
+
+
+class PublicSurveyOut(BaseModel):
+    title: str
+    description: str | None
+    questions: list[QuestionOut]
+
+
+class QuestionResult(BaseModel):
+    question_id: str
+    type: str
+    text: str
+    answered: int
+    option_counts: dict[str, int] | None = None
+    avg_rating: float | None = None
+    samples: list[str] = []
+
+
+class ResultsOut(BaseModel):
+    survey_id: str
+    response_count: int
+    avg_happiness: float | None
+    questions: list[QuestionResult]
+
+
+# ============ helpers ============
+
+
+def _survey_or_404(db: Session, tenant_id: str, sid: str) -> Survey:
+    s = db.get(Survey, sid)
+    if not s or s.tenant_id != tenant_id:
+        raise HTTPException(404, "问卷不存在")
+    return s
+
+
+def _counts(db: Session, sid: str) -> tuple[int, int]:
+    q = db.scalar(
+        select(func.count()).select_from(SurveyQuestion).where(
+            SurveyQuestion.survey_id == sid
+        )
+    ) or 0
+    r = db.scalar(
+        select(func.count()).select_from(SurveyResponse).where(
+            SurveyResponse.survey_id == sid
+        )
+    ) or 0
+    return q, r
+
+
+def _out(db: Session, s: Survey) -> SurveyOut:
+    qn, rn = _counts(db, s.id)
+    return SurveyOut(
+        id=s.id, title=s.title, description=s.description, status=s.status,
+        question_count=qn, response_count=rn, created_at=s.created_at,
+    )
+
+
+def _questions(db: Session, sid: str) -> list[SurveyQuestion]:
+    return db.scalars(
+        select(SurveyQuestion)
+        .where(SurveyQuestion.survey_id == sid)
+        .order_by(SurveyQuestion.order, SurveyQuestion.id)
+    ).all()
+
+
+def _validate_questions(items: list[QuestionIn]) -> None:
+    for q in items:
+        if q.type not in QTYPES:
+            raise HTTPException(400, f"题目类型必须是 {QTYPES} 之一")
+        if q.type in ("single_choice", "multi_choice") and len(q.options) < 2:
+            raise HTTPException(400, f"「{q.text[:20]}」至少需要 2 个选项")
+        if q.type not in ("single_choice", "multi_choice") and q.options:
+            raise HTTPException(400, f"「{q.text[:20]}」不是选择题,不能带选项")
+
+
+# ============ 管理端 ============
+
+
+@router.get("", response_model=list[SurveyOut])
+def list_surveys(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+    _p=Depends(require_permission(PERM_VIEW_REPORTS)),
+):
+    rows = db.scalars(
+        select(Survey)
+        .where(Survey.tenant_id == current.tenant_id)
+        .order_by(Survey.created_at.desc())
+    ).all()
+    return [_out(db, s) for s in rows]
+
+
+@router.post("", response_model=SurveyDetailOut, status_code=201)
+def create_survey(
+    body: SurveySaveIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+    _p=Depends(require_permission(PERM_WRITE_INTERVIEW)),
+):
+    _validate_questions(body.questions)
+    s = Survey(
+        tenant_id=current.tenant_id, title=body.title.strip(),
+        description=body.description, created_by=current.id,
+    )
+    db.add(s)
+    db.flush()
+    for q in body.questions:
+        db.add(
+            SurveyQuestion(
+                tenant_id=current.tenant_id, survey_id=s.id,
+                type=q.type, text=q.text.strip(),
+                options=q.options, required=q.required, order=q.order,
+            )
+        )
+    write_audit(db, actor=current, entity_type="survey", entity_id=s.id,
+                action="create", detail={"title": s.title}, request=request)
+    db.commit()
+    db.refresh(s)
+    return SurveyDetailOut(
+        **_out(db, s).model_dump(),
+        questions=[
+            QuestionOut(id=q.id, type=q.type, text=q.text, options=q.options,
+                        required=q.required, order=q.order)
+            for q in _questions(db, s.id)
+        ],
+    )
+
+
+@router.get("/{sid}", response_model=SurveyDetailOut)
+def get_survey(
+    sid: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+    _p=Depends(require_permission(PERM_VIEW_REPORTS)),
+):
+    s = _survey_or_404(db, current.tenant_id, sid)
+    return SurveyDetailOut(
+        **_out(db, s).model_dump(),
+        questions=[
+            QuestionOut(id=q.id, type=q.type, text=q.text, options=q.options,
+                        required=q.required, order=q.order)
+            for q in _questions(db, s.id)
+        ],
+    )
+
+
+@router.put("/{sid}", response_model=SurveyDetailOut)
+def update_survey(
+    sid: str,
+    body: SurveySaveIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+    _p=Depends(require_permission(PERM_WRITE_INTERVIEW)),
+):
+    s = _survey_or_404(db, current.tenant_id, sid)
+    if s.status == "published":
+        raise HTTPException(400, "已发布的问卷不能修改,请先关闭")
+    _validate_questions(body.questions)
+    s.title = body.title.strip()
+    s.description = body.description
+    s.updated_at = _now()
+    db.query(SurveyQuestion).filter(SurveyQuestion.survey_id == s.id).delete()
+    for q in body.questions:
+        db.add(
+            SurveyQuestion(
+                tenant_id=current.tenant_id, survey_id=s.id,
+                type=q.type, text=q.text.strip(),
+                options=q.options, required=q.required, order=q.order,
+            )
+        )
+    write_audit(db, actor=current, entity_type="survey", entity_id=s.id,
+                action="update", detail={"title": s.title}, request=request)
+    db.commit()
+    return get_survey(sid, db, current)
+
+
+@router.post("/{sid}/status", response_model=SurveyOut)
+def set_status(
+    sid: str,
+    body: StatusIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+    _p=Depends(require_permission(PERM_WRITE_INTERVIEW)),
+):
+    s = _survey_or_404(db, current.tenant_id, sid)
+    allowed = {
+        "draft": {"published"},
+        "published": {"closed"},
+        "closed": set(),
+    }
+    if body.status not in allowed.get(s.status, set()):
+        raise HTTPException(400, f"不允许 {s.status} → {body.status}")
+    if body.status == "published" and _counts(db, s.id)[0] == 0:
+        raise HTTPException(400, "至少一道题才能发布")
+    s.status = body.status
+    s.updated_at = _now()
+    write_audit(db, actor=current, entity_type="survey", entity_id=s.id,
+                action="status", detail={"to": body.status}, request=request)
+    db.commit()
+    return _out(db, s)
+
+
+@router.get("/{sid}/results", response_model=ResultsOut)
+def results(
+    sid: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+    _p=Depends(require_permission(PERM_VIEW_REPORTS)),
+):
+    s = _survey_or_404(db, current.tenant_id, sid)
+    questions = _questions(db, s.id)
+    responses = db.scalars(
+        select(SurveyResponse).where(SurveyResponse.survey_id == s.id)
+    ).all()
+    answers = db.execute(
+        select(SurveyResponseAnswer, SurveyResponse)
+        .join(SurveyResponse, SurveyResponse.id == SurveyResponseAnswer.response_id)
+        .where(SurveyResponseAnswer.tenant_id == current.tenant_id,
+               SurveyResponse.survey_id == s.id)
+    ).all()
+
+    by_q: dict[str, list] = {}
+    for a, _r in answers:
+        by_q.setdefault(a.question_id, []).append(a)
+
+    happy = [r.happiness for r in responses if r.happiness is not None]
+    out_qs = []
+    for q in questions:
+        ans = by_q.get(q.id, [])
+        item = QuestionResult(
+            question_id=q.id, type=q.type, text=q.text, answered=len(ans),
+        )
+        if q.type in ("single_choice", "multi_choice"):
+            counts = {str(o): 0 for o in q.options}
+            for a in ans:
+                vals = a.value if isinstance(a.value, list) else [a.value]
+                for v in vals:
+                    key = str(v)
+                    counts[key] = counts.get(key, 0) + 1
+            item.option_counts = counts
+        elif q.type == "rating":
+            nums = [a.value for a in ans if isinstance(a.value, int | float)]
+            if nums:
+                item.avg_rating = round(sum(nums) / len(nums), 2)
+        else:
+            item.samples = [str(a.value) for a in ans[:5] if a.value]
+        out_qs.append(item)
+
+    return ResultsOut(
+        survey_id=s.id,
+        response_count=len(responses),
+        avg_happiness=round(sum(happy) / len(happy), 2) if happy else None,
+        questions=out_qs,
+    )
+
+
+# ============ 公开端(免认证)============
+
+
+@public_router.get("/{sid}", response_model=PublicSurveyOut)
+def public_get(sid: str, db: Session = Depends(get_db)):
+    s = db.get(Survey, sid)
+    if not s or s.status != "published":
+        raise HTTPException(404, "问卷不存在或未开放")
+    return PublicSurveyOut(
+        title=s.title,
+        description=s.description,
+        questions=[
+            QuestionOut(id=q.id, type=q.type, text=q.text, options=q.options,
+                        required=q.required, order=q.order)
+            for q in _questions(db, s.id)
+        ],
+    )
+
+
+@public_router.post("/{sid}/responses", status_code=201)
+def public_submit(
+    sid: str,
+    body: ResponseIn,
+    db: Session = Depends(get_db),
+):
+    s = db.get(Survey, sid)
+    if not s or s.status != "published":
+        raise HTTPException(404, "问卷不存在或未开放")
+    questions = {q.id: q for q in _questions(db, s.id)}
+
+    # 先查重,再校验必填(重复提交直接 409)
+    dup = db.scalars(
+        select(SurveyResponse).where(
+            SurveyResponse.survey_id == s.id,
+            SurveyResponse.respondent_key == body.respondent_key,
+        )
+    ).first()
+    if dup:
+        raise HTTPException(409, "你已经提交过这份问卷")
+
+    # 校验:必填 + 类型匹配
+    for q in questions.values():
+        v = body.answers.get(q.id)
+        empty = v is None or v == "" or v == []
+        if q.required and empty:
+            raise HTTPException(400, f"「{q.text[:30]}」为必填")
+        if empty:
+            continue
+        if q.type == "single_choice" and str(v) not in [str(o) for o in q.options]:
+            raise HTTPException(400, f"「{q.text[:30]}」答案不在选项中")
+        if q.type == "multi_choice":
+            if not isinstance(v, list) or not all(
+                str(x) in [str(o) for o in q.options] for x in v
+            ):
+                raise HTTPException(400, f"「{q.text[:30]}」答案不在选项中")
+        if q.type == "rating" and not isinstance(v, int):
+            raise HTTPException(400, f"「{q.text[:30]}」需要整数评分")
+
+    resp = SurveyResponse(
+        tenant_id=s.tenant_id, survey_id=s.id,
+        respondent_key=body.respondent_key,
+        respondent_name=body.respondent_name,
+        happiness=body.happiness,
+    )
+    db.add(resp)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "你已经提交过这份问卷")
+
+    for qid, v in body.answers.items():
+        if qid not in questions or v is None or v == "" or v == []:
+            continue
+        db.add(
+            SurveyResponseAnswer(
+                tenant_id=s.tenant_id, response_id=resp.id,
+                question_id=qid, value=v,
+            )
+        )
+    db.commit()
+    return {"ok": True}

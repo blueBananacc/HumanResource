@@ -2,6 +2,7 @@ import {
   Banknote,
   Briefcase,
   CalendarDays,
+  ClipboardList,
   Clock,
   Goal,
   Home,
@@ -16,6 +17,7 @@ import {
   Settings,
   ShieldCheck,
   Shuffle,
+  Sparkles,
   TrendingUp,
   Users,
   Video,
@@ -127,6 +129,7 @@ export const mainModules: NavModule[] = [
         label: "岗位",
         items: [
           { to: "/jobs", label: "岗位列表", keywords: "职位 job 匹配" },
+          { to: "/pipeline", label: "招聘管道", permission: PERM.VIEW_REPORTS, feature: "hr.suite", keywords: "看板 kanban 阶段 pipeline 申请" },
           { to: "/requisitions", label: "招聘需求审批", permission: PERM.WRITE_REQUISITIONS, feature: "hr.suite", keywords: "编制 headcount 需求 requisition" },
           { to: "/offers", label: "Offer 管理", permission: PERM.MANAGE_OFFERS, feature: "hr.suite", keywords: "offer 录用 通知书" },
         ],
@@ -162,11 +165,12 @@ export const mainModules: NavModule[] = [
         items: [
           { to: "/interviews", label: "面试安排", permission: PERM.VIEW_REPORTS, keywords: "interview 推荐面试" },
           { to: "/reports", label: "面试报告", permission: PERM.VIEW_REPORTS, keywords: "报告 report" },
+          { to: "/surveys", label: "问卷调查", icon: ClipboardList, permission: PERM.VIEW_REPORTS, keywords: "问卷 survey 满意度 反馈" },
         ],
       },
       {
-        label: "规划中",
-        items: [{ to: "/interviews/schedule", label: "面试官排期", soon: true, permission: PERM.VIEW_REPORTS }],
+        label: "排期",
+        items: [{ to: "/interviews/schedule", label: "面试安排", icon: CalendarDays, permission: PERM.VIEW_REPORTS, keywords: "会议室 预约 排期 schedule" }],
       },
     ],
   },
@@ -268,6 +272,7 @@ export const bottomModules: NavModule[] = [
         items: [
           { to: "/settings/llm", label: "LLM 配置", icon: Plug, permission: PERM.MANAGE_SETTINGS, keywords: "大模型 模型 key ai" },
           { to: "/settings/voice", label: "语音 STT/TTS", icon: Mic, permission: PERM.MANAGE_SETTINGS, keywords: "语音识别 合成" },
+          { to: "/settings/prompts", label: "AI 提示词", icon: Sparkles, permission: PERM.MANAGE_SETTINGS, keywords: "prompt 提示词 模板" },
         ],
       },
       {
@@ -275,6 +280,7 @@ export const bottomModules: NavModule[] = [
         items: [
           { to: "/settings/email", label: "邮箱拉取", icon: Mail, permission: PERM.MANAGE_SETTINGS, keywords: "imap 收件 简历邮箱" },
           { to: "/settings/smtp", label: "SMTP 发件", icon: Send, permission: PERM.MANAGE_SETTINGS, keywords: "邮件 发信 smtp" },
+          { to: "/settings/email-templates", label: "邮件模板", icon: Mail, permission: PERM.MANAGE_SETTINGS, keywords: "模板 email template 邮件正文" },
         ],
       },
       {

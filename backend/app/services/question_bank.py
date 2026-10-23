@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.models import Candidate, Job, QuestionLibraryItem, QuestionSet, Resume
 from app.integrations.llm.provider import LLMError, Message, chat, parse_json
+from app.services.prompting import render_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +160,25 @@ def regenerate_item(db: Session, item: QuestionLibraryItem, instruction: str = "
             user_parts.append(f"候选人简历摘录:\n{resume.parsed_text[:2000]}")
     user_parts.append(f"请求编号: {zlib.crc32((item.question + instruction).encode())}")
 
+    regen_sys = render_prompt(
+        db,
+        item.tenant_id,
+        "question.regen",
+        job_clause=(
+            f"目标岗位: {job.title} (技能要求: {', '.join(job.skills) if job.skills else '未填'})\n"
+            if job
+            else (
+                f"岗位方向: {item.category}\n"
+                if item.category and not item.question_set_id
+                else ""
+            )
+        ),
+        kind_label=KIND_LABELS.get(item.kind, item.kind),
+        difficulty_label=DIFFICULTY_LABELS.get(item.difficulty, item.difficulty),
+        instruction=instruction.strip() or "换一个角度考察同一能力,不要与原题雷同",
+    ) or _regen_prompt(item, job=job, instruction=instruction.strip())
     messages: list[Message] = [
-        {"role": "system", "content": _regen_prompt(item, job=job, instruction=instruction.strip())},
+        {"role": "system", "content": regen_sys},
         {"role": "user", "content": "\n".join(user_parts)},
     ]
     raw = chat(messages, db=db, tenant_id=item.tenant_id, response_json=True, temperature=0.7)

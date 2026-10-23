@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, RefreshCw, Sparkles, Users } from "lucide-react";
+import { ArrowLeft, KanbanSquare, RefreshCw, Sparkles, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
 import { ApiError, fetchJSON } from "@/lib/api";
@@ -76,6 +76,23 @@ export function JobMatches() {
       ),
   });
 
+  const addToPipeline = useMutation({
+    mutationFn: (candidateId: string) =>
+      fetchJSON(`/api/applications`, {
+        method: "POST",
+        body: JSON.stringify({ candidate_id: candidateId, job_id: id }),
+      }),
+    onSuccess: () => setFeedback("已加入招聘管道(新投递)"),
+    onError: (e) =>
+      setFeedback(
+        e instanceof ApiError && e.status === 409
+          ? "该候选人已在管道中"
+          : e instanceof ApiError
+            ? e.message
+            : "加入失败",
+      ),
+  });
+
   const trigger = useMutation({
     mutationFn: () =>
       fetchJSON<TriggerResponse>(`/api/matches/job/${id}/evaluate-all`, {
@@ -115,19 +132,28 @@ export function JobMatches() {
             按 AI 匹配度排序的候选人池 · 点「发起面试」直接邀请
           </p>
         </div>
-        <Button
-          variant="secondary"
-          onClick={() => {
-            setFeedback(null);
-            trigger.mutate();
-          }}
-          disabled={trigger.isPending}
-        >
-          <RefreshCw
-            className={`w-4 h-4 ${trigger.isPending ? "animate-spin" : ""}`}
-          />
-          {trigger.isPending ? "触发中…" : "重新评估"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            onClick={() => navigate(`/pipeline?job=${id}`)}
+          >
+            <KanbanSquare className="w-4 h-4" />
+            招聘管道
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              setFeedback(null);
+              trigger.mutate();
+            }}
+            disabled={trigger.isPending}
+          >
+            <RefreshCw
+              className={`w-4 h-4 ${trigger.isPending ? "animate-spin" : ""}`}
+            />
+            {trigger.isPending ? "触发中…" : "重新评估"}
+          </Button>
+        </div>
       </div>
 
       {feedback && (
@@ -186,6 +212,12 @@ export function JobMatches() {
                   );
                 }
               }}
+              onAddPipeline={() => {
+                if (m.candidate_id) {
+                  setFeedback(null);
+                  addToPipeline.mutate(m.candidate_id);
+                }
+              }}
             />
           ))
         )}
@@ -199,11 +231,13 @@ function MatchRow({
   level,
   isLast,
   onStartInterview,
+  onAddPipeline,
 }: {
   match: Match;
   level: string;
   isLast: boolean;
   onStartInterview: () => void;
+  onAddPipeline: () => void;
 }) {
   return (
     <div
@@ -257,14 +291,26 @@ function MatchRow({
           </div>
         )}
       </div>
-      <Button
-        variant="secondary"
-        onClick={onStartInterview}
-        className="!px-3 !py-1.5 !text-[12px] shrink-0"
-      >
-        <Sparkles className="w-3.5 h-3.5" />
-        发起面试
-      </Button>
+      <div className="flex flex-col gap-1.5 shrink-0">
+        <Button
+          variant="secondary"
+          onClick={onStartInterview}
+          className="!px-3 !py-1.5 !text-[12px]"
+        >
+          <Sparkles className="w-3.5 h-3.5" />
+          发起面试
+        </Button>
+        {match.candidate_id && (
+          <Button
+            variant="secondary"
+            onClick={onAddPipeline}
+            className="!px-3 !py-1.5 !text-[12px]"
+          >
+            <KanbanSquare className="w-3.5 h-3.5" />
+            加入管道
+          </Button>
+        )}
+      </div>
     </div>
   );
 }

@@ -21,6 +21,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
 import { Modal } from "@/components/ui/modal";
+import { CandidateSkillsCard } from "@/components/skills/SkillWidgets";
 import { useConfirm } from "@/components/ui/confirm";
 import { ApiError, fetchJSON } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -240,6 +241,8 @@ export function TalentDetail() {
             canWrite={canWrite}
             qc={qc}
           />
+
+          <CandidateSkillsCard candidateId={c.id} canWrite={canWrite} />
 
           <Section icon={FileText} title="简历版本">
             {c.resumes.length === 0 ? (

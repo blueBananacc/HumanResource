@@ -15,7 +15,9 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm";
+import { JobSkillsCard } from "@/components/skills/SkillWidgets";
 import { fetchJSON, ApiError } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { formatRelative, levelLabel } from "@/lib/format";
 import { JobFormModal, type Job } from "./Jobs";
 import { JobGovernancePanel } from "./JobGovernancePanel";
@@ -66,6 +68,8 @@ const STATUS_OPTIONS: JobStatus[] = ["open", "paused", "closed"];
  */
 export function JobDetail() {
   const { id = "" } = useParams<{ id: string }>();
+  const { user } = useAuth();
+  const canWrite = user?.role === "admin" || user?.role === "hr" || user?.role === "hiring_manager";
   const navigate = useNavigate();
   const qc = useQueryClient();
   const confirm = useConfirm();
@@ -298,6 +302,9 @@ export function JobDetail() {
           </span>
         )}
       </div>
+
+      {/* 结构化技能模型(字典 + 候选覆盖) */}
+      <JobSkillsCard jobId={id} canWrite={canWrite} />
 
       {/* 岗位描述 */}
       <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-3">

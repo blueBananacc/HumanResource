@@ -7,8 +7,10 @@ import { EmailSettings } from "@/pages/EmailSettings";
 import { Jobs } from "@/pages/Jobs";
 import { JobDetail } from "@/pages/JobDetail";
 import { JobMatches } from "@/pages/JobMatches";
+import { Pipeline } from "@/pages/Pipeline";
 import { ResumeDetail } from "@/pages/ResumeDetail";
 import { Interviews } from "@/pages/Interviews";
+import { Schedule } from "@/pages/Schedule";
 import { InterviewReport } from "@/pages/InterviewReport";
 import { Reports } from "@/pages/Reports";
 import { TeamSettings } from "@/pages/TeamSettings";
@@ -24,7 +26,11 @@ import { Analytics } from "@/pages/Analytics";
 import { CandidateInvite } from "@/pages/CandidateInvite";
 import { CandidateSession } from "@/pages/CandidateSession";
 import { CandidateDone } from "@/pages/CandidateDone";
+import { Surveys } from "@/pages/Surveys";
+import { SurveyFill } from "@/pages/SurveyFill";
 import { SmtpSettings } from "@/pages/SmtpSettings";
+import { PromptSettings } from "@/pages/PromptSettings";
+import { EmailTemplates } from "@/pages/EmailTemplates";
 import { VoiceSettings } from "@/pages/VoiceSettings";
 import { AppShell } from "@/components/layout/AppShell";
 import { useAuth } from "@/lib/auth";
@@ -82,6 +88,7 @@ export const router = createBrowserRouter([
   { path: "/i/:token", element: <CandidateInvite /> },
   { path: "/i/:token/session", element: <CandidateSession /> },
   { path: "/i/:token/done", element: <CandidateDone /> },
+  { path: "/s/:id", element: <SurveyFill /> },
   {
     path: "/",
     element: <AppShell />,
@@ -126,7 +133,10 @@ export const router = createBrowserRouter([
       { path: "jobs", element: <Jobs /> },
       { path: "jobs/:id", element: <JobDetail /> },
       { path: "jobs/:id/matches", element: <JobMatches /> },
+      { path: "pipeline", element: <Pipeline /> },
       { path: "interviews", element: <Interviews /> },
+      { path: "interviews/schedule", element: <Schedule /> },
+      { path: "surveys", element: <Surveys /> },
       { path: "interviews/:id/report", element: <InterviewReport /> },
       { path: "question-library", element: <QuestionLibrary /> },
       { path: "question-library/sets/:id", element: <QuestionSetDetail /> },
@@ -140,6 +150,8 @@ export const router = createBrowserRouter([
       { path: "settings/email", element: <EmailSettings /> },
       { path: "settings/smtp", element: <SmtpSettings /> },
       { path: "settings/voice", element: <VoiceSettings /> },
+      { path: "settings/prompts", element: <PromptSettings /> },
+      { path: "settings/email-templates", element: <EmailTemplates /> },
       { path: "settings/license", element: <LicenseSettings /> },
       { path: "settings/team", element: <TeamSettings /> },
       { path: "settings/sso", element: <SsoSettings /> },

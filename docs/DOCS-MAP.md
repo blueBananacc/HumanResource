@@ -17,6 +17,7 @@
 | 文件 | 说明 |
 |---|---|
 | [hibob-style-reference.md](design/hibob-style-reference.md) | HiBob 风格前端设计参考（配色/字体/形状/交互规则，前端改动先读） |
+| [minthcm-port-plan.md](design/minthcm-port-plan.md) | MintHCM 功能移植方案（管道看板/提示词/邮件模板/技能/会议室/问卷，表设计与验收基线） |
 
 ## 维护约定
 

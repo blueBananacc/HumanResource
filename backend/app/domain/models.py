@@ -31,6 +31,8 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy import false as sql_false
+from sqlalchemy import true as sql_true
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -1782,5 +1784,438 @@ class VoiceProvider(Base):
         DateTime, nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class JobApplication(Base):
+    """候选人 × 岗位的申请管道卡(参考 MintHCM Candidatures 收敛)。
+
+    stage 状态机(全部允许双向流转,只记历史不锁死):
+        applied → screening → interview → offer → hired
+                            ↘ rejected          withdrawn ↗
+
+    联动钩子(见 ``app/services/applications.py``):
+    - 发起 remote 面试 → applied/screening 自动推进 interview
+    - offer send → offer;accepted → hired;declined → rejected;
+      withdrawn → 回退 interview
+    """
+
+    __tablename__ = "job_applications"
+
+    STAGES = ("applied", "screening", "interview", "offer", "hired", "rejected", "withdrawn")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    candidate_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    stage: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="applied", index=True
+    )
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="manual"
+    )
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rejected_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stage_changed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "candidate_id", "job_id", name="uq_applications_tenant_cand_job"),
+    )
+
+
+class JobApplicationEvent(Base):
+    """管道卡的阶段变迁历史(含系统联动动作)。"""
+
+    __tablename__ = "job_application_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    application_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("job_applications.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    from_stage: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    to_stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class PromptTemplate(Base):
+    """租户级 AI 提示词模板(参考 MintHCM AIPromptTemplates,按用途 key 管理)。
+
+    ``key`` 对应 ``app.services.prompting.PROMPT_REGISTRY`` 的注册项;
+    没有自定义行时各服务用代码内置默认值。``{{var}}`` 占位符由调用方
+    传入的变量替换;未知变量原样保留便于发现笔误。
+    """
+
+    __tablename__ = "prompt_templates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    key: Mapped[str] = mapped_column(String(48), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_true()
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "key", name="uq_prompt_templates_tenant_key"),
+    )
+
+
+class Skill(Base):
+    """技能/胜任力字典(参考 MintHCM Competencies,收敛为统一技能库)。
+
+    category: tech / language / soft / cert / other
+    """
+
+    __tablename__ = "skills"
+
+    CATEGORIES = ("tech", "language", "soft", "cert", "other")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    category: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="other", index=True
+    )
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_skills_tenant_name"),
+    )
+
+
+class JobSkill(Base):
+    """岗位技能要求:importance = must(必备)/ nice(加分)。"""
+
+    __tablename__ = "job_skills"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    skill_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("skills.id", ondelete="CASCADE"), nullable=False
+    )
+    importance: Mapped[str] = mapped_column(
+        String(8), nullable=False, server_default="must"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "skill_id", name="uq_job_skills_pair"),
+    )
+
+
+class CandidateSkill(Base):
+    """候选人技能:level 1-5(参考 CompetencyRatings 评分),source manual/resume。"""
+
+    __tablename__ = "candidate_skills"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    candidate_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    skill_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("skills.id", ondelete="CASCADE"), nullable=False
+    )
+    level: Mapped[int] = mapped_column(Integer, nullable=False, server_default="3")
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="manual"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("candidate_id", "skill_id", name="uq_candidate_skills_pair"),
+    )
+
+
+class Room(Base):
+    """会议室(参考 MintHCM Rooms)。"""
+
+    __tablename__ = "rooms"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    org_unit_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("org_units.id", ondelete="SET NULL"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    location: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    capacity: Mapped[int] = mapped_column(Integer, nullable=False, server_default="4")
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_true()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class Resource(Base):
+    """可预约资源:设备 / 电话亭等(参考 MintHCM Resources)。"""
+
+    __tablename__ = "resources"
+
+    TYPES = ("equipment", "phone_booth", "other")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    type: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="other"
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_true()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class Reservation(Base):
+    """预约:占会议室或资源一段时间(参考 MintHCM Reservations)。
+
+    status: active / cancelled。冲突校验在 API 层
+    (重叠 + 同对象 + status=active → 409)。
+    """
+
+    __tablename__ = "reservations"
+
+    KINDS = ("room", "resource", "interview")
+    STATUSES = ("active", "cancelled")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    room_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("rooms.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    resource_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("resources.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    interview_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("interviews.id", ondelete="SET NULL"), nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    starts_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    ends_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    interviewer_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="active", index=True
+    )
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class Survey(Base):
+    """问卷/调查(参考 MintHCM Surveys)。
+
+    status: draft(编辑中)/ published(可填写)/ closed(停止收集)。
+    公开填写走 /api/public/surveys/{id}(仅 published)。
+    """
+
+    __tablename__ = "surveys"
+
+    STATUSES = ("draft", "published", "closed")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="draft", index=True
+    )
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class SurveyQuestion(Base):
+    """问卷题目:type = short_text / long_text / single_choice / multi_choice / rating。"""
+
+    __tablename__ = "survey_questions"
+
+    TYPES = ("short_text", "long_text", "single_choice", "multi_choice", "rating")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    survey_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("surveys.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    type: Mapped[str] = mapped_column(String(16), nullable=False)
+    text: Mapped[str] = mapped_column(String(256), nullable=False)
+    options: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_true()
+    )
+    order: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+
+
+class SurveyResponse(Base):
+    """答卷:respondent_key 为前端 localStorage 生成的随机串,用于防重复提交。"""
+
+    __tablename__ = "survey_responses"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    survey_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("surveys.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    respondent_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    respondent_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    happiness: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("survey_id", "respondent_key", name="uq_survey_resp_key"),
+    )
+
+
+class SurveyResponseAnswer(Base):
+    """答卷明细:value 随题型为 str 或 list[str] 或 int。"""
+
+    __tablename__ = "survey_response_answers"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    response_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("survey_responses.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    question_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("survey_questions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    value: Mapped[Any] = mapped_column(JSONB, nullable=False)
+
+
+class EmailTemplate(Base):
+    """租户级邮件模板(参考 SuiteCRM EmailTemplates)。
+
+    ``key`` 对应 ``app.services.mail_templates.EMAIL_SPECS`` 注册项;
+    subject / body_text / body_html 里写 ``{{var}}`` 占位,发送时按
+    上下文变量替换。body_html 为空 → 只发纯文本。
+    无自定义行 → 回落 ``app.workers.tasks.email`` 内置文案。
+    """
+
+    __tablename__ = "email_templates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    key: Mapped[str] = mapped_column(String(48), nullable=False)
+    subject: Mapped[str] = mapped_column(String(256), nullable=False)
+    body_text: Mapped[str] = mapped_column(Text, nullable=False)
+    body_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_true()
+    )
+    updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "key", name="uq_email_templates_tenant_key"),
+    )
+
+
+class PromptTemplateVersion(Base):
+    """提示词模板历史版本(每次保存追加一行,可回滚)。"""
+
+    __tablename__ = "prompt_template_versions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    template_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("prompt_templates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
