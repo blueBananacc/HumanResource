@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_user
@@ -75,13 +76,18 @@ def _spec_or_404(key: str):
     return spec
 
 
-def _custom(db: Session, tenant_id: str, key: str) -> PromptTemplate | None:
-    return db.scalars(
-        select(PromptTemplate).where(
-            PromptTemplate.tenant_id == tenant_id,
-            PromptTemplate.key == key,
-        )
-    ).first()
+def _custom(
+    db: Session, tenant_id: str, key: str, *, for_update: bool = False
+) -> PromptTemplate | None:
+    stmt = select(PromptTemplate).where(
+        PromptTemplate.tenant_id == tenant_id,
+        PromptTemplate.key == key,
+    )
+    # 保存/回滚时锁行,序列化并发写入 — 否则 version += 1 是丢失更新,
+    # 版本表会出现两个相同版本号
+    if for_update:
+        stmt = stmt.with_for_update()
+    return db.scalars(stmt).first()
 
 
 @router.get("", response_model=list[TemplateOut])
@@ -125,35 +131,40 @@ def save_template(
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
     spec = _spec_or_404(key)
-    tpl = _custom(db, current.tenant_id, key)
-    if tpl is None:
-        tpl = PromptTemplate(
-            tenant_id=current.tenant_id, key=key, content=body.content,
-            version=1, updated_by=current.id,
+    tpl = _custom(db, current.tenant_id, key, for_update=True)
+    try:
+        if tpl is None:
+            tpl = PromptTemplate(
+                tenant_id=current.tenant_id, key=key, content=body.content,
+                version=1, updated_by=current.id,
+            )
+            db.add(tpl)
+            db.flush()
+        else:
+            tpl.content = body.content
+            tpl.version += 1
+            tpl.is_active = True
+            tpl.updated_by = current.id
+            tpl.updated_at = _now()
+        db.add(
+            PromptTemplateVersion(
+                tenant_id=current.tenant_id,
+                template_id=tpl.id,
+                version=tpl.version,
+                content=tpl.content,
+                created_by=current.id,
+            )
         )
-        db.add(tpl)
-        db.flush()
-    else:
-        tpl.content = body.content
-        tpl.version += 1
-        tpl.is_active = True
-        tpl.updated_by = current.id
-        tpl.updated_at = _now()
-    db.add(
-        PromptTemplateVersion(
-            tenant_id=current.tenant_id,
-            template_id=tpl.id,
-            version=tpl.version,
-            content=tpl.content,
-            created_by=current.id,
+        write_audit(
+            db, actor=current, entity_type="prompt_template", entity_id=tpl.id,
+            action="save", detail={"key": key, "version": tpl.version},
+            request=request,
         )
-    )
-    write_audit(
-        db, actor=current, entity_type="prompt_template", entity_id=tpl.id,
-        action="save", detail={"key": key, "version": tpl.version},
-        request=request,
-    )
-    db.commit()
+        db.commit()
+    except IntegrityError:
+        # 并发首建同一 key:唯一约束兜底成 409 而不是 500
+        db.rollback()
+        raise HTTPException(409, "并发保存冲突,请重试")
     db.refresh(tpl)
     return TemplateOut(
         key=key, name=spec.name, description=spec.description,
@@ -241,7 +252,7 @@ def rollback_template(
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
     spec = _spec_or_404(key)
-    tpl = _custom(db, current.tenant_id, key)
+    tpl = _custom(db, current.tenant_id, key, for_update=True)
     if tpl is None:
         raise HTTPException(404, "没有自定义版本可回滚")
     ver = db.scalars(

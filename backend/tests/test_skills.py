@@ -414,3 +414,24 @@ def test_delete_skill_in_use_guard(client, db_session):
         assert client.delete(f"/api/skills/{py.id}", headers=hdr).status_code == 204
     finally:
         _cleanup(db_session, t)
+
+
+def test_skill_name_length_bounded(client, db_session):
+    """技能名上限 64(字典列宽)— PUT 路径 422 而不是 DB 错误 500。"""
+    t = _tenant(db_session)
+    u = _user(db_session, t)
+    job, cand = _job_cand(db_session, t)
+    hdr = _hdr(u)
+    long_name = "x" * 65
+    try:
+        r = client.put(f"/api/jobs/{job.id}/skills", headers=hdr,
+                       json={"items": [{"name": long_name, "importance": "must"}]})
+        assert r.status_code == 422
+        r = client.put(f"/api/candidates/{cand.id}/skills", headers=hdr,
+                       json={"items": [{"name": long_name, "level": 3}]})
+        assert r.status_code == 422
+        r = client.post("/api/skills", headers=hdr,
+                        json={"name": long_name})
+        assert r.status_code == 422
+    finally:
+        _cleanup(db_session, t)

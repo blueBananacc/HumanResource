@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_user
@@ -67,13 +68,17 @@ def _spec_or_404(key: str):
     return spec
 
 
-def _custom(db: Session, tenant_id: str, key: str) -> EmailTemplate | None:
-    return db.scalars(
-        select(EmailTemplate).where(
-            EmailTemplate.tenant_id == tenant_id,
-            EmailTemplate.key == key,
-        )
-    ).first()
+def _custom(
+    db: Session, tenant_id: str, key: str, *, for_update: bool = False
+) -> EmailTemplate | None:
+    stmt = select(EmailTemplate).where(
+        EmailTemplate.tenant_id == tenant_id,
+        EmailTemplate.key == key,
+    )
+    # 保存时锁行,序列化并发写入
+    if for_update:
+        stmt = stmt.with_for_update()
+    return db.scalars(stmt).first()
 
 
 def _out(key: str, tpl: EmailTemplate | None) -> TemplateOut:
@@ -116,21 +121,28 @@ def save_template(
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
     _spec_or_404(key)
-    tpl = _custom(db, current.tenant_id, key)
-    if tpl is None:
-        tpl = EmailTemplate(tenant_id=current.tenant_id, key=key)
-        db.add(tpl)
-    tpl.subject = body.subject
-    tpl.body_text = body.body_text
-    tpl.body_html = body.body_html
-    tpl.is_active = True
-    tpl.updated_by = current.id
-    tpl.updated_at = _now()
-    write_audit(
-        db, actor=current, entity_type="email_template", entity_id=tpl.id or key,
-        action="save", detail={"key": key}, request=request,
-    )
-    db.commit()
+    tpl = _custom(db, current.tenant_id, key, for_update=True)
+    try:
+        if tpl is None:
+            tpl = EmailTemplate(tenant_id=current.tenant_id, key=key)
+            db.add(tpl)
+        tpl.subject = body.subject
+        tpl.body_text = body.body_text
+        tpl.body_html = body.body_html
+        tpl.is_active = True
+        tpl.updated_by = current.id
+        tpl.updated_at = _now()
+        # flush 拿真 uuid 记审计(entity_id 之前落的是 key 字符串)
+        db.flush()
+        write_audit(
+            db, actor=current, entity_type="email_template", entity_id=tpl.id,
+            action="save", detail={"key": key}, request=request,
+        )
+        db.commit()
+    except IntegrityError:
+        # 并发首建同一 key:唯一约束兜底成 409 而不是 500
+        db.rollback()
+        raise HTTPException(409, "并发保存冲突,请重试")
     db.refresh(tpl)
     return _out(key, tpl)
 

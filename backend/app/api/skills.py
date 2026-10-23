@@ -14,6 +14,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_user
@@ -67,13 +68,13 @@ class SkillOut(BaseModel):
 
 class JobSkillItem(BaseModel):
     skill_id: str | None = None
-    name: str | None = None
+    name: str | None = Field(None, max_length=64)
     importance: str = "must"
 
 
 class CandidateSkillItem(BaseModel):
     skill_id: str | None = None
-    name: str | None = None
+    name: str | None = Field(None, max_length=64)
     level: int = Field(3, ge=1, le=5)
 
 
@@ -118,6 +119,15 @@ def _skill_or_404(db: Session, tenant_id: str, skill_id: str) -> Skill:
     return s
 
 
+def _locked_skill_or_404(db: Session, tenant_id: str, skill_id: str) -> Skill:
+    """FOR UPDATE 锁技能行 — delete 与引用方(_resolve_skill)都走这里,
+    保证「数引用 → 删除」与「建引用」互斥,否则新引用会被 CASCADE 静默抹掉。"""
+    s = db.get(Skill, skill_id, with_for_update=True)
+    if not s or s.tenant_id != tenant_id:
+        raise HTTPException(404, "技能不存在")
+    return s
+
+
 def _resolve_skill(
     db: Session, tenant_id: str, item: dict, *, allow_create: bool
 ) -> Skill:
@@ -126,15 +136,20 @@ def _resolve_skill(
     name 不存在时 ``allow_create=True`` 才自动入字典 — 字典本身归
     ``manage_settings`` 管,岗位/候选人技能写权限不应绕过它随意造词条;
     ``import-resume`` 例外(简历抽取本来就要扩充字典)。
+
+    命中既有词条时锁该行 — 与 delete_skill 的行锁互斥,防「对方删了
+    词条但刚给它建的引用被 CASCADE 带走」。
     """
     sid = item.get("skill_id")
     if sid:
-        return _skill_or_404(db, tenant_id, sid)
+        return _locked_skill_or_404(db, tenant_id, sid)
     name = (item.get("name") or "").strip()
     if not name:
         raise HTTPException(400, "需要 skill_id 或 name")
     s = db.scalars(
-        select(Skill).where(Skill.tenant_id == tenant_id, Skill.name == name)
+        select(Skill)
+        .where(Skill.tenant_id == tenant_id, Skill.name == name)
+        .with_for_update()
     ).first()
     if s is None:
         if not allow_create:
@@ -147,15 +162,19 @@ def _resolve_skill(
     return s
 
 
-def _job_or_404(db: Session, tenant_id: str, job_id: str) -> Job:
-    j = db.get(Job, job_id)
+def _job_or_404(
+    db: Session, tenant_id: str, job_id: str, *, lock: bool = False
+) -> Job:
+    j = db.get(Job, job_id, with_for_update=lock)
     if not j or j.tenant_id != tenant_id:
         raise HTTPException(404, "岗位不存在")
     return j
 
 
-def _cand_or_404(db: Session, tenant_id: str, cid: str) -> Candidate:
-    c = db.get(Candidate, cid)
+def _cand_or_404(
+    db: Session, tenant_id: str, cid: str, *, lock: bool = False
+) -> Candidate:
+    c = db.get(Candidate, cid, with_for_update=lock)
     if not c or c.tenant_id != tenant_id:
         raise HTTPException(404, "候选人不存在")
     return c
@@ -246,7 +265,12 @@ def create_skill(
         category=body.category, description=body.description,
     )
     db.add(s)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # exists-check 与插入之间可能有并发写入 — 唯一约束兜底成 409
+        db.rollback()
+        raise HTTPException(409, "同名技能已存在")
     db.refresh(s)
     write_audit(db, actor=current, entity_type="skill", entity_id=s.id,
                 action="create", detail={"name": name}, request=request)
@@ -281,7 +305,11 @@ def update_skill(
     s.description = body.description
     write_audit(db, actor=current, entity_type="skill", entity_id=s.id,
                 action="update", detail={"name": s.name}, request=request)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "同名技能已存在")
     return SkillOut(id=s.id, name=s.name, category=s.category, description=s.description)
 
 
@@ -293,7 +321,9 @@ def delete_skill(
     current: User = Depends(get_current_user),
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
-    s = _skill_or_404(db, current.tenant_id, skill_id)
+    # 先拿技能行锁再数引用 — 与 _resolve_skill 的锁互斥,防计数后插入
+    # 的新引用被 CASCADE 静默删除
+    s = _locked_skill_or_404(db, current.tenant_id, skill_id)
     # 被岗位/候选人引用时不允许硬删 — CASCADE 会连坐抹掉技能档案
     refs = (
         db.scalar(select(func.count()).select_from(JobSkill).where(JobSkill.skill_id == s.id)) or 0
@@ -332,12 +362,15 @@ def put_job_skills(
     current: User = Depends(get_current_user),
     _p=Depends(require_permission(PERM_WRITE_JOBS)),
 ):
-    job = _job_or_404(db, current.tenant_id, job_id)
+    # 锁岗位行:整组替换是「删+插」,并发 PUT 否则可能交叠出
+    # 唯一键冲突(500)或合并出非预期结果
+    job = _job_or_404(db, current.tenant_id, job_id, lock=True)
     _job_visible(db, current, job)
     allow_create = has_permission(current, PERM_MANAGE_SETTINGS)
     seen: set[str] = set()
     new_rows: list[JobSkill] = []
-    for item in body.items:
+    # 按解析键排序后取锁,所有并发 PUT 走同一锁序,防环状死锁
+    for item in sorted(body.items, key=lambda i: (i.skill_id or i.name or "")):
         if item.importance not in IMPORTANCES:
             raise HTTPException(400, "importance 必须是 must / nice")
         s = _resolve_skill(db, current.tenant_id, item.model_dump(), allow_create=allow_create)
@@ -447,12 +480,12 @@ def put_candidate_skills(
     current: User = Depends(get_current_user),
     _p=Depends(require_permission(PERM_WRITE_RESUMES)),
 ):
-    cand = _cand_or_404(db, current.tenant_id, candidate_id)
+    cand = _cand_or_404(db, current.tenant_id, candidate_id, lock=True)
     _cand_visible(db, current, cand)
     allow_create = has_permission(current, PERM_MANAGE_SETTINGS)
     seen: set[str] = set()
     new_rows: list[CandidateSkill] = []
-    for item in body.items:
+    for item in sorted(body.items, key=lambda i: (i.skill_id or i.name or "")):
         s = _resolve_skill(db, current.tenant_id, item.model_dump(), allow_create=allow_create)
         if s.id in seen:
             continue
@@ -483,7 +516,8 @@ def import_resume_skills(
     _p=Depends(require_permission(PERM_WRITE_RESUMES)),
 ):
     """把候选人最新解析完成简历的 ``parsed_data.skills`` 合并进技能档案。"""
-    cand = _cand_or_404(db, current.tenant_id, candidate_id)
+    # 锁候选人行:与 put_candidate_skills 互斥,防合并/替换交叠出唯一键冲突
+    cand = _cand_or_404(db, current.tenant_id, candidate_id, lock=True)
     _cand_visible(db, current, cand)
     resume = db.scalars(
         select(Resume)
@@ -496,10 +530,11 @@ def import_resume_skills(
     ).first()
     if not resume:
         raise HTTPException(404, "没有已解析的简历")
+    # 技能名上限 64(字典列宽),超长词不入库
     names = [
-        str(s).strip()
+        n
         for s in (resume.parsed_data or {}).get("skills") or []
-        if str(s).strip()
+        if (n := str(s).strip()) and len(n) <= 64
     ]
     if not names:
         return {"imported": 0, "total": 0}
@@ -514,7 +549,7 @@ def import_resume_skills(
         )
     }
     imported = 0
-    for name in names:
+    for name in sorted(names):
         s = _resolve_skill(db, current.tenant_id, {"name": name}, allow_create=True)
         if s.id in existing:
             continue

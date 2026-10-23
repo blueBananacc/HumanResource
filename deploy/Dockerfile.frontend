@@ -3,7 +3,11 @@
 # 私有化交付时整个产物就是静态文件,反代到 backend。
 
 # ---- Build stage ----
-FROM node:20-alpine AS builder
+# 国内拉不动 docker.io 时:--build-arg NODE_IMAGE=docker.m.daocloud.io/library/node:20-alpine
+# --build-arg NGINX_IMAGE=docker.m.daocloud.io/library/nginx:1.27-alpine
+ARG NODE_IMAGE=node:20-alpine
+ARG NGINX_IMAGE=nginx:1.27-alpine
+FROM ${NODE_IMAGE} AS builder
 WORKDIR /app
 
 COPY package.json package-lock.json ./
@@ -20,7 +24,7 @@ COPY src ./src
 RUN npm run build
 
 # ---- Runtime stage ----
-FROM nginx:1.27-alpine
+FROM ${NGINX_IMAGE}
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80

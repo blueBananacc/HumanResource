@@ -40,7 +40,10 @@ from app.services.audit import write_audit
 from app.services.permissions import (
     PERM_VIEW_REPORTS,
     PERM_WRITE_INTERVIEW,
+    ensure_can_see,
+    get_org_scope,
     require_permission,
+    visible_org_ids,
 )
 
 router = APIRouter(prefix="/surveys", tags=["surveys"])
@@ -355,25 +358,39 @@ def _link_status(link: SurveyLink) -> str:
     return "active"
 
 
-def _link_out(link: SurveyLink, cand_names: dict[str, str]) -> LinkOut:
+def _visible_cand(
+    cand: Candidate | None, scope: list[str] | None
+) -> Candidate | None:
+    """范围外的绑定候选人按未绑定处理 — 不对外泄露姓名/id。"""
+    if cand is None or not visible_org_ids(scope, cand.org_unit_id):
+        return None
+    return cand
+
+
+def _link_out(link: SurveyLink, cand: Candidate | None) -> LinkOut:
     return LinkOut(
         id=link.id,
         status=_link_status(link),
-        candidate_id=link.candidate_id,
-        candidate_name=cand_names.get(link.candidate_id) if link.candidate_id else None,
+        candidate_id=cand.id if cand else None,
+        candidate_name=cand.name if cand else None,
         expires_at=link.expires_at,
         used_at=link.used_at,
         created_at=link.created_at,
     )
 
 
-def _links_out(db: Session, links: list[SurveyLink]) -> list[LinkOut]:
+def _links_out(
+    db: Session, links: list[SurveyLink], scope: list[str] | None
+) -> list[LinkOut]:
     cand_ids = {l.candidate_id for l in links if l.candidate_id}
-    cand_names = (
-        {c.id: c.name for c in db.scalars(select(Candidate).where(Candidate.id.in_(cand_ids)))}
+    cands = (
+        {c.id: c for c in db.scalars(select(Candidate).where(Candidate.id.in_(cand_ids)))}
         if cand_ids else {}
     )
-    return [_link_out(l, cand_names) for l in links]
+    return [
+        _link_out(l, _visible_cand(cands.get(l.candidate_id) if l.candidate_id else None, scope))
+        for l in links
+    ]
 
 
 @router.post("/{sid}/links", response_model=LinkCreatedOut, status_code=201)
@@ -389,10 +406,12 @@ def create_link(
     s = _survey_or_404(db, current.tenant_id, sid)
     if s.status == "closed":
         raise HTTPException(400, "问卷已关闭,无法生成新链接")
+    cand = None
     if body.candidate_id:
         cand = db.get(Candidate, body.candidate_id)
         if not cand or cand.tenant_id != current.tenant_id:
             raise HTTPException(404, "候选人不存在")
+        ensure_can_see(get_org_scope(db, current), cand.org_unit_id)
     token = generate_invite_token()
     link = SurveyLink(
         tenant_id=current.tenant_id,
@@ -412,13 +431,7 @@ def create_link(
     )
     db.commit()
     db.refresh(link)
-    cand_names = (
-        {c.id: c.name for c in db.scalars(
-            select(Candidate).where(Candidate.id == link.candidate_id)
-        )}
-        if link.candidate_id else {}
-    )
-    out = _link_out(link, cand_names)
+    out = _link_out(link, cand)
     return LinkCreatedOut(**out.model_dump(), token=token)
 
 
@@ -435,7 +448,7 @@ def list_links(
         .where(SurveyLink.survey_id == s.id)
         .order_by(SurveyLink.created_at.desc())
     ).all()
-    return _links_out(db, links)
+    return _links_out(db, links, get_org_scope(db, current))
 
 
 @router.delete("/{sid}/links/{lid}", status_code=204)
@@ -485,23 +498,30 @@ def results(
     for a, _r in answers:
         by_q.setdefault(a.question_id, []).append(a)
 
-    # 答卷归属:自定义称呼优先,其次链接绑定的候选人名
+    # 答卷归属:自定义称呼优先,其次链接绑定的候选人名;
+    # 范围外的候选人按未绑定处理,不跨数据范围泄露姓名/id
+    scope = get_org_scope(db, current)
     resp_cand_ids = {r.candidate_id for r in responses if r.candidate_id}
-    cand_names = (
-        {c.id: c.name for c in db.scalars(
+    resp_cands = (
+        {c.id: c for c in db.scalars(
             select(Candidate).where(Candidate.id.in_(resp_cand_ids))
         )}
         if resp_cand_ids else {}
     )
-    respondents = [
-        RespondentOut(
-            name=r.respondent_name or cand_names.get(r.candidate_id),
-            candidate_id=r.candidate_id,
-            submitted_at=r.submitted_at,
-            happiness=r.happiness,
+    respondents = []
+    for r in responses:
+        cand = (
+            _visible_cand(resp_cands.get(r.candidate_id), scope)
+            if r.candidate_id else None
         )
-        for r in responses
-    ]
+        respondents.append(
+            RespondentOut(
+                name=r.respondent_name or (cand.name if cand else None),
+                candidate_id=cand.id if cand else None,
+                submitted_at=r.submitted_at,
+                happiness=r.happiness,
+            )
+        )
 
     happy = [r.happiness for r in responses if r.happiness is not None]
     out_qs = []

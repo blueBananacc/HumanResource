@@ -51,7 +51,12 @@ def _now() -> datetime:
 
 
 def _naive(dt: datetime) -> datetime:
-    return dt.astimezone(UTC).replace(tzinfo=None) if dt.tzinfo else dt
+    """starts_at/ends_at 约定为「客户端表达的墙钟时间」(naive 语义)。
+
+    tz-aware 输入丢弃偏移取表达值,与 naive 输入同一语义 — 否则同一时段
+    有的按本地墙钟存、有的按 UTC 存,日历显示与重叠判断会互相错位。
+    """
+    return dt.replace(tzinfo=None)
 
 
 # ============ schemas ============
@@ -198,16 +203,20 @@ def _locked_resource(db: Session, tenant_id: str, rid: str) -> Resource:
 
 
 def _check_interviewers(db: Session, tenant_id: str, ids: list[str]) -> None:
-    """面试官必须是本租户用户,防止挂到别的租户/不存在的 id。"""
+    """面试官必须是本租户在职用户 — 防止挂到别租户/不存在/已禁用的 id。"""
     if not ids:
         return
     cnt = db.scalar(
         select(func.count())
         .select_from(User)
-        .where(User.tenant_id == tenant_id, User.id.in_(ids))
+        .where(
+            User.tenant_id == tenant_id,
+            User.status == "active",
+            User.id.in_(ids),
+        )
     ) or 0
     if cnt != len(set(ids)):
-        raise HTTPException(400, "面试官必须是本租户用户")
+        raise HTTPException(400, "面试官必须是本租户在职用户")
 
 
 def _check_room_scope(db: Session, current: User, room: Room) -> None:
@@ -329,7 +338,9 @@ def delete_room(
     current: User = Depends(get_current_user),
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
-    r = _room(db, current.tenant_id, room_id)
+    # FOR UPDATE:与 in-flight 预约互相排斥 — 先拿锁再数,避免计数与删除
+    # 之间插入新预约被 CASCADE 静默删掉(对方已拿到 201)
+    r = _locked_room(db, current.tenant_id, room_id)
     # 有预约记录(含已取消)时不允许硬删 — CASCADE 会连坐删掉历史台账,
     # 保留记录用 is_active=false 停用
     n = db.scalar(
@@ -414,7 +425,8 @@ def delete_resource(
     current: User = Depends(get_current_user),
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
-    r = _resource(db, current.tenant_id, resource_id)
+    # 同 delete_room:先 FOR UPDATE 拿锁再数,防与并发预约竞争丢数据
+    r = _locked_resource(db, current.tenant_id, resource_id)
     n = db.scalar(
         select(func.count()).select_from(Reservation).where(
             Reservation.resource_id == r.id
@@ -502,11 +514,12 @@ def create_reservation(
     if ends_at <= starts_at:
         raise HTTPException(400, "结束时间必须晚于开始时间")
     if body.room_id:
-        # FOR UPDATE:序列化同会议室的并发预约,防双重预订
+        # FOR UPDATE:序列化同会议室的并发预约,防双重预订;
+        # 先数据范围再 is_active — 范围外统一 404,不外泄停用状态
         room = _locked_room(db, current.tenant_id, body.room_id)
+        _check_room_scope(db, current, room)
         if not room.is_active:
             raise HTTPException(400, "会议室已停用")
-        _check_room_scope(db, current, room)
     if body.resource_id:
         res = _locked_resource(db, current.tenant_id, body.resource_id)
         if not res.is_active:
@@ -574,9 +587,9 @@ def update_reservation(
         raise HTTPException(400, "结束时间必须晚于开始时间")
     if body.room_id:
         room = _locked_room(db, current.tenant_id, body.room_id)
+        _check_room_scope(db, current, room)
         if not room.is_active:
             raise HTTPException(400, "会议室已停用")
-        _check_room_scope(db, current, room)
     if body.resource_id:
         res = _locked_resource(db, current.tenant_id, body.resource_id)
         if not res.is_active:

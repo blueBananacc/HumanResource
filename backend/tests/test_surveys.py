@@ -441,3 +441,68 @@ def test_link_lifecycle(client, db_session):
         assert r.status_code == 400
     finally:
         _cleanup(db_session, t)
+
+
+def test_org_scope_on_bound_candidates(client, db_session):
+    """绑了候选人的链接/答卷:org-scoped 用户绑不了范围外候选人,
+    且链接列表/答卷归属里的候选人名对范围外用户打码(与预约标题打码同理)。"""
+    from app.domain.models import OrgUnit
+
+    t = _tenant(db_session)
+    org_a = OrgUnit(tenant_id=t.id, name="A")
+    org_b = OrgUnit(tenant_id=t.id, name="B")
+    db_session.add_all([org_a, org_b])
+    db_session.commit()
+    db_session.refresh(org_a)
+    db_session.refresh(org_b)
+    admin = _user(db_session, t)
+    hr = _user(db_session, t, role="hr")  # 有 write_interview + view_reports
+    hr.org_unit_id = org_a.id
+    db_session.commit()
+    cand_b = Candidate(tenant_id=t.id, name="B候选人", org_unit_id=org_b.id)
+    cand_pub = Candidate(tenant_id=t.id, name="公共候选人")
+    db_session.add_all([cand_b, cand_pub])
+    db_session.commit()
+    db_session.refresh(cand_b)
+    db_session.refresh(cand_pub)
+    hadm, hhr = _hdr(admin), _hdr(hr)
+    try:
+        r = client.post("/api/surveys", headers=hadm, json=_survey_body())
+        sid = r.json()["id"]
+        q_ids = [q["id"] for q in r.json()["questions"]]
+        client.post(f"/api/surveys/{sid}/status", headers=hadm,
+                    json={"status": "published"})
+
+        # admin 绑 org-B 候选人建链接;org-A 的 hr 绑同一个 → 404
+        r = client.post(f"/api/surveys/{sid}/links", headers=hadm,
+                        json={"candidate_id": cand_b.id})
+        assert r.status_code == 201
+        token = r.json()["token"]
+        r = client.post(f"/api/surveys/{sid}/links", headers=hhr,
+                        json={"candidate_id": cand_b.id})
+        assert r.status_code == 404
+        # org-A 的 hr 绑公共候选人(org NULL)→ OK
+        r = client.post(f"/api/surveys/{sid}/links", headers=hhr,
+                        json={"candidate_id": cand_pub.id})
+        assert r.status_code == 201
+
+        # admin 看链接:有真名;hr 看:B 候选人打码成匿名,公共的可见
+        admin_links = client.get(f"/api/surveys/{sid}/links", headers=hadm).json()
+        hr_links = client.get(f"/api/surveys/{sid}/links", headers=hhr).json()
+        assert [l["candidate_name"] for l in admin_links] == ["公共候选人", "B候选人"]
+        assert [l["candidate_name"] for l in hr_links] == ["公共候选人", None]
+        assert [l["candidate_id"] for l in hr_links] == [cand_pub.id, None]
+
+        # 用 B 候选人的链接提交一份答卷,results 同样打码
+        client.post(f"/api/public/surveys/{token}/responses", json={
+            "respondent_key": "rk-" + uuid.uuid4().hex,
+            "answers": {q_ids[0]: 5, q_ids[1]: "内推"},
+        })
+        admin_resp = client.get(f"/api/surveys/{sid}/results", headers=hadm).json()["respondents"]
+        hr_resp = client.get(f"/api/surveys/{sid}/results", headers=hhr).json()["respondents"]
+        assert admin_resp[0]["candidate_id"] == cand_b.id
+        assert admin_resp[0]["name"] == "B候选人"
+        assert hr_resp[0]["candidate_id"] is None
+        assert hr_resp[0]["name"] is None
+    finally:
+        _cleanup(db_session, t)

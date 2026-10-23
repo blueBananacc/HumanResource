@@ -66,7 +66,7 @@ class ApplicationIn(BaseModel):
     candidate_id: str
     job_id: str
     stage: str = "applied"
-    note: str | None = None
+    note: str | None = Field(None, max_length=500)
 
 
 class TransitionIn(BaseModel):

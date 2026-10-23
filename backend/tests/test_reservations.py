@@ -412,6 +412,50 @@ def test_reservation_input_validation(client, db_session):
         _cleanup(db_session, t, t2)
 
 
+def test_inactive_interviewer_rejected(client, db_session):
+    """禁用用户不能当面试官 — 之前只校验租户归属。"""
+    t = _tenant(db_session)
+    u = _user(db_session, t)
+    disabled = _user(db_session, t, role="hr")
+    disabled.status = "disabled"
+    db_session.commit()
+    hdr = _hdr(u)
+    try:
+        room = client.post("/api/rooms", headers=hdr, json={"name": "R"}).json()["id"]
+        r = client.post("/api/reservations", headers=hdr,
+                        json=_resv_json(room, start_h=9, end_h=10,
+                                        interviewer_ids=[disabled.id]))
+        assert r.status_code == 400
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_out_of_scope_room_always_404(client, db_session):
+    """范围外会议室不论启用/停用都 404 — 不通过 400 外泄停用状态。"""
+    t = _tenant(db_session)
+    org_a = OrgUnit(tenant_id=t.id, name="A")
+    org_b = OrgUnit(tenant_id=t.id, name="B")
+    db_session.add_all([org_a, org_b])
+    db_session.commit()
+    db_session.refresh(org_a)
+    db_session.refresh(org_b)
+    admin = _user(db_session, t)
+    hr = _user(db_session, t, role="hr")
+    hr.org_unit_id = org_a.id
+    db_session.commit()
+    try:
+        room_b = client.post("/api/rooms", headers=_hdr(admin),
+                             json={"name": "B", "org_unit_id": org_b.id}).json()["id"]
+        # 停用状态下范围外用户依然只配看到 404(PUT 整组替换,org 要带上)
+        client.put(f"/api/rooms/{room_b}", headers=_hdr(admin),
+                   json={"name": "B", "is_active": False, "org_unit_id": org_b.id})
+        r = client.post("/api/reservations", headers=_hdr(hr),
+                        json=_resv_json(room_b, start_h=9, end_h=10))
+        assert r.status_code == 404
+    finally:
+        _cleanup(db_session, t)
+
+
 def test_delete_room_in_use_guard(client, db_session):
     """有预约记录(含已取消)的会议室/资源不能硬删 — 会连坐抹掉台账。"""
     t = _tenant(db_session)
