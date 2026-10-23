@@ -90,6 +90,11 @@ export function Schedule() {
     d.setDate(d.getDate() + 7);
     return d;
   }, [weekStart]);
+  const weekEndLabel = useMemo(() => {
+    const d = new Date(weekEnd);
+    d.setDate(d.getDate() - 1);
+    return `${d.getMonth() + 1}/${d.getDate()}`;
+  }, [weekEnd]);
 
   const resvQuery = useQuery({
     queryKey: ["reservations", weekStart.toISOString(), roomFilter],
@@ -181,7 +186,7 @@ export function Schedule() {
         </div>
         <span className="text-sm font-medium text-[var(--color-text-primary)] font-body">
           {weekStart.getMonth() + 1}/{weekStart.getDate()} –{" "}
-          {weekEnd.getMonth() + 1}/{weekEnd.getDate() - 1}
+          {weekEndLabel}
         </span>
         <select
           value={roomFilter}

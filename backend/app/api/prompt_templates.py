@@ -47,6 +47,8 @@ class TemplateSaveIn(BaseModel):
 
 
 class PreviewIn(BaseModel):
+    # 传 content 时预览编辑中的草稿;不传则预览库中已存(或默认)内容
+    content: str | None = Field(None, max_length=20000)
     vars: dict[str, str] = Field(default_factory=dict)
 
 
@@ -170,7 +172,11 @@ def preview_template(
 ):
     spec = _spec_or_404(key)
     tpl = _custom(db, current.tenant_id, key)
-    content = tpl.content if tpl else spec.content
+    content = (
+        body.content
+        if body.content is not None
+        else (tpl.content if tpl else spec.content)
+    )
     # 预览时给未提供的声明变量塞示例值,让 HR 看到完整渲染效果
     sample = {v["name"]: f"<{v['name']}>" for v in spec.variables}
     sample.update(body.vars)

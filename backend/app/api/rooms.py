@@ -448,6 +448,8 @@ def list_reservations(
     if room_id:
         stmt = stmt.where(Reservation.room_id == room_id)
     if kind:
+        if kind not in Reservation.KINDS:
+            raise HTTPException(400, f"kind 必须是 {Reservation.KINDS} 之一")
         stmt = stmt.where(Reservation.kind == kind)
     # 数据范围:预约本身无 org,跟随所约会议室的 org;不占会议室的预约
     #(纯面试官/资源预约)按 org NULL 公共可见处理。
@@ -510,7 +512,7 @@ def create_reservation(
         room_id=body.room_id, resource_id=body.resource_id,
         interview_id=body.interview_id, title=body.title.strip(),
         starts_at=starts_at, ends_at=ends_at,
-        interviewer_ids=body.interviewer_ids,
+        interviewer_ids=list(dict.fromkeys(body.interviewer_ids)),
         created_by=current.id,
     )
     db.add(r)
@@ -578,7 +580,7 @@ def update_reservation(
     r.title = body.title.strip()
     r.starts_at = starts_at
     r.ends_at = ends_at
-    r.interviewer_ids = body.interviewer_ids
+    r.interviewer_ids = list(dict.fromkeys(body.interviewer_ids))
     r.updated_at = _now()
     write_audit(db, actor=current, entity_type="reservation", entity_id=r.id,
                 action="update", detail={"title": r.title}, request=request)

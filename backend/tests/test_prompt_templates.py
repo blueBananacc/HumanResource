@@ -155,6 +155,13 @@ def test_save_preview_reset_flow(client, db_session):
         assert "测试岗" in r.json()["rendered"]
         assert "<level>" in r.json()["rendered"]
 
+        # preview 传 content → 渲染草稿而不是库中已存/默认内容
+        r = client.post(
+            "/api/prompt-templates/interview.question/preview", headers=hdr,
+            json={"content": "草稿内容 {{job_title}} 预览", "vars": {"job_title": "前端岗"}},
+        )
+        assert r.json()["rendered"] == "草稿内容 前端岗 预览"
+
         # reset → 回默认
         r = client.post("/api/prompt-templates/match.evaluate/reset", headers=hdr)
         assert r.json()["is_custom"] is False

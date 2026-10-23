@@ -5,6 +5,8 @@ import { ArrowLeft, KanbanSquare, RefreshCw, Sparkles, Users } from "lucide-reac
 import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
 import { ApiError, fetchJSON } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { PERM } from "@/lib/roles";
 import { formatRelative, levelLabel } from "@/lib/format";
 import { MatchBadge } from "@/components/match/MatchBadge";
 
@@ -62,6 +64,8 @@ export function JobMatches() {
   const qc = useQueryClient();
   const [minScore, setMinScore] = useState(0);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const { hasPermission } = useAuth();
+  const canWrite = hasPermission(PERM.WRITE_JOBS);
 
   const jobQuery = useQuery({
     queryKey: ["job", id],
@@ -212,12 +216,16 @@ export function JobMatches() {
                   );
                 }
               }}
-              onAddPipeline={() => {
-                if (m.candidate_id) {
-                  setFeedback(null);
-                  addToPipeline.mutate(m.candidate_id);
-                }
-              }}
+              onAddPipeline={
+                canWrite
+                  ? () => {
+                      if (m.candidate_id) {
+                        setFeedback(null);
+                        addToPipeline.mutate(m.candidate_id);
+                      }
+                    }
+                  : undefined
+              }
             />
           ))
         )}
@@ -237,7 +245,7 @@ function MatchRow({
   level: string;
   isLast: boolean;
   onStartInterview: () => void;
-  onAddPipeline: () => void;
+  onAddPipeline?: () => void;
 }) {
   return (
     <div
@@ -300,7 +308,7 @@ function MatchRow({
           <Sparkles className="w-3.5 h-3.5" />
           发起面试
         </Button>
-        {match.candidate_id && (
+        {match.candidate_id && onAddPipeline && (
           <Button
             variant="secondary"
             onClick={onAddPipeline}

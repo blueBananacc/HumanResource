@@ -207,6 +207,47 @@ def test_public_submit_and_results(client, db_session):
         _cleanup(db_session, t)
 
 
+def test_answer_type_validation(client, db_session):
+    """答案按题型校验:rating 1-5 非布尔整数;文本必须字符串;多选不得超选项数。"""
+    t = _tenant(db_session)
+    u = _user(db_session, t)
+    hdr = _hdr(u)
+    try:
+        r = client.post("/api/surveys", headers=hdr, json={
+            "title": "校验",
+            "questions": [
+                {"type": "rating", "text": "评分", "required": False},
+                {"type": "long_text", "text": "想法", "required": False},
+                {"type": "multi_choice", "text": "多选",
+                 "options": ["A", "B"], "required": False},
+            ],
+        })
+        sid = r.json()["id"]
+        rating_q, text_q, multi_q = [q["id"] for q in r.json()["questions"]]
+        client.post(f"/api/surveys/{sid}/status", headers=hdr,
+                    json={"status": "published"})
+
+        def submit(answers):
+            return client.post(f"/api/public/surveys/{sid}/responses", json={
+                "respondent_key": "k-" + uuid.uuid4().hex, "answers": answers,
+            })
+
+        # bool 不是合法评分(JSON true → Python True 是 int 子类,必须挡)
+        assert submit({rating_q: True}).status_code == 400
+        # 越界评分
+        assert submit({rating_q: 0}).status_code == 400
+        assert submit({rating_q: 99}).status_code == 400
+        # 文本题收到对象/数组 → 400
+        assert submit({text_q: {"x": 1}}).status_code == 400
+        assert submit({text_q: ["a"]}).status_code == 400
+        # 多选超出选项数 → 400
+        assert submit({multi_q: ["A", "B", "A"]}).status_code == 400
+        # 合法提交 → 201
+        assert submit({rating_q: 5, text_q: "挺好", multi_q: ["A"]}).status_code == 201
+    finally:
+        _cleanup(db_session, t)
+
+
 def test_permissions_isolation(client, db_session):
     t1 = _tenant(db_session)
     t2 = _tenant(db_session)

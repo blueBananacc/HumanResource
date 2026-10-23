@@ -248,6 +248,8 @@ def list_applications(
     if job_id:
         stmt = stmt.where(JobApplication.job_id == job_id)
     if stage:
+        if stage not in ALL_STAGES:
+            raise HTTPException(400, f"stage 必须是 {ALL_STAGES} 之一")
         stmt = stmt.where(JobApplication.stage == stage)
     scope = get_org_scope(db, current)
     stmt = apply_org_filter(stmt, org_column=Job.org_unit_id, scope=scope)

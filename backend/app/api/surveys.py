@@ -412,13 +412,20 @@ def public_submit(
             continue
         if q.type == "single_choice" and str(v) not in [str(o) for o in q.options]:
             raise HTTPException(400, f"「{q.text[:30]}」答案不在选项中")
-        if q.type == "multi_choice":
-            if not isinstance(v, list) or not all(
-                str(x) in [str(o) for o in q.options] for x in v
-            ):
-                raise HTTPException(400, f"「{q.text[:30]}」答案不在选项中")
-        if q.type == "rating" and not isinstance(v, int):
-            raise HTTPException(400, f"「{q.text[:30]}」需要整数评分")
+        if q.type == "multi_choice" and (
+            not isinstance(v, list)
+            or len(v) > len(q.options)
+            or not all(str(x) in [str(o) for o in q.options] for x in v)
+        ):
+            raise HTTPException(400, f"「{q.text[:30]}」答案不在选项中")
+        if q.type == "rating" and (
+            isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 5
+        ):
+            raise HTTPException(400, f"「{q.text[:30]}」需要 1-5 整数评分")
+        if q.type in ("short_text", "long_text") and (
+            not isinstance(v, str) or len(v) > 5000
+        ):
+            raise HTTPException(400, f"「{q.text[:30]}」需要不超过 5000 字的文本")
 
     resp = SurveyResponse(
         tenant_id=s.tenant_id, survey_id=s.id,

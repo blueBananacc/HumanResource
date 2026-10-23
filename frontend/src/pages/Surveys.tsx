@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
 import { Empty } from "@/components/ui/empty";
 import { ApiError, fetchJSON } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/lib/auth";
 import { PERM } from "@/lib/roles";
 
@@ -204,10 +205,9 @@ export function Surveys() {
                         variant="secondary"
                         className="!px-2.5 !py-1 !text-[12px]"
                         onClick={() => {
-                          navigator.clipboard.writeText(
-                            `${location.origin}/s/${s.id}`,
+                          copyText(`${location.origin}/s/${s.id}`, () =>
+                            setFeedback("填写链接已复制"),
                           );
-                          setFeedback("填写链接已复制");
                         }}
                       >
                         <Copy className="w-3.5 h-3.5" />

@@ -5,6 +5,7 @@ import { Copy, Check, RefreshCw, XCircle } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { fetchJSON } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
 
 /**
  * 发起远程面试成功后的链接 / 邀请展示对话框。
@@ -52,35 +53,10 @@ export function InviteDialog({
   const expiresLocal = new Date(invite.expires_at).toLocaleString("zh-CN");
 
   function copyUrl() {
-    // navigator.clipboard 仅在 secure context (HTTPS / localhost) 可用,
-    // 私有化部署常走 http://内网 IP,这里走 execCommand 兜底。
-    const done = () => {
+    copyText(fullUrl, () => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    };
-    if (window.isSecureContext && navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(fullUrl).then(done).catch(legacyCopy);
-      return;
-    }
-    legacyCopy();
-
-    function legacyCopy() {
-      const ta = document.createElement("textarea");
-      ta.value = fullUrl;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      ta.style.left = "-9999px";
-      document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
-      try {
-        if (document.execCommand("copy")) done();
-      } catch {
-        /* 静默失败 — 用户可以手动选中输入框文本复制 */
-      } finally {
-        document.body.removeChild(ta);
-      }
-    }
+    });
   }
 
   return (

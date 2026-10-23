@@ -174,7 +174,7 @@ function TemplateDrawer({
     mutationFn: () =>
       fetchJSON<{ rendered: string }>(
         `/api/prompt-templates/${tpl.key}/preview`,
-        { method: "POST", body: JSON.stringify({ vars: {} }) },
+        { method: "POST", body: JSON.stringify({ content, vars: {} }) },
       ),
     onSuccess: (r) => setPreview(r.rendered),
   });

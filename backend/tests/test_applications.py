@@ -220,6 +220,9 @@ def test_pipeline_kanban_with_match_score(client, db_session):
         assert r.json()["total"] == 1
         r = client.get("/api/applications?q=张", headers=hdr)
         assert r.json()["total"] == 1
+        # 非法 stage 过滤 → 400
+        r = client.get("/api/applications?stage=bogus", headers=hdr)
+        assert r.status_code == 400
     finally:
         _cleanup(db_session, t)
 

@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime
 from typing import Literal
 
@@ -48,6 +49,8 @@ from app.services.permissions import (
 router = APIRouter(tags=["hris-hiring"])
 req_router = APIRouter(prefix="/requisitions", tags=["hris-requisitions"], dependencies=[Depends(require_feature("hr.suite"))])
 offer_router = APIRouter(prefix="/offers", tags=["hris-offers"], dependencies=[Depends(require_feature("hr.suite"))])
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
@@ -415,17 +418,22 @@ def send_offer(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅草稿可发出")
     o.status = "sent"
     o.sent_at = _now()
-    if o.job_id:
-        # 管道联动:发出 Offer → 管道卡推进到 offer(无卡则补建)
-        advance_application(
-            db, o.tenant_id, o.candidate_id, o.job_id, "offer",
-            actor_user_id=current.id, note="Offer 发出", create_if_missing=True,
-        )
     write_audit(
         db, actor=current, entity_type="job_offer", entity_id=o.id,
         action="send", detail={}, request=request,
     )
     db.commit()
+    if o.job_id:
+        # 管道联动:发出 Offer → 管道卡推进到 offer(无卡则补建,失败不阻塞)
+        try:
+            advance_application(
+                db, o.tenant_id, o.candidate_id, o.job_id, "offer",
+                actor_user_id=current.id, note="Offer 发出", create_if_missing=True,
+            )
+            db.commit()
+        except Exception:  # noqa: BLE001
+            logger.warning("[hiring] pipeline advance failed", exc_info=True)
+            db.rollback()
     db.refresh(o)
     cands, jobs = _offer_maps(db, current.tenant_id)
     return _offer_out(o, cands, jobs)
@@ -453,21 +461,26 @@ def respond_offer(
         emp = _employee_from_offer(db, o, current)
         o.employee_id = emp.id
         _spawn_onboarding(db, o, emp, current)
-    if o.job_id:
-        # 管道联动:接受 → hired;拒绝 → rejected
-        advance_application(
-            db, o.tenant_id, o.candidate_id, o.job_id,
-            "hired" if body.accepted else "rejected",
-            actor_user_id=current.id,
-            note="候选人接受 Offer" if body.accepted else "候选人拒绝 Offer",
-            only_forward=body.accepted,
-            create_if_missing=True,
-        )
     write_audit(
         db, actor=current, entity_type="job_offer", entity_id=o.id,
         action="respond", detail={"accepted": body.accepted}, request=request,
     )
     db.commit()
+    if o.job_id:
+        # 管道联动:接受 → hired;拒绝 → rejected(失败不阻塞)
+        try:
+            advance_application(
+                db, o.tenant_id, o.candidate_id, o.job_id,
+                "hired" if body.accepted else "rejected",
+                actor_user_id=current.id,
+                note="候选人接受 Offer" if body.accepted else "候选人拒绝 Offer",
+                only_forward=body.accepted,
+                create_if_missing=True,
+            )
+            db.commit()
+        except Exception:  # noqa: BLE001
+            logger.warning("[hiring] pipeline advance failed", exc_info=True)
+            db.rollback()
     db.refresh(o)
     cands, jobs = _offer_maps(db, current.tenant_id)
     return _offer_out(o, cands, jobs)
@@ -542,17 +555,22 @@ def withdraw_offer(
     if o.status in ("accepted", "declined", "withdrawn"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "已结束")
     o.status = "withdrawn"
-    if o.job_id:
-        # 管道联动:撤回 Offer → 回退到 interview
-        advance_application(
-            db, o.tenant_id, o.candidate_id, o.job_id, "interview",
-            actor_user_id=current.id, note="Offer 撤回", only_forward=False,
-        )
     write_audit(
         db, actor=current, entity_type="job_offer", entity_id=o.id,
         action="withdraw", detail={}, request=request,
     )
     db.commit()
+    if o.job_id:
+        # 管道联动:撤回 Offer → 回退到 interview(失败不阻塞)
+        try:
+            advance_application(
+                db, o.tenant_id, o.candidate_id, o.job_id, "interview",
+                actor_user_id=current.id, note="Offer 撤回", only_forward=False,
+            )
+            db.commit()
+        except Exception:  # noqa: BLE001
+            logger.warning("[hiring] pipeline advance failed", exc_info=True)
+            db.rollback()
     db.refresh(o)
     cands, jobs = _offer_maps(db, current.tenant_id)
     return _offer_out(o, cands, jobs)

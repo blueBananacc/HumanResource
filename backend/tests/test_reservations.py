@@ -184,6 +184,15 @@ def test_reservation_conflict_flow(client, db_session):
         )
         assert len(r.json()) == 4  # 含 cancelled
         assert any(x["status"] == "cancelled" for x in r.json())
+
+        # 非法 kind 过滤 → 400
+        r = client.get(
+            "/api/reservations",
+            params={"start": BASE.isoformat(), "end": (BASE + timedelta(hours=12)).isoformat(),
+                    "kind": "bogus"},
+            headers=hdr,
+        )
+        assert r.status_code == 400
     finally:
         _cleanup(db_session, t)
 

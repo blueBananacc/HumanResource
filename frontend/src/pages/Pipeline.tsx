@@ -14,6 +14,8 @@ import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
 import { Modal } from "@/components/ui/modal";
 import { ApiError, fetchJSON } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { PERM } from "@/lib/roles";
 
 /**
  * 招聘管道看板(T1-1,MintHCM Candidatures Kanban 移植)。
@@ -95,6 +97,8 @@ export function Pipeline() {
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const { hasPermission } = useAuth();
+  const canWrite = hasPermission(PERM.WRITE_JOBS);
 
   const jobsQuery = useQuery({
     queryKey: ["jobs-for-pipeline"],
@@ -172,14 +176,16 @@ export function Pipeline() {
               </option>
             ))}
           </select>
-          <Button
-            variant="secondary"
-            onClick={() => setAddOpen(true)}
-            disabled={!effectiveJobId}
-          >
-            <UserPlus className="w-4 h-4" />
-            加入候选人
-          </Button>
+          {canWrite && (
+            <Button
+              variant="secondary"
+              onClick={() => setAddOpen(true)}
+              disabled={!effectiveJobId}
+            >
+              <UserPlus className="w-4 h-4" />
+              加入候选人
+            </Button>
+          )}
         </div>
       </div>
 
@@ -201,6 +207,18 @@ export function Pipeline() {
         <div className="p-12 text-center text-sm text-[var(--color-text-tertiary)] font-body">
           加载中…
         </div>
+      ) : pipelineQuery.isError ? (
+        <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)]">
+          <Empty
+            icon={KanbanSquare}
+            title="管道加载失败"
+            description={
+              pipelineQuery.error instanceof ApiError
+                ? pipelineQuery.error.message
+                : "请稍后重试"
+            }
+          />
+        </div>
       ) : !pipeline || pipeline.total === 0 ? (
         <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)]">
           <Empty
@@ -208,10 +226,12 @@ export function Pipeline() {
             title="管道还是空的"
             description="把候选人加进管道开始跟踪,或在「匹配候选人」页直接点「加入管道」。发起面试 / 发 Offer 也会自动建卡。"
             action={
-              <Button onClick={() => setAddOpen(true)}>
-                <Plus className="w-4 h-4" />
-                加入第一位候选人
-              </Button>
+              canWrite ? (
+                <Button onClick={() => setAddOpen(true)}>
+                  <Plus className="w-4 h-4" />
+                  加入第一位候选人
+                </Button>
+              ) : undefined
             }
           />
         </div>
@@ -223,6 +243,7 @@ export function Pipeline() {
               col={col}
               isMain={MAIN_STAGES.includes(col.stage)}
               dimmed={SIDE_STAGES.includes(col.stage)}
+              canWrite={canWrite}
               dragOver={dragOver === col.stage}
               onDragOver={(e) => {
                 e.preventDefault();
@@ -253,6 +274,7 @@ function PipelineCol({
   col,
   isMain,
   dimmed,
+  canWrite,
   dragOver,
   onDragOver,
   onDragLeave,
@@ -262,6 +284,7 @@ function PipelineCol({
   col: PipelineColumn;
   isMain: boolean;
   dimmed: boolean;
+  canWrite: boolean;
   dragOver: boolean;
   onDragOver: (e: React.DragEvent) => void;
   onDragLeave: () => void;
@@ -296,7 +319,7 @@ function PipelineCol({
         {col.cards.map((c) => (
           <div
             key={c.id}
-            draggable
+            draggable={canWrite}
             onDragStart={(e) => {
               e.dataTransfer.setData("text/plain", c.id);
               e.dataTransfer.setData("application/x-stage", c.stage);
@@ -336,7 +359,7 @@ function PipelineCol({
             </div>
           </div>
         ))}
-        {col.count === 0 && isMain && (
+        {col.count === 0 && isMain && canWrite && (
           <div className="text-[11px] text-[var(--color-text-tertiary)] text-center py-4 border border-dashed border-[var(--color-border-subtle)] rounded-lg">
             拖卡片到这里
           </div>
