@@ -36,7 +36,7 @@ type Template = {
   updated_by: string | null;
 };
 
-type Version = { id: string; version: number; created_at: string };
+type Version = { id: string; version: number; content: string; created_at: string };
 
 export function PromptSettings() {
   const qc = useQueryClient();
@@ -150,6 +150,7 @@ function TemplateDrawer({
   const [content, setContent] = useState(tpl.content);
   const [preview, setPreview] = useState<string | null>(null);
   const [showVersions, setShowVersions] = useState(false);
+  const [previewVersion, setPreviewVersion] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const versionsQuery = useQuery({
@@ -282,26 +283,43 @@ function TemplateDrawer({
         {showVersions && (
           <div className="border border-[var(--color-border-subtle)] rounded-lg divide-y divide-[var(--color-border-row)]">
             {(versionsQuery.data ?? []).map((v) => (
-              <div
-                key={v.id}
-                className="flex items-center justify-between px-3 py-2 text-[12px] font-body"
-              >
-                <span className="text-[var(--color-text-secondary)]">
-                  v{v.version} · {formatRelative(v.created_at)}
-                  {v.version === tpl.version && (
-                    <span className="ml-2 text-[var(--color-success)]">
-                      当前
-                    </span>
-                  )}
-                </span>
-                {v.version !== tpl.version && (
-                  <button
-                    type="button"
-                    onClick={() => rollback.mutate(v.version)}
-                    className="text-[var(--color-accent)] hover:underline"
-                  >
-                    回滚到此版
-                  </button>
+              <div key={v.id} className="text-[12px] font-body">
+                <div className="flex items-center justify-between px-3 py-2">
+                  <span className="text-[var(--color-text-secondary)]">
+                    v{v.version} · {formatRelative(v.created_at)}
+                    {v.version === tpl.version && (
+                      <span className="ml-2 text-[var(--color-success)]">
+                        当前
+                      </span>
+                    )}
+                  </span>
+                  <span className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPreviewVersion((p) =>
+                          p === v.version ? null : v.version,
+                        )
+                      }
+                      className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+                    >
+                      {previewVersion === v.version ? "收起" : "预览"}
+                    </button>
+                    {v.version !== tpl.version && (
+                      <button
+                        type="button"
+                        onClick={() => rollback.mutate(v.version)}
+                        className="text-[var(--color-accent)] hover:underline"
+                      >
+                        回滚到此版
+                      </button>
+                    )}
+                  </span>
+                </div>
+                {previewVersion === v.version && (
+                  <pre className="mx-3 mb-2 px-3 py-2 rounded-md bg-[var(--color-bg-subtle)] text-[11px] font-mono text-[var(--color-text-secondary)] whitespace-pre-wrap max-h-[180px] overflow-y-auto">
+                    {v.content}
+                  </pre>
                 )}
               </div>
             ))}

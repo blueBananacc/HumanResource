@@ -61,6 +61,7 @@ class RoomIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
     location: str | None = Field(None, max_length=128)
     capacity: int = Field(4, ge=1, le=500)
+    equipment: list[str] = Field(default_factory=list, max_length=20)
     org_unit_id: str | None = None
     is_active: bool = True
 
@@ -70,6 +71,7 @@ class RoomOut(BaseModel):
     name: str
     location: str | None
     capacity: int
+    equipment: list[str] = []
     org_unit_id: str | None
     is_active: bool
 
@@ -257,6 +259,7 @@ def list_rooms(
     return [
         RoomOut(
             id=r.id, name=r.name, location=r.location, capacity=r.capacity,
+            equipment=r.equipment or [],
             org_unit_id=r.org_unit_id, is_active=r.is_active,
         )
         for r in db.scalars(stmt.order_by(Room.name))
@@ -290,6 +293,7 @@ def create_room(
     db.commit()
     return RoomOut(
         id=r.id, name=r.name, location=r.location, capacity=r.capacity,
+        equipment=r.equipment or [],
         org_unit_id=r.org_unit_id, is_active=r.is_active,
     )
 
@@ -312,6 +316,7 @@ def update_room(
     db.commit()
     return RoomOut(
         id=r.id, name=r.name, location=r.location, capacity=r.capacity,
+        equipment=r.equipment or [],
         org_unit_id=r.org_unit_id, is_active=r.is_active,
     )
 
@@ -325,6 +330,17 @@ def delete_room(
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
     r = _room(db, current.tenant_id, room_id)
+    # 有预约记录(含已取消)时不允许硬删 — CASCADE 会连坐删掉历史台账,
+    # 保留记录用 is_active=false 停用
+    n = db.scalar(
+        select(func.count()).select_from(Reservation).where(
+            Reservation.room_id == r.id
+        )
+    ) or 0
+    if n:
+        raise HTTPException(
+            409, f"该会议室已有 {n} 条预约记录,请改为停用而非删除"
+        )
     db.delete(r)
     write_audit(db, actor=current, entity_type="room", entity_id=room_id,
                 action="delete", detail={"name": r.name}, request=request)
@@ -399,6 +415,15 @@ def delete_resource(
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
     r = _resource(db, current.tenant_id, resource_id)
+    n = db.scalar(
+        select(func.count()).select_from(Reservation).where(
+            Reservation.resource_id == r.id
+        )
+    ) or 0
+    if n:
+        raise HTTPException(
+            409, f"该资源已有 {n} 条预约记录,请改为停用而非删除"
+        )
     db.delete(r)
     write_audit(db, actor=current, entity_type="resource", entity_id=resource_id,
                 action="delete", detail={"name": r.name}, request=request)
@@ -628,6 +653,7 @@ def interviewer_availability(
             User.status == "active",
         )
     ).all()
+    scope = get_org_scope(db, current)
     rows = db.scalars(
         apply_org_filter(
             select(Reservation)
@@ -639,9 +665,21 @@ def interviewer_availability(
                 Reservation.ends_at > _naive(start),
             ),
             org_column=Room.org_unit_id,
-            scope=get_org_scope(db, current),
+            scope=scope,
         )
     ).all()
+
+    def _title_visible(r: Reservation) -> bool:
+        """标题是否对当前用户可见。
+
+        有会议室的预约已经过了 org 过滤;纯面试官预约(不占对象)视为公共,
+        为避免标题里的候选人名跨数据范围泄露,仅创建者 / 参与面试官可见标题,
+        其余人打码。
+        """
+        if scope is None or r.room_id is not None:
+            return True
+        return r.created_by == current.id or current.id in (r.interviewer_ids or [])
+
     out = []
     for u in members:
         busy = [r for r in rows if u.id in (r.interviewer_ids or [])]
@@ -650,6 +688,9 @@ def interviewer_availability(
             "name": u.email,
             "role": u.role,
             "busy_count": len(busy),
-            "busy_titles": [r.title for r in busy[:3]],
+            "busy_titles": [
+                r.title if _title_visible(r) else "(受限预约)"
+                for r in busy[:3]
+            ],
         })
     return out

@@ -88,7 +88,7 @@ export const router = createBrowserRouter([
   { path: "/i/:token", element: <CandidateInvite /> },
   { path: "/i/:token/session", element: <CandidateSession /> },
   { path: "/i/:token/done", element: <CandidateDone /> },
-  { path: "/s/:id", element: <SurveyFill /> },
+  { path: "/s/:token", element: <SurveyFill /> },
   {
     path: "/",
     element: <AppShell />,

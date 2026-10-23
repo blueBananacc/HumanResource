@@ -37,6 +37,7 @@ from app.services.permissions import (
     apply_org_filter,
     ensure_can_see,
     get_org_scope,
+    has_permission,
     require_permission,
 )
 
@@ -117,8 +118,15 @@ def _skill_or_404(db: Session, tenant_id: str, skill_id: str) -> Skill:
     return s
 
 
-def _resolve_skill(db: Session, tenant_id: str, item: dict) -> Skill:
-    """按 skill_id 或 name 解析;name 不存在则自动入字典。"""
+def _resolve_skill(
+    db: Session, tenant_id: str, item: dict, *, allow_create: bool
+) -> Skill:
+    """按 skill_id 或 name 解析。
+
+    name 不存在时 ``allow_create=True`` 才自动入字典 — 字典本身归
+    ``manage_settings`` 管,岗位/候选人技能写权限不应绕过它随意造词条;
+    ``import-resume`` 例外(简历抽取本来就要扩充字典)。
+    """
     sid = item.get("skill_id")
     if sid:
         return _skill_or_404(db, tenant_id, sid)
@@ -129,6 +137,10 @@ def _resolve_skill(db: Session, tenant_id: str, item: dict) -> Skill:
         select(Skill).where(Skill.tenant_id == tenant_id, Skill.name == name)
     ).first()
     if s is None:
+        if not allow_create:
+            raise HTTPException(
+                400, f"技能「{name[:32]}」不在字典中,需管理员先创建"
+            )
         s = Skill(tenant_id=tenant_id, name=name, category="other")
         db.add(s)
         db.flush()
@@ -282,6 +294,14 @@ def delete_skill(
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
     s = _skill_or_404(db, current.tenant_id, skill_id)
+    # 被岗位/候选人引用时不允许硬删 — CASCADE 会连坐抹掉技能档案
+    refs = (
+        db.scalar(select(func.count()).select_from(JobSkill).where(JobSkill.skill_id == s.id)) or 0
+    ) + (
+        db.scalar(select(func.count()).select_from(CandidateSkill).where(CandidateSkill.skill_id == s.id)) or 0
+    )
+    if refs:
+        raise HTTPException(409, f"该技能被 {refs} 处岗位/候选人引用,先移除引用")
     db.delete(s)
     write_audit(db, actor=current, entity_type="skill", entity_id=skill_id,
                 action="delete", detail={"name": s.name}, request=request)
@@ -314,12 +334,13 @@ def put_job_skills(
 ):
     job = _job_or_404(db, current.tenant_id, job_id)
     _job_visible(db, current, job)
+    allow_create = has_permission(current, PERM_MANAGE_SETTINGS)
     seen: set[str] = set()
     new_rows: list[JobSkill] = []
     for item in body.items:
         if item.importance not in IMPORTANCES:
             raise HTTPException(400, "importance 必须是 must / nice")
-        s = _resolve_skill(db, current.tenant_id, item.model_dump())
+        s = _resolve_skill(db, current.tenant_id, item.model_dump(), allow_create=allow_create)
         if s.id in seen:
             continue
         seen.add(s.id)
@@ -428,10 +449,11 @@ def put_candidate_skills(
 ):
     cand = _cand_or_404(db, current.tenant_id, candidate_id)
     _cand_visible(db, current, cand)
+    allow_create = has_permission(current, PERM_MANAGE_SETTINGS)
     seen: set[str] = set()
     new_rows: list[CandidateSkill] = []
     for item in body.items:
-        s = _resolve_skill(db, current.tenant_id, item.model_dump())
+        s = _resolve_skill(db, current.tenant_id, item.model_dump(), allow_create=allow_create)
         if s.id in seen:
             continue
         seen.add(s.id)
@@ -493,7 +515,7 @@ def import_resume_skills(
     }
     imported = 0
     for name in names:
-        s = _resolve_skill(db, current.tenant_id, {"name": name})
+        s = _resolve_skill(db, current.tenant_id, {"name": name}, allow_create=True)
         if s.id in existing:
             continue
         existing.add(s.id)

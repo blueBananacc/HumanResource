@@ -16,10 +16,13 @@ os.environ.setdefault("MACHINE_FINGERPRINT_OVERRIDE", "test-machine-id-survey")
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import update  # noqa: E402
 
 from app.domain.models import (  # noqa: E402
     Base,
+    Candidate,
     Survey,
+    SurveyLink,
     SurveyQuestion,
     SurveyResponse,
     SurveyResponseAnswer,
@@ -79,7 +82,10 @@ def _hdr(u: User) -> dict[str, str]:
 
 def _cleanup(db, *tenants: Tenant) -> None:
     for t in tenants:
-        for m in (SurveyResponseAnswer, SurveyResponse, SurveyQuestion, Survey, User):
+        for m in (
+            SurveyResponseAnswer, SurveyResponse, SurveyLink,
+            SurveyQuestion, Survey, Candidate, User,
+        ):
             db.query(m).filter(m.tenant_id == t.id).delete()
         db.delete(t)
     db.commit()
@@ -147,49 +153,63 @@ def test_public_submit_and_results(client, db_session):
         q_ids = [q["id"] for q in r.json()["questions"]]
         rating_q, choice_q, text_q = q_ids
 
-        # 未发布 → 公开端 404
+        # 未发布 → 公开端 404(链接此时也是死链)
         assert client.get(f"/api/public/surveys/{sid}").status_code == 404
+        r = client.post(f"/api/surveys/{sid}/links", headers=hdr, json={})
+        assert r.status_code == 201
+        token = r.json()["token"]
+        assert client.get(f"/api/public/surveys/{token}").status_code == 404
         client.post(f"/api/surveys/{sid}/status", headers=hdr, json={"status": "published"})
 
         # 公开端拿题(不含租户数据)
-        r = client.get(f"/api/public/surveys/{sid}")
+        r = client.get(f"/api/public/surveys/{token}")
         assert r.status_code == 200
         assert len(r.json()["questions"]) == 3
         assert "tenant_id" not in r.text
 
+        # 再发一条链接给第二个答卷人
+        token2 = client.post(
+            f"/api/surveys/{sid}/links", headers=hdr, json={}
+        ).json()["token"]
+
         # 缺必填 → 400
-        r = client.post(f"/api/public/surveys/{sid}/responses", json={
+        r = client.post(f"/api/public/surveys/{token}/responses", json={
             "respondent_key": "k-" + uuid.uuid4().hex,
             "answers": {rating_q: 5},
         })
         assert r.status_code == 400
 
         # 非法选项 → 400
-        r = client.post(f"/api/public/surveys/{sid}/responses", json={
+        r = client.post(f"/api/public/surveys/{token}/responses", json={
             "respondent_key": "k-" + uuid.uuid4().hex,
             "answers": {rating_q: 5, choice_q: "不存在"},
         })
         assert r.status_code == 400
 
-        # 正常提交 ×2
+        # 正常提交 ×2(各自一条链接)
         key = "k-" + uuid.uuid4().hex
-        r = client.post(f"/api/public/surveys/{sid}/responses", json={
+        r = client.post(f"/api/public/surveys/{token}/responses", json={
             "respondent_key": key,
             "respondent_name": "候选人A",
             "happiness": 5,
             "answers": {rating_q: 5, choice_q: "内推", text_q: "流程顺畅"},
         })
         assert r.status_code == 201
-        r = client.post(f"/api/public/surveys/{sid}/responses", json={
+        r = client.post(f"/api/public/surveys/{token2}/responses", json={
             "respondent_key": "k-" + uuid.uuid4().hex,
             "happiness": 3,
             "answers": {rating_q: 3, choice_q: "官网"},
         })
         assert r.status_code == 201
 
-        # 重复提交 → 409
-        r = client.post(f"/api/public/surveys/{sid}/responses", json={
+        # 重复提交:同 key → 409;同链接 → 已核销 409
+        r = client.post(f"/api/public/surveys/{token2}/responses", json={
             "respondent_key": key, "answers": {},
+        })
+        assert r.status_code == 409
+        r = client.post(f"/api/public/surveys/{token}/responses", json={
+            "respondent_key": "k-" + uuid.uuid4().hex,
+            "answers": {rating_q: 5, choice_q: "官网"},
         })
         assert r.status_code == 409
 
@@ -199,6 +219,8 @@ def test_public_submit_and_results(client, db_session):
         data = r.json()
         assert data["response_count"] == 2
         assert data["avg_happiness"] == 4.0
+        assert len(data["respondents"]) == 2
+        assert "候选人A" in [r["name"] for r in data["respondents"]]
         by_q = {q["question_id"]: q for q in data["questions"]}
         assert by_q[rating_q]["avg_rating"] == 4.0
         assert by_q[choice_q]["option_counts"] == {"官网": 1, "内推": 1, "猎头": 0}
@@ -227,8 +249,12 @@ def test_answer_type_validation(client, db_session):
         client.post(f"/api/surveys/{sid}/status", headers=hdr,
                     json={"status": "published"})
 
+        # 每次校验失败不耗链接 — 链接是提交成功才核销的
         def submit(answers):
-            return client.post(f"/api/public/surveys/{sid}/responses", json={
+            token = client.post(
+                f"/api/surveys/{sid}/links", headers=hdr, json={}
+            ).json()["token"]
+            return client.post(f"/api/public/surveys/{token}/responses", json={
                 "respondent_key": "k-" + uuid.uuid4().hex, "answers": answers,
             })
 
@@ -263,14 +289,25 @@ def test_permissions_isolation(client, db_session):
         # viewer 写 → 403
         r = client.post("/api/surveys", headers=_hdr(v), json=_survey_body())
         assert r.status_code == 403
-        # viewer 读结果 → 403?(viewer 有 view_reports)
+        # viewer 不能发链接(要 write_interview)
+        r = client.post(f"/api/surveys/{sid}/links", headers=_hdr(v), json={})
+        assert r.status_code == 403
+        # viewer 读结果 → 200(viewer 有 view_reports)
         r = client.get(f"/api/surveys/{sid}/results", headers=_hdr(v))
-        assert r.status_code in (200, 403)
+        assert r.status_code == 200
+        r = client.get(f"/api/surveys/{sid}/links", headers=_hdr(v))
+        assert r.status_code == 200
 
-        # 租户隔离:B 租户管理端看不到;但公开端匿名可访问
+        # 租户隔离:B 租户管理端看不到;也发不了 A 的链接
         r = client.get(f"/api/surveys/{sid}", headers=_hdr(u2))
         assert r.status_code == 404
-        r = client.get(f"/api/public/surveys/{sid}")
+        r = client.post(f"/api/surveys/{sid}/links", headers=_hdr(u2), json={})
+        assert r.status_code == 404
+        # A 租户发的链接,公开端匿名可访问
+        token = client.post(
+            f"/api/surveys/{sid}/links", headers=_hdr(admin), json={}
+        ).json()["token"]
+        r = client.get(f"/api/public/surveys/{token}")
         assert r.status_code == 200
     finally:
         _cleanup(db_session, t1, t2)
@@ -287,7 +324,10 @@ def test_closed_survey_not_editable(client, db_session):
         q_ids = [q["id"] for q in r.json()["questions"]]
         client.post(f"/api/surveys/{sid}/status", headers=hdr,
                     json={"status": "published"})
-        r = client.post(f"/api/public/surveys/{sid}/responses", json={
+        token = client.post(
+            f"/api/surveys/{sid}/links", headers=hdr, json={}
+        ).json()["token"]
+        r = client.post(f"/api/public/surveys/{token}/responses", json={
             "respondent_key": "rk-" + uuid.uuid4().hex,
             "answers": {q_ids[0]: 5, q_ids[1]: "内推"},
         })
@@ -318,5 +358,86 @@ def test_closed_survey_not_editable(client, db_session):
         sid3 = r3.json()["id"]
         assert client.put(f"/api/surveys/{sid3}", headers=hdr,
                           json=_survey_body()).status_code == 200
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_link_lifecycle(client, db_session):
+    """一次性链接:状态流转 / 过期 / 吊销 / 候选人绑定 / 不可见明文。"""
+    from datetime import datetime, timedelta
+
+    t = _tenant(db_session)
+    u = _user(db_session, t)
+    hdr = _hdr(u)
+    cand = Candidate(tenant_id=t.id, name="候选人丙")
+    db_session.add(cand)
+    db_session.commit()
+    db_session.refresh(cand)
+    try:
+        r = client.post("/api/surveys", headers=hdr, json=_survey_body())
+        sid = r.json()["id"]
+        q_ids = [q["id"] for q in r.json()["questions"]]
+        client.post(f"/api/surveys/{sid}/status", headers=hdr,
+                    json={"status": "published"})
+
+        # 绑定候选人的链接
+        r = client.post(f"/api/surveys/{sid}/links", headers=hdr,
+                        json={"candidate_id": cand.id})
+        assert r.status_code == 201
+        link = r.json()
+        assert link["candidate_name"] == "候选人丙"
+        token = link["token"]
+        # 明文 token 不在列表接口里出现
+        links = client.get(f"/api/surveys/{sid}/links", headers=hdr).json()
+        assert len(links) == 1
+        assert "token" not in links[0]
+        assert links[0]["status"] == "active"
+
+        # 提交一次 → 答卷绑定 candidate_id,链接变 used
+        r = client.post(f"/api/public/surveys/{token}/responses", json={
+            "respondent_key": "rk-" + uuid.uuid4().hex,
+            "answers": {q_ids[0]: 5, q_ids[1]: "内推"},
+        })
+        assert r.status_code == 201
+        links = client.get(f"/api/surveys/{sid}/links", headers=hdr).json()
+        assert links[0]["status"] == "used"
+        # 已用链接再访问 → 409
+        assert client.get(f"/api/public/surveys/{token}").status_code == 409
+        # results 的 respondents 带出绑定候选人
+        data = client.get(f"/api/surveys/{sid}/results", headers=hdr).json()
+        assert data["respondents"][0]["candidate_id"] == cand.id
+        assert data["respondents"][0]["name"] == "候选人丙"
+
+        # 已用链接不能吊销?可以 — 吊销历史记录不留有效 token
+        lid = links[0]["id"]
+        assert client.delete(
+            f"/api/surveys/{sid}/links/{lid}", headers=hdr
+        ).status_code == 204
+        assert client.get(f"/api/public/surveys/{token}").status_code == 404
+
+        # 过期链接:直接改库让 expires_at 落到过去
+        token2 = client.post(
+            f"/api/surveys/{sid}/links", headers=hdr, json={}
+        ).json()["token"]
+        db_session.execute(
+            update(SurveyLink)
+            .where(SurveyLink.tenant_id == t.id)
+            .values(expires_at=datetime.now() - timedelta(days=1))
+        )
+        db_session.commit()
+        r = client.get(f"/api/public/surveys/{token2}")
+        assert r.status_code == 410
+        links = client.get(f"/api/surveys/{sid}/links", headers=hdr).json()
+        assert links[0]["status"] == "expired"
+
+        # 绑定不存在的候选人 → 404
+        r = client.post(f"/api/surveys/{sid}/links", headers=hdr,
+                        json={"candidate_id": "nope"})
+        assert r.status_code == 404
+        # closed 问卷不能发新链接
+        client.post(f"/api/surveys/{sid}/status", headers=hdr,
+                    json={"status": "closed"})
+        r = client.post(f"/api/surveys/{sid}/links", headers=hdr, json={})
+        assert r.status_code == 400
     finally:
         _cleanup(db_session, t)

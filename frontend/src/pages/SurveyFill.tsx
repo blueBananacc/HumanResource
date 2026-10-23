@@ -6,9 +6,10 @@ import { Button } from "@/components/ui/button";
 import { ApiError, fetchJSON } from "@/lib/api";
 
 /**
- * 公开问卷填写页(/s/:id,免登录,T2-3)。
+ * 公开问卷填写页(/s/:token,免登录,T2-3)。
  *
- * - 加载 /api/public/surveys/{id} 的题目
+ * - token 对应一次性填写链接(survey_links,一次性 + 过期 + 可吊销)
+ * - 加载 /api/public/surveys/{token} 的题目
  * - respondent_key 存 localStorage → 服务端 UNIQUE 防重复
  * - 提交前可选满意度(happiness 1-5)
  */
@@ -44,7 +45,7 @@ function respondentKey(sid: string) {
 }
 
 export function SurveyFill() {
-  const { id = "" } = useParams<{ id: string }>();
+  const { token = "" } = useParams<{ token: string }>();
   const [answers, setAnswers] = useState<Record<string, string | string[] | number>>({});
   const [name, setName] = useState("");
   const [happiness, setHappiness] = useState<number | null>(null);
@@ -52,19 +53,19 @@ export function SurveyFill() {
   const [error, setError] = useState<string | null>(null);
 
   const query = useQuery({
-    queryKey: ["public-survey", id],
-    queryFn: () => fetchJSON<PublicSurvey>(`/api/public/surveys/${id}`),
+    queryKey: ["public-survey", token],
+    queryFn: () => fetchJSON<PublicSurvey>(`/api/public/surveys/${token}`),
     retry: false,
   });
 
-  const key = useMemo(() => (id ? respondentKey(id) : ""), [id]);
+  const key = useMemo(() => (token ? respondentKey(token) : ""), [token]);
   useEffect(() => {
     document.title = query.data ? `${query.data.title} - 问卷` : "问卷";
   }, [query.data]);
 
   const submit = useMutation({
     mutationFn: () =>
-      fetchJSON(`/api/public/surveys/${id}/responses`, {
+      fetchJSON(`/api/public/surveys/${token}/responses`, {
         method: "POST",
         body: JSON.stringify({
           respondent_key: key,
@@ -75,7 +76,8 @@ export function SurveyFill() {
       }),
     onSuccess: () => setSubmitted(true),
     onError: (e) => {
-      if (e instanceof ApiError && e.message.includes("提交过")) {
+      if (e instanceof ApiError && e.status === 409) {
+        // 同 key 重复 / 链接已核销 — 都视为已成功提交过
         setSubmitted(true);
       } else {
         setError(e instanceof ApiError ? e.message : "提交失败,请重试");
@@ -93,12 +95,19 @@ export function SurveyFill() {
     );
   }
   if (query.isError || !query.data) {
+    const err = query.error;
+    const msg =
+      err instanceof ApiError && err.status === 409
+        ? "这份问卷已提交,感谢你的反馈"
+        : err instanceof ApiError && err.status === 410
+          ? "链接已过期"
+          : "链接无效或问卷已关闭";
     return (
       <Shell>
         <div className="p-12 text-center flex flex-col items-center gap-2">
           <ClipboardList className="w-8 h-8 text-[var(--color-text-tertiary)]" />
           <span className="text-sm text-[var(--color-text-secondary)] font-body">
-            问卷不存在或已关闭
+            {msg}
           </span>
         </div>
       </Shell>

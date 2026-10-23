@@ -347,3 +347,70 @@ def test_employee_cannot_list_skills(client, db_session):
         assert r.status_code == 403
     finally:
         _cleanup(db_session, t)
+
+
+def test_name_create_requires_manage_settings(client, db_session):
+    """字典归 manage_settings 管:非管理员按 name 提交不存在的技能 → 400,
+    只能引用字典已有项;import-resume 例外(简历抽取本就扩充字典)。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t)
+    hr = _user(db_session, t, role="hr")          # write_resumes,无 manage_settings
+    hm = _user(db_session, t, role="hiring_manager")  # write_jobs,无 manage_settings
+    job, cand = _job_cand(db_session, t)
+    hadm, hhr, hhm = _hdr(admin), _hdr(hr), _hdr(hm)
+    try:
+        # hiring_manager 按 name 加不存在的技能 → 400,字典不被污染
+        r = client.put(f"/api/jobs/{job.id}/skills", headers=hhm,
+                       json={"items": [{"name": "Rust", "importance": "must"}]})
+        assert r.status_code == 400
+        assert client.get("/api/skills", headers=hhm).json() == []
+
+        # 引用字典已有项(skill_id 或 name 命中)→ OK
+        client.post("/api/skills", headers=hadm, json={"name": "Python"})
+        r = client.put(f"/api/jobs/{job.id}/skills", headers=hhm,
+                       json={"items": [{"name": "Python", "importance": "must"}]})
+        assert r.status_code == 200
+
+        # admin 按 name → 自动入字典
+        r = client.put(f"/api/jobs/{job.id}/skills", headers=hadm,
+                       json={"items": [{"name": "Go", "importance": "nice"}]})
+        assert r.status_code == 200
+        names = {s["name"] for s in client.get("/api/skills", headers=hadm).json()}
+        assert "Go" in names
+
+        # hr 走 import-resume:简历抽取自动入字典(例外)
+        db_session.add(Resume(
+            tenant_id=t.id, candidate_id=cand.id, file_name="r.pdf",
+            file_size=1, file_mime="application/pdf", storage_key="k",
+            parse_status="done", parsed_data={"skills": ["Docker"]},
+        ))
+        db_session.commit()
+        r = client.post(f"/api/candidates/{cand.id}/skills/import-resume", headers=hhr)
+        assert r.json()["imported"] == 1
+
+        # 候选人侧同规则:hr 按 name 新增 → 400
+        r = client.put(f"/api/candidates/{cand.id}/skills", headers=hhr,
+                       json={"items": [{"name": "K8s", "level": 3}]})
+        assert r.status_code == 400
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_delete_skill_in_use_guard(client, db_session):
+    """被岗位/候选人引用的技能不能硬删 — CASCADE 会连坐抹掉档案。"""
+    t = _tenant(db_session)
+    u = _user(db_session, t)
+    job, _c = _job_cand(db_session, t)
+    hdr = _hdr(u)
+    try:
+        client.put(f"/api/jobs/{job.id}/skills", headers=hdr,
+                   json={"items": [{"name": "Python", "importance": "must"}]})
+        py = db_session.scalars(select(Skill).where(Skill.name == "Python")).one()
+        r = client.delete(f"/api/skills/{py.id}", headers=hdr)
+        assert r.status_code == 409
+        assert "引用" in r.json()["detail"]
+        # 解除引用后可删
+        client.put(f"/api/jobs/{job.id}/skills", headers=hdr, json={"items": []})
+        assert client.delete(f"/api/skills/{py.id}", headers=hdr).status_code == 204
+    finally:
+        _cleanup(db_session, t)

@@ -179,13 +179,12 @@ API 链路手工 curl 走通 + ego-browser 每模块至少一条 UI 全流程。
 | T1-3 邮件模板 | `0034` | `services/mail_templates.py`(html 侧变量 escape)+ `api/email_templates.py` + `pages/EmailTemplates.tsx`;`workers/tasks/email.py` 邀请+完成两个任务接入 | `test_email_templates.py` 4 |
 | T2-1 技能 | `0035` | `api/skills.py`(字典+岗位 PUT+候选人 PUT+简历导入+skill-coverage)+ `components/skills/SkillWidgets.tsx` 挂 JobDetail/TalentDetail | `test_skills.py` 5 |
 | T2-2 预约 | `0036` | `api/rooms.py`(rooms/resources/reservations/interviewers/availability)+ `pages/Schedule.tsx` 周历;同对象重叠 → 409 | `test_reservations.py` 5 |
-| T2-3 问卷 | `0037` | `api/surveys.py`(管理端 + `/public/surveys/{id}` 免认证,respondent_key UNIQUE 防重复)+ `pages/Surveys.tsx` + `pages/SurveyFill.tsx` | `test_surveys.py` 3 |
+| T2-3 问卷 | `0037`+`0038` | `api/surveys.py`(管理端 + `survey_links` 一次性 token 链接 + `/public/surveys/{token}` 免认证,respondent_key UNIQUE 防重复)+ `pages/Surveys.tsx` + `pages/SurveyFill.tsx` | `test_surveys.py` 4 |
 
 与原方案的偏差:
 - **重复提交防重**改为先查重再校验必填(原顺序会把重复提交报成 400)。
 - 邮件模板未建版本表(提示词有);如需可后加。
 - `reservations` 合并了计划的 `meeting_rooms + reservations` 两表为 `rooms + resources + reservations` 三表。
-- 问卷公开 URL 用 survey id(`/s/:id`),未用单独 token — 已发布的问卷本身即公开,关闭即失效。
 - 候选覆盖接口 `GET /jobs/{id}/skill-coverage` 为新增(方案未列):每技能给全池/管道内人数。
 
 测试:30 个新测试 + 364 全量绿(`freehire_test`);开发库迁移到 `0037`。
@@ -203,3 +202,20 @@ API 链路手工 curl 走通 + ego-browser 每模块至少一条 UI 全流程。
   interviewer/hiring_manager);SurveyFill crypto.randomUUID 兜底。
 - 测试:+8 回归用例 → 全量 372 绿;API 真链路 6 模块 + ego-browser
   UI 全链路复核通过。
+
+## 复审修复(2026-10-24,alembic 0038)
+
+- **survey_links 一次性链接**(对齐方案与 invite_tokens 惯例):
+  `POST /surveys/{id}/links` 发明文一次(sha256 入库,可绑 candidate,
+  默认 30 天,1-365 可调);公开端改 `/public/surveys/{token}`,
+  原子 `UPDATE ... WHERE used_at IS NULL` 核销防并发双填;
+  `GET /links` 状态(有效/已用/过期)、`DELETE` 吊销即失效。
+  results 增加 respondents 带出绑定归属。前端 `/s/:token` + 链接抽屉
+  (发链接/复制/吊销/候选人搜索)。原 `/s/:id` 直访已废除。
+- **会议室/资源管理 UI**:排期页「会议室管理」抽屉(manage_settings),
+  增删改 + 停用 + org 绑定 + equipment;有预约记录的对象删除 → 409 引导停用。
+- **busy_titles 打码**:纯面试官预约对数据范围受限用户隐藏标题(防候选人名泄露)。
+- **技能字典收口**:按 name 新建词条需 manage_settings(import-resume 例外),
+  前端无权限时隐藏「新建」;技能被引用时删除 → 409;rooms 补 equipment 字段。
+- **提示词版本预览**:版本列表可展开 content 再回滚。
+- 测试:+5 用例(link 生命周期/删除守卫/标题打码/name 门槛/技能引用)→ 全量 378 绿。

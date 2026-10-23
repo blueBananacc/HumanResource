@@ -305,7 +305,11 @@ export function JobDetail() {
       </div>
 
       {/* 结构化技能模型(字典 + 候选覆盖) */}
-      <JobSkillsCard jobId={id} canWrite={canWrite} />
+      <JobSkillsCard
+        jobId={id}
+        canWrite={canWrite}
+        canCreateDict={hasPermission(PERM.MANAGE_SETTINGS)}
+      />
 
       {/* 岗位描述 */}
       <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-3">

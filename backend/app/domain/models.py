@@ -1994,6 +1994,7 @@ class Room(Base):
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     location: Mapped[str | None] = mapped_column(String(128), nullable=True)
     capacity: Mapped[int] = mapped_column(Integer, nullable=False, server_default="4")
+    equipment: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=sql_true()
     )
@@ -2071,7 +2072,8 @@ class Survey(Base):
     """问卷/调查(参考 MintHCM Surveys)。
 
     status: draft(编辑中)/ published(可填写)/ closed(停止收集)。
-    公开填写走 /api/public/surveys/{id}(仅 published)。
+    公开填写走 /api/public/surveys/{token}(仅 published,token 对应
+    ``survey_links`` 里的一次性链接)。
     """
 
     __tablename__ = "surveys"
@@ -2119,8 +2121,37 @@ class SurveyQuestion(Base):
     order: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
 
+class SurveyLink(Base):
+    """一次性公开填写链接(参考面试 invite_tokens 模式)。
+
+    token 明文只在创建响应里出现一次,库中存 sha256;``used_at`` 置位即作废,
+    ``expires_at`` 到期后不可再填。可绑定 ``candidate_id`` 追踪答卷归属。
+    """
+
+    __tablename__ = "survey_links"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    survey_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("surveys.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    candidate_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
 class SurveyResponse(Base):
-    """答卷:respondent_key 为前端 localStorage 生成的随机串,用于防重复提交。"""
+    """答卷:respondent_key 为前端 localStorage 生成的随机串,与
+    ``link_id`` 一次性链接双重防重复提交;``candidate_id`` 来自绑定链接。"""
 
     __tablename__ = "survey_responses"
 
@@ -2130,6 +2161,12 @@ class SurveyResponse(Base):
     )
     survey_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("surveys.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    link_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("survey_links.id", ondelete="SET NULL"), nullable=True
+    )
+    candidate_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True
     )
     respondent_key: Mapped[str] = mapped_column(String(64), nullable=False)
     respondent_name: Mapped[str | None] = mapped_column(String(64), nullable=True)

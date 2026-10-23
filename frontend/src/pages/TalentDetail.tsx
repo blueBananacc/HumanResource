@@ -25,6 +25,7 @@ import { CandidateSkillsCard } from "@/components/skills/SkillWidgets";
 import { useConfirm } from "@/components/ui/confirm";
 import { ApiError, fetchJSON } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { PERM } from "@/lib/roles";
 import { formatBytes, formatRelative } from "@/lib/format";
 import {
   ParseStatusChip,
@@ -128,7 +129,7 @@ const KIND_LABEL: Record<string, { label: string; tone: string }> = {
 
 export function TalentDetail() {
   const { id = "" } = useParams<{ id: string }>();
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const canWrite =
     user?.role === "admin" || user?.role === "hr";
 
@@ -242,7 +243,11 @@ export function TalentDetail() {
             qc={qc}
           />
 
-          <CandidateSkillsCard candidateId={c.id} canWrite={canWrite} />
+          <CandidateSkillsCard
+            candidateId={c.id}
+            canWrite={canWrite}
+            canCreateDict={hasPermission(PERM.MANAGE_SETTINGS)}
+          />
 
           <Section icon={FileText} title="简历版本">
             {c.resumes.length === 0 ? (

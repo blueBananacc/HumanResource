@@ -7,7 +7,8 @@ import { ApiError, fetchJSON } from "@/lib/api";
 /**
  * 技能/胜任力 UI(T2-1,MintHCM Competencies 移植)。
  *
- * - ``SkillSearch``:字典搜索 + 回车新建(无命中项时)
+ * - ``SkillSearch``:字典搜索;``canCreate`` 时无命中项才可回车新建
+ *   (字典归 manage_settings 管 — 后端对无该权限的用户拒绝按 name 造新词条)
  * - ``JobSkillsCard``:岗位技能要求(must/nice)+ 候选池覆盖度
  * - ``CandidateSkillsCard``:候选人技能(level 1-5)+ 简历导入
  *
@@ -49,9 +50,12 @@ const CATEGORY_LABEL: Record<string, string> = {
 
 export function SkillSearch({
   onPick,
-  placeholder = "搜索技能,回车选中;无结果时回车新建…",
+  canCreate = true,
+  placeholder,
 }: {
   onPick: (v: { skill_id?: string; name: string }) => void;
+  /** 是否允许按名称新建字典词条(manage_settings) */
+  canCreate?: boolean;
   placeholder?: string;
 }) {
   const [q, setQ] = useState("");
@@ -97,11 +101,17 @@ export function SkillSearch({
           if (e.key === "Enter" && q.trim()) {
             e.preventDefault();
             const hit = items.find((s) => s.name === q.trim());
-            pick(hit ? { skill_id: hit.id, name: hit.name } : { name: q.trim() });
+            if (hit) pick({ skill_id: hit.id, name: hit.name });
+            else if (canCreate) pick({ name: q.trim() });
           }
           if (e.key === "Escape") setOpen(false);
         }}
-        placeholder={placeholder}
+        placeholder={
+          placeholder ??
+          (canCreate
+            ? "搜索技能,回车选中;无结果时回车新建…"
+            : "搜索技能字典,回车选中…")
+        }
         className="w-full h-9 pl-8 pr-3 rounded-lg border border-[var(--color-border-subtle)] text-[13px] font-body focus:outline-none focus:border-[var(--color-accent)]"
       />
       {open && (
@@ -120,7 +130,7 @@ export function SkillSearch({
               </span>
             </button>
           ))}
-          {q.trim() && !exact && (
+          {canCreate && q.trim() && !exact && (
             <button
               type="button"
               onMouseDown={(e) => e.preventDefault()}
@@ -145,9 +155,12 @@ export function SkillSearch({
 export function JobSkillsCard({
   jobId,
   canWrite,
+  canCreateDict = false,
 }: {
   jobId: string;
   canWrite: boolean;
+  /** manage_settings — 允许按名称新建字典词条 */
+  canCreateDict?: boolean;
 }) {
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
@@ -279,6 +292,7 @@ export function JobSkillsCard({
       )}
       {canWrite && (
         <SkillSearch
+          canCreate={canCreateDict}
           onPick={(v) =>
             commit([
               ...items,
@@ -299,9 +313,12 @@ export function JobSkillsCard({
 export function CandidateSkillsCard({
   candidateId,
   canWrite,
+  canCreateDict = false,
 }: {
   candidateId: string;
   canWrite: boolean;
+  /** manage_settings — 允许按名称新建字典词条 */
+  canCreateDict?: boolean;
 }) {
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
@@ -454,6 +471,7 @@ export function CandidateSkillsCard({
       )}
       {canWrite && (
         <SkillSearch
+          canCreate={canCreateDict}
           onPick={(v) =>
             commit([
               ...items,

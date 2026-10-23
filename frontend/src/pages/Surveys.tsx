@@ -4,6 +4,7 @@ import {
   BarChart3,
   ClipboardList,
   Copy,
+  Link2,
   Lock,
   Plus,
   Send,
@@ -20,8 +21,8 @@ import { PERM } from "@/lib/roles";
 /**
  * 问卷管理(T2-3,MintHCM Surveys 移植)。
  *
- * 列表 → 编辑抽屉(题目构建器)→ 发布(得公开链接 /s/:id)
- * → 结果聚合面板。问卷为候选人体验/面试反馈场景。
+ * 列表 → 编辑抽屉(题目构建器)→ 发布 → 发一次性填写链接(/s/:token,
+ * 可绑候选人)→ 结果聚合面板。问卷为候选人体验/面试反馈场景。
  */
 
 type Question = {
@@ -55,11 +56,39 @@ type QuestionResult = {
   samples: string[];
 };
 
+type Respondent = {
+  name: string | null;
+  candidate_id: string | null;
+  submitted_at: string;
+  happiness: number | null;
+};
+
 type Results = {
   survey_id: string;
   response_count: number;
   avg_happiness: number | null;
+  respondents: Respondent[];
   questions: QuestionResult[];
+};
+
+type SurveyLink = {
+  id: string;
+  status: string;
+  candidate_id: string | null;
+  candidate_name: string | null;
+  expires_at: string;
+  used_at: string | null;
+  created_at: string;
+};
+
+type LinkCreated = SurveyLink & { token: string };
+
+type Talent = { id: string; name: string; display_email: string | null };
+
+const LINK_STATUS: Record<string, { label: string; cls: string }> = {
+  active: { label: "有效", cls: "bg-[var(--color-success-soft)] text-[var(--color-success)]" },
+  used: { label: "已填写", cls: "bg-[var(--color-info-soft)] text-[var(--color-info)]" },
+  expired: { label: "已过期", cls: "bg-[var(--color-bg-subtle)] text-[var(--color-text-tertiary)]" },
 };
 
 const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
@@ -84,6 +113,7 @@ export function Surveys() {
   const [editing, setEditing] = useState<SurveyDetail | null>(null);
   const [creating, setCreating] = useState(false);
   const [resultsFor, setResultsFor] = useState<string | null>(null);
+  const [linksFor, setLinksFor] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
 
   const listQuery = useQuery({
@@ -99,7 +129,7 @@ export function Surveys() {
         body: JSON.stringify({ status }),
       }),
     onSuccess: (_s, v) => {
-      setFeedback(v.status === "published" ? "已发布,可复制填写链接" : "已关闭");
+      setFeedback(v.status === "published" ? "已发布,可生成填写链接" : "已关闭");
       qc.invalidateQueries({ queryKey: ["surveys"] });
     },
     onError: (e) =>
@@ -204,14 +234,10 @@ export function Surveys() {
                       <Button
                         variant="secondary"
                         className="!px-2.5 !py-1 !text-[12px]"
-                        onClick={() => {
-                          copyText(`${location.origin}/s/${s.id}`, () =>
-                            setFeedback("填写链接已复制"),
-                          );
-                        }}
+                        onClick={() => setLinksFor(s.id)}
                       >
-                        <Copy className="w-3.5 h-3.5" />
-                        复制链接
+                        <Link2 className="w-3.5 h-3.5" />
+                        链接
                       </Button>
                       {canWrite && (
                         <Button
@@ -260,6 +286,13 @@ export function Surveys() {
 
       {resultsFor && (
         <ResultsDrawer surveyId={resultsFor} onClose={() => setResultsFor(null)} />
+      )}
+      {linksFor && (
+        <LinksDrawer
+          surveyId={linksFor}
+          canWrite={canWrite}
+          onClose={() => setLinksFor(null)}
+        />
       )}
     </main>
   );
@@ -497,6 +530,32 @@ function ResultsDrawer({
               </span>
             )}
           </div>
+          {data.respondents.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[12px] font-medium text-[var(--color-text-secondary)] font-body">
+                答卷人
+              </span>
+              {data.respondents.map((r, i) => (
+                <div
+                  key={i}
+                  className="flex items-center justify-between text-[12px] font-body border border-[var(--color-border-subtle)] rounded-md px-3 py-1.5"
+                >
+                  <span className="text-[var(--color-text-primary)]">
+                    {r.name || "匿名"}
+                    {r.candidate_id && (
+                      <span className="ml-1.5 text-[10px] text-[var(--color-text-tertiary)]">
+                        (绑定候选人)
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-[var(--color-text-tertiary)]">
+                    {r.happiness ? `${r.happiness}★ ` : ""}
+                    {new Date(r.submitted_at).toLocaleString()}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
           {data.questions.map((q, i) => (
             <div
               key={q.question_id}
@@ -554,6 +613,215 @@ function ResultsDrawer({
           ))}
         </div>
       )}
+    </Drawer>
+  );
+}
+
+function LinksDrawer({
+  surveyId,
+  canWrite,
+  onClose,
+}: {
+  surveyId: string;
+  canWrite: boolean;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [days, setDays] = useState(30);
+  const [candQ, setCandQ] = useState("");
+  const [candidate, setCandidate] = useState<Talent | null>(null);
+  const [justCreated, setJustCreated] = useState<LinkCreated | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const linksQuery = useQuery({
+    queryKey: ["survey-links", surveyId],
+    queryFn: () => fetchJSON<SurveyLink[]>(`/api/surveys/${surveyId}/links`),
+  });
+  const candQuery = useQuery({
+    queryKey: ["survey-link-cands", candQ],
+    queryFn: () =>
+      fetchJSON<{ items: Talent[] }>(
+        `/api/talents?limit=8&q=${encodeURIComponent(candQ)}`,
+      ),
+    enabled: candQ.trim().length > 0 && !candidate,
+  });
+
+  const create = useMutation({
+    mutationFn: () =>
+      fetchJSON<LinkCreated>(`/api/surveys/${surveyId}/links`, {
+        method: "POST",
+        body: JSON.stringify({
+          candidate_id: candidate?.id ?? null,
+          expires_in_days: days,
+        }),
+      }),
+    onSuccess: (l) => {
+      setJustCreated(l);
+      setCandidate(null);
+      setCandQ("");
+      qc.invalidateQueries({ queryKey: ["survey-links", surveyId] });
+    },
+    onError: (e) =>
+      setError(e instanceof ApiError ? e.message : "生成失败"),
+  });
+
+  const revoke = useMutation({
+    mutationFn: (lid: string) =>
+      fetchJSON(`/api/surveys/${surveyId}/links/${lid}`, { method: "DELETE" }),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ["survey-links", surveyId] }),
+    onError: (e) =>
+      setError(e instanceof ApiError ? e.message : "吊销失败"),
+  });
+
+  const links = linksQuery.data ?? [];
+
+  return (
+    <Drawer
+      open
+      onClose={onClose}
+      title="填写链接"
+      description="每条链接只填写一次,可绑定候选人追踪归属;提交/过期/吊销即失效"
+      width={600}
+    >
+      <div className="flex flex-col gap-5">
+        {canWrite && (
+          <div className="border border-[var(--color-border-subtle)] rounded-lg p-4 flex flex-col gap-3">
+            <span className="text-[12px] font-medium text-[var(--color-text-secondary)] font-body">
+              生成新链接
+            </span>
+            <div className="flex flex-col gap-1.5 relative">
+              <input
+                value={candidate ? candidate.name : candQ}
+                onChange={(e) => {
+                  setCandidate(null);
+                  setCandQ(e.target.value);
+                }}
+                placeholder="绑定候选人(可选,搜索姓名)"
+                className="h-9 px-3 rounded-lg border border-[var(--color-border-subtle)] text-sm font-body focus:outline-none focus:border-[var(--color-accent)]"
+              />
+              {!candidate && (candQuery.data?.items.length ?? 0) > 0 && (
+                <div className="absolute top-10 left-0 right-0 z-10 bg-white border border-[var(--color-border-subtle)] rounded-lg shadow-md max-h-48 overflow-y-auto">
+                  {candQuery.data!.items.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => setCandidate(c)}
+                      className="w-full text-left px-3 py-2 text-[13px] font-body hover:bg-[var(--color-bg-subtle)] flex justify-between gap-2"
+                    >
+                      <span>{c.name}</span>
+                      <span className="text-[var(--color-text-tertiary)] truncate">
+                        {c.display_email}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-[12px] text-[var(--color-text-secondary)] font-body flex items-center gap-1.5">
+                有效期
+                <input
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={days}
+                  onChange={(e) =>
+                    setDays(
+                      Math.max(1, Math.min(365, Number(e.target.value) || 30)),
+                    )
+                  }
+                  className="w-20 h-8 px-2 rounded-md border border-[var(--color-border-subtle)] text-[13px] font-body focus:outline-none focus:border-[var(--color-accent)]"
+                />
+                天
+              </label>
+              <Button
+                className="ml-auto !px-3 !py-1.5 !text-[12px]"
+                onClick={() => create.mutate()}
+                disabled={create.isPending}
+              >
+                <Plus className="w-3.5 h-3.5" />
+                生成链接
+              </Button>
+            </div>
+            {error && (
+              <div className="text-[12px] text-[var(--color-error)] font-body">
+                {error}
+              </div>
+            )}
+            {justCreated && (
+              <div className="flex items-center gap-2 bg-[var(--color-success-soft)] rounded-md px-3 py-2">
+                <code className="flex-1 text-[11px] font-mono text-[var(--color-text-secondary)] truncate">
+                  {`${location.origin}/s/${justCreated.token}`}
+                </code>
+                <button
+                  type="button"
+                  onClick={() =>
+                    copyText(`${location.origin}/s/${justCreated.token}`, () =>
+                      setCopied("new"),
+                    )
+                  }
+                  className="text-[11px] text-[var(--color-accent)] font-body shrink-0 flex items-center gap-1"
+                >
+                  <Copy className="w-3 h-3" />
+                  {copied === "new" ? "已复制" : "复制"}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="flex flex-col gap-2">
+          <span className="text-[12px] font-medium text-[var(--color-text-secondary)] font-body">
+            已发链接({links.length})
+          </span>
+          {linksQuery.isLoading ? (
+            <div className="p-6 text-center text-[12px] text-[var(--color-text-tertiary)]">
+              加载中…
+            </div>
+          ) : links.length === 0 ? (
+            <div className="p-6 text-center text-[12px] text-[var(--color-text-tertiary)] border border-dashed border-[var(--color-border-subtle)] rounded-lg">
+              还没有发过链接
+            </div>
+          ) : (
+            links.map((l) => {
+              const st = LINK_STATUS[l.status] ?? LINK_STATUS.expired;
+              return (
+                <div
+                  key={l.id}
+                  className="border border-[var(--color-border-subtle)] rounded-lg px-3 py-2.5 flex items-center gap-3"
+                >
+                  <span
+                    className={`px-2 py-0.5 rounded-md text-[11px] font-body shrink-0 ${st.cls}`}
+                  >
+                    {st.label}
+                  </span>
+                  <div className="flex-1 min-w-0 text-[12px] font-body">
+                    <div className="text-[var(--color-text-primary)] truncate">
+                      {l.candidate_name ?? "匿名链接"}
+                    </div>
+                    <div className="text-[11px] text-[var(--color-text-tertiary)]">
+                      有效期至 {new Date(l.expires_at).toLocaleDateString()}
+                      {l.used_at &&
+                        ` · 填写于 ${new Date(l.used_at).toLocaleString()}`}
+                    </div>
+                  </div>
+                  {l.status === "active" && canWrite && (
+                    <button
+                      type="button"
+                      onClick={() => revoke.mutate(l.id)}
+                      className="text-[11px] text-[var(--color-error)] font-body shrink-0 hover:underline"
+                    >
+                      吊销
+                    </button>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
     </Drawer>
   );
 }

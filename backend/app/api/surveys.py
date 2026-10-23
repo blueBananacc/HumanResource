@@ -3,32 +3,39 @@
 管理端(登录 + 权限):
 - ``GET/POST /surveys``;``PUT /surveys/{id}``(title/desc/题目整组替换)
 - ``POST /surveys/{id}/status``  draft→published→closed
+- ``POST /surveys/{id}/links``   生成一次性填写链接(可绑候选人)
+- ``GET  /surveys/{id}/links``   链接列表(状态:有效/已用/过期)
+- ``DELETE /surveys/{id}/links/{lid}``  吊销链接
 - ``GET  /surveys/{id}/results`` 每题聚合(选项计数 / 评分均值 / 文本采样)
 
-公开端(免认证,仅 published):
-- ``GET  /public/surveys/{id}`` 题目 + 描述(不含任何租户数据)
-- ``POST /public/surveys/{id}/responses`` 提交答卷
-  ``respondent_key`` 由前端 localStorage 生成 → UNIQUE 防重复
+公开端(免认证,凭一次性链接):
+- ``GET  /public/surveys/{token}`` 题目 + 描述(不含任何租户数据)
+- ``POST /public/surveys/{token}/responses`` 提交答卷并核销链接
+  token 对应 ``survey_links.token_hash``(sha256),一次性 + 过期 + 可吊销;
+  ``respondent_key`` 由前端 localStorage 生成 → UNIQUE 双保险防重复
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_user
 from app.domain.models import (
+    Candidate,
     Survey,
+    SurveyLink,
     SurveyQuestion,
     SurveyResponse,
     SurveyResponseAnswer,
     User,
 )
 from app.infra.db import get_db
+from app.infra.invite_tokens import generate_invite_token, hash_invite_token
 from app.services.audit import write_audit
 from app.services.permissions import (
     PERM_VIEW_REPORTS,
@@ -94,6 +101,27 @@ class StatusIn(BaseModel):
     status: str
 
 
+class LinkIn(BaseModel):
+    candidate_id: str | None = None
+    expires_in_days: int = Field(30, ge=1, le=365)
+
+
+class LinkOut(BaseModel):
+    id: str
+    status: str  # active / used / expired
+    candidate_id: str | None
+    candidate_name: str | None
+    expires_at: datetime
+    used_at: datetime | None
+    created_at: datetime
+
+
+class LinkCreatedOut(LinkOut):
+    """明文 token 只在创建响应里出现一次 — 之后库中只留 sha256。"""
+
+    token: str
+
+
 class ResponseIn(BaseModel):
     respondent_key: str = Field(..., min_length=8, max_length=64)
     respondent_name: str | None = Field(None, max_length=64)
@@ -117,10 +145,18 @@ class QuestionResult(BaseModel):
     samples: list[str] = []
 
 
+class RespondentOut(BaseModel):
+    name: str | None
+    candidate_id: str | None
+    submitted_at: datetime
+    happiness: int | None
+
+
 class ResultsOut(BaseModel):
     survey_id: str
     response_count: int
     avg_happiness: float | None
+    respondents: list[RespondentOut] = []
     questions: list[QuestionResult]
 
 
@@ -308,6 +344,122 @@ def set_status(
     return _out(db, s)
 
 
+# ============ 填写链接(一次性 token)============
+
+
+def _link_status(link: SurveyLink) -> str:
+    if link.used_at is not None:
+        return "used"
+    if link.expires_at <= _now():
+        return "expired"
+    return "active"
+
+
+def _link_out(link: SurveyLink, cand_names: dict[str, str]) -> LinkOut:
+    return LinkOut(
+        id=link.id,
+        status=_link_status(link),
+        candidate_id=link.candidate_id,
+        candidate_name=cand_names.get(link.candidate_id) if link.candidate_id else None,
+        expires_at=link.expires_at,
+        used_at=link.used_at,
+        created_at=link.created_at,
+    )
+
+
+def _links_out(db: Session, links: list[SurveyLink]) -> list[LinkOut]:
+    cand_ids = {l.candidate_id for l in links if l.candidate_id}
+    cand_names = (
+        {c.id: c.name for c in db.scalars(select(Candidate).where(Candidate.id.in_(cand_ids)))}
+        if cand_ids else {}
+    )
+    return [_link_out(l, cand_names) for l in links]
+
+
+@router.post("/{sid}/links", response_model=LinkCreatedOut, status_code=201)
+def create_link(
+    sid: str,
+    body: LinkIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+    _p=Depends(require_permission(PERM_WRITE_INTERVIEW)),
+):
+    """生成一次性填写链接。``candidate_id`` 可绑定候选人追踪答卷归属。"""
+    s = _survey_or_404(db, current.tenant_id, sid)
+    if s.status == "closed":
+        raise HTTPException(400, "问卷已关闭,无法生成新链接")
+    if body.candidate_id:
+        cand = db.get(Candidate, body.candidate_id)
+        if not cand or cand.tenant_id != current.tenant_id:
+            raise HTTPException(404, "候选人不存在")
+    token = generate_invite_token()
+    link = SurveyLink(
+        tenant_id=current.tenant_id,
+        survey_id=s.id,
+        token_hash=hash_invite_token(token),
+        candidate_id=body.candidate_id,
+        expires_at=_now() + timedelta(days=body.expires_in_days),
+        created_by=current.id,
+    )
+    db.add(link)
+    db.flush()
+    write_audit(
+        db, actor=current, entity_type="survey_link", entity_id=link.id,
+        action="create",
+        detail={"survey_id": s.id, "candidate_id": body.candidate_id},
+        request=request,
+    )
+    db.commit()
+    db.refresh(link)
+    cand_names = (
+        {c.id: c.name for c in db.scalars(
+            select(Candidate).where(Candidate.id == link.candidate_id)
+        )}
+        if link.candidate_id else {}
+    )
+    out = _link_out(link, cand_names)
+    return LinkCreatedOut(**out.model_dump(), token=token)
+
+
+@router.get("/{sid}/links", response_model=list[LinkOut])
+def list_links(
+    sid: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+    _p=Depends(require_permission(PERM_VIEW_REPORTS)),
+):
+    s = _survey_or_404(db, current.tenant_id, sid)
+    links = db.scalars(
+        select(SurveyLink)
+        .where(SurveyLink.survey_id == s.id)
+        .order_by(SurveyLink.created_at.desc())
+    ).all()
+    return _links_out(db, links)
+
+
+@router.delete("/{sid}/links/{lid}", status_code=204)
+def revoke_link(
+    sid: str,
+    lid: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+    _p=Depends(require_permission(PERM_WRITE_INTERVIEW)),
+):
+    """吊销链接:删除后明文 token 立即失效。"""
+    s = _survey_or_404(db, current.tenant_id, sid)
+    link = db.get(SurveyLink, lid)
+    if not link or link.survey_id != s.id:
+        raise HTTPException(404, "链接不存在")
+    write_audit(
+        db, actor=current, entity_type="survey_link", entity_id=lid,
+        action="revoke", detail={"survey_id": s.id}, request=request,
+    )
+    db.delete(link)
+    db.commit()
+
+
 @router.get("/{sid}/results", response_model=ResultsOut)
 def results(
     sid: str,
@@ -318,7 +470,9 @@ def results(
     s = _survey_or_404(db, current.tenant_id, sid)
     questions = _questions(db, s.id)
     responses = db.scalars(
-        select(SurveyResponse).where(SurveyResponse.survey_id == s.id)
+        select(SurveyResponse)
+        .where(SurveyResponse.survey_id == s.id)
+        .order_by(SurveyResponse.submitted_at.desc())
     ).all()
     answers = db.execute(
         select(SurveyResponseAnswer, SurveyResponse)
@@ -330,6 +484,24 @@ def results(
     by_q: dict[str, list] = {}
     for a, _r in answers:
         by_q.setdefault(a.question_id, []).append(a)
+
+    # 答卷归属:自定义称呼优先,其次链接绑定的候选人名
+    resp_cand_ids = {r.candidate_id for r in responses if r.candidate_id}
+    cand_names = (
+        {c.id: c.name for c in db.scalars(
+            select(Candidate).where(Candidate.id.in_(resp_cand_ids))
+        )}
+        if resp_cand_ids else {}
+    )
+    respondents = [
+        RespondentOut(
+            name=r.respondent_name or cand_names.get(r.candidate_id),
+            candidate_id=r.candidate_id,
+            submitted_at=r.submitted_at,
+            happiness=r.happiness,
+        )
+        for r in responses
+    ]
 
     happy = [r.happiness for r in responses if r.happiness is not None]
     out_qs = []
@@ -358,18 +530,35 @@ def results(
         survey_id=s.id,
         response_count=len(responses),
         avg_happiness=round(sum(happy) / len(happy), 2) if happy else None,
+        respondents=respondents,
         questions=out_qs,
     )
 
 
-# ============ 公开端(免认证)============
+# ============ 公开端(免认证,凭一次性链接)============
 
 
-@public_router.get("/{sid}", response_model=PublicSurveyOut)
-def public_get(sid: str, db: Session = Depends(get_db)):
-    s = db.get(Survey, sid)
+def _resolve_link(db: Session, token: str) -> tuple[SurveyLink, Survey]:
+    """token → (link, survey)。状态判定全部在这里:
+    404 无效 token / 问卷未开放;410 链接过期;409 已核销。"""
+    link = db.scalars(
+        select(SurveyLink).where(SurveyLink.token_hash == hash_invite_token(token))
+    ).first()
+    if link is None:
+        raise HTTPException(404, "链接无效")
+    s = db.get(Survey, link.survey_id)
     if not s or s.status != "published":
         raise HTTPException(404, "问卷不存在或未开放")
+    if link.used_at is not None:
+        raise HTTPException(409, "链接已使用")
+    if link.expires_at <= _now():
+        raise HTTPException(410, "链接已过期")
+    return link, s
+
+
+@public_router.get("/{token}", response_model=PublicSurveyOut)
+def public_get(token: str, db: Session = Depends(get_db)):
+    _link, s = _resolve_link(db, token)
     return PublicSurveyOut(
         title=s.title,
         description=s.description,
@@ -381,15 +570,13 @@ def public_get(sid: str, db: Session = Depends(get_db)):
     )
 
 
-@public_router.post("/{sid}/responses", status_code=201)
+@public_router.post("/{token}/responses", status_code=201)
 def public_submit(
-    sid: str,
+    token: str,
     body: ResponseIn,
     db: Session = Depends(get_db),
 ):
-    s = db.get(Survey, sid)
-    if not s or s.status != "published":
-        raise HTTPException(404, "问卷不存在或未开放")
+    link, s = _resolve_link(db, token)
     questions = {q.id: q for q in _questions(db, s.id)}
 
     # 先查重,再校验必填(重复提交直接 409)
@@ -429,6 +616,7 @@ def public_submit(
 
     resp = SurveyResponse(
         tenant_id=s.tenant_id, survey_id=s.id,
+        link_id=link.id, candidate_id=link.candidate_id,
         respondent_key=body.respondent_key,
         respondent_name=body.respondent_name,
         happiness=body.happiness,
@@ -449,5 +637,14 @@ def public_submit(
                 question_id=qid, value=v,
             )
         )
+    # 原子核销:并发提交同一链接时,只有一个 UPDATE 能命中 used_at IS NULL
+    consumed = db.execute(
+        update(SurveyLink)
+        .where(SurveyLink.id == link.id, SurveyLink.used_at.is_(None))
+        .values(used_at=_now())
+    ).rowcount
+    if consumed != 1:
+        db.rollback()
+        raise HTTPException(409, "链接已使用")
     db.commit()
     return {"ok": True}

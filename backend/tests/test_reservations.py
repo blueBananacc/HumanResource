@@ -266,11 +266,11 @@ def test_permissions_isolation(client, db_session):
     admin = _user(db_session, t1)
     try:
         room = client.post("/api/rooms", headers=_hdr(admin), json={"name": "R"}).json()["id"]
-        # viewer:读列表 ok(rooms 无权限门),reservations 需要 view_reports → viewer 有吗?
+        # viewer:读列表 OK(viewer 有 view_reports)
         r = client.get("/api/reservations",
                        params={"start": BASE.isoformat(), "end": (BASE + timedelta(hours=2)).isoformat()},
                        headers=_hdr(v))
-        assert r.status_code in (200, 403)
+        assert r.status_code == 200
         # viewer 写预约 → 403
         r = client.post("/api/reservations", headers=_hdr(v),
                         json=_resv_json(room, start_h=9, end_h=10))
@@ -410,3 +410,82 @@ def test_reservation_input_validation(client, db_session):
         assert r.status_code == 400
     finally:
         _cleanup(db_session, t, t2)
+
+
+def test_delete_room_in_use_guard(client, db_session):
+    """有预约记录(含已取消)的会议室/资源不能硬删 — 会连坐抹掉台账。"""
+    t = _tenant(db_session)
+    u = _user(db_session, t)
+    hdr = _hdr(u)
+    try:
+        room = client.post("/api/rooms", headers=hdr, json={"name": "R"}).json()["id"]
+        res = client.post("/api/resources", headers=hdr,
+                          json={"name": "RES", "type": "equipment"}).json()["id"]
+        rid = client.post(
+            "/api/reservations", headers=hdr,
+            json=_resv_json(room, start_h=9, end_h=10, resource_id=res),
+        ).json()["id"]
+        client.post(f"/api/reservations/{rid}/cancel", headers=hdr)
+
+        r = client.delete(f"/api/rooms/{room}", headers=hdr)
+        assert r.status_code == 409
+        assert "停用" in r.json()["detail"]
+        r = client.delete(f"/api/resources/{res}", headers=hdr)
+        assert r.status_code == 409
+
+        # 没有预约的空对象可以删
+        empty_room = client.post("/api/rooms", headers=hdr, json={"name": "E"}).json()["id"]
+        assert client.delete(f"/api/rooms/{empty_room}", headers=hdr).status_code == 204
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_availability_title_masking(client, db_session):
+    """org-scoped 用户看纯面试官预约(不占对象):数量可见,标题打码防泄露。"""
+    t = _tenant(db_session)
+    org_a = OrgUnit(tenant_id=t.id, name="A")
+    db_session.add(org_a)
+    db_session.commit()
+    db_session.refresh(org_a)
+    admin = _user(db_session, t)
+    hr = _user(db_session, t, role="hr")
+    hr.org_unit_id = org_a.id
+    hr2 = _user(db_session, t, role="hr")
+    db_session.commit()
+    try:
+        # admin 建一条不占对象的预约,面试官是 hr2(hr 不在参与者里,也不是创建者)
+        client.post(
+            "/api/reservations", headers=_hdr(admin),
+            json=_resv_json(None, start_h=9, end_h=10, kind="interview",
+                            title="张三终面", interviewer_ids=[hr2.id]),
+        )
+        # org-scoped 的 hr:能看到 busy_count,但标题打码
+        r = client.get(
+            "/api/interviewers/availability",
+            params={"start": BASE.isoformat(), "end": (BASE + timedelta(hours=3)).isoformat()},
+            headers=_hdr(hr),
+        )
+        assert r.status_code == 200
+        by_id = {x["user_id"]: x for x in r.json()}
+        assert by_id[hr2.id]["busy_count"] == 1
+        assert by_id[hr2.id]["busy_titles"] == ["(受限预约)"]
+
+        # admin 不受限:看到真标题
+        r = client.get(
+            "/api/interviewers/availability",
+            params={"start": BASE.isoformat(), "end": (BASE + timedelta(hours=3)).isoformat()},
+            headers=_hdr(admin),
+        )
+        by_id = {x["user_id"]: x for x in r.json()}
+        assert by_id[hr2.id]["busy_titles"] == ["张三终面"]
+
+        # 参与面试官本人可以看到自己的标题
+        r = client.get(
+            "/api/interviewers/availability",
+            params={"start": BASE.isoformat(), "end": (BASE + timedelta(hours=3)).isoformat()},
+            headers=_hdr(hr2),
+        )
+        by_id = {x["user_id"]: x for x in r.json()}
+        assert by_id[hr2.id]["busy_titles"] == ["张三终面"]
+    finally:
+        _cleanup(db_session, t)

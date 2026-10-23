@@ -7,10 +7,12 @@ import {
   DoorOpen,
   Package,
   Plus,
+  Settings2,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
+import { RoomsManager } from "@/components/schedule/RoomsManager";
 import { ApiError, fetchJSON } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { PERM } from "@/lib/roles";
@@ -28,6 +30,7 @@ type Room = {
   name: string;
   location: string | null;
   capacity: number;
+  equipment?: string[];
   is_active: boolean;
 };
 
@@ -81,9 +84,11 @@ export function Schedule() {
   const { hasPermission } = useAuth();
   // 后端 POST/PUT/cancel 要求 write_interview — 与后端权限保持一致
   const canWrite = hasPermission(PERM.WRITE_INTERVIEW);
+  const canManage = hasPermission(PERM.MANAGE_SETTINGS);
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [roomFilter, setRoomFilter] = useState<string>("");
   const [showCreate, setShowCreate] = useState(false);
+  const [showRooms, setShowRooms] = useState(false);
 
   const weekEnd = useMemo(() => {
     const d = new Date(weekStart);
@@ -150,12 +155,20 @@ export function Schedule() {
             会议室与资源预约 · 面试官时间协调
           </p>
         </div>
-        {canWrite && (
-          <Button onClick={() => setShowCreate(true)}>
-            <Plus className="w-4 h-4" />
-            新建预约
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          {canManage && (
+            <Button variant="secondary" onClick={() => setShowRooms(true)}>
+              <Settings2 className="w-4 h-4" />
+              会议室管理
+            </Button>
+          )}
+          {canWrite && (
+            <Button onClick={() => setShowCreate(true)}>
+              <Plus className="w-4 h-4" />
+              新建预约
+            </Button>
+          )}
+        </div>
       </div>
 
       <div className="flex items-center gap-3 flex-wrap">
@@ -354,6 +367,7 @@ export function Schedule() {
           }}
         />
       )}
+      {showRooms && <RoomsManager onClose={() => setShowRooms(false)} />}
     </main>
   );
 }
