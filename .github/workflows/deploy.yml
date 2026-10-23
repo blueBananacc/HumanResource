@@ -36,16 +36,28 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          # ECS 带宽小,全量装依赖可能 >10min(ssh-action 默认超时),放宽到 30min。
-          # 有 BuildKit 缓存挂载后,日常代码变更的重建远达不到这个值。
-          timeout: 30m
+          # ECS 带宽小,全量装依赖可能 >10min(ssh-action 默认超时),放宽到 60min。
+          # 有 BuildKit 缓存挂载后,日常代码变更的重建远达不到这个值;
+          # 但缓存被磁盘压力回收后的冷构建(backend pip ~10min + 前端 npm + 导出)
+          # 会压线,30min 不够。
+          timeout: 60m
           script: |
             set -e
             cd /opt/hronfire
-            BEFORE=$(git rev-parse HEAD)
             git pull --ff-only
-            CHANGED=$(git diff --name-only "$BEFORE" HEAD || true)
-            echo "changed files: $CHANGED"
+            # 浅克隆(depth=1)只留最新提交,基线 commit 可能不在本地历史 → 加深
+            git fetch --depth=50 origin >/dev/null 2>&1 || true
+            # 基线 = 上次【部署成功】的提交(写进 .last-deployed),不是 pull 前的
+            # HEAD —— 否则上次 pull 成功但 build 超时/失败时,重跑会误判"无改动"
+            # 而永远不重建。基线缺失或不可回溯 → 保守全量重建。
+            BASE=$(cat .last-deployed 2>/dev/null || true)
+            if [ -n "$BASE" ] && git merge-base --is-ancestor "$BASE" HEAD 2>/dev/null; then
+              CHANGED=$(git diff --name-only "$BASE" HEAD || true)
+            else
+              CHANGED=$(printf 'backend/\nfrontend/\nassistant/\ndeploy/\n')
+            fi
+            echo "deploy base: ${BASE:-none}"
+            echo "changed files:"; echo "$CHANGED"
             cd deploy
             # 按需重建:只构建代码变过的服务,没改就不构建(省流量/省时间)
             SVC=""
@@ -63,3 +75,6 @@ jobs:
             fi
             sleep 5
             curl -fsS --retry 6 --retry-delay 5 http://127.0.0.1/api/healthz
+            # healthz 通过才算部署成功,此刻才推进基线;
+            # 失败/超时不写,下次按旧基线重算,漏构建的改动会被重新检出
+            git rev-parse HEAD > /opt/hronfire/.last-deployed
