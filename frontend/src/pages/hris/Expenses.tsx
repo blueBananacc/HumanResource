@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Empty } from "@/components/ui/empty";
 import { Pagination } from "@/components/ui/pagination";
 import { Select } from "@/components/ui/select";
-import { fetchJSON } from "@/lib/api";
+import { fetchJSON, ApiError } from "@/lib/api";
 import { usePagedQuery, PAGE_SIZE } from "@/lib/usePagedQuery";
 import { formatRelative } from "@/lib/format";
 import {
@@ -31,9 +31,12 @@ export function Expenses() {
   const status = sp.get("status") ?? "";
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [err, setErr] = useState("");
   const qc = useQueryClient();
-  const { hasPermission } = useAuth();
+  const { user, hasPermission } = useAuth();
   const canPay = hasPermission(PERM.MANAGE_EXPENSES);
+  // admin/hr 或用人经理(后端再按汇报线限制到直属下属)
+  const canDecide = canPay || user?.role === "hiring_manager";
 
   const { data, isLoading, page, pageCount, total, goto } =
     usePagedQuery<ExpenseClaim>({
@@ -49,7 +52,12 @@ export function Expenses() {
         method: "POST",
         body: JSON.stringify({ note: notes[id] || null }),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["expense-claims"] }),
+    onSuccess: () => {
+      setErr("");
+      qc.invalidateQueries({ queryKey: ["expense-claims"] });
+    },
+    onError: (e) =>
+      setErr(e instanceof ApiError ? e.message : "操作失败"),
   });
 
   return (
@@ -85,6 +93,11 @@ export function Expenses() {
           </span>{" "}
           单
         </span>
+        {err && (
+          <span className="text-[13px] text-[var(--color-danger)] font-body">
+            {err}
+          </span>
+        )}
       </div>
 
       <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
@@ -148,7 +161,7 @@ export function Expenses() {
                   ))}
                 </div>
               )}
-              {c.status === "pending" && (
+              {c.status === "pending" && canDecide && (
                 <div className="mt-3 flex items-center gap-2">
                   <Input
                     value={notes[c.id] ?? ""}

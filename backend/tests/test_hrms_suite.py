@@ -846,6 +846,239 @@ def test_salary_slip_issue_and_ess_visibility(db_session):
         _cleanup(db_session, t)
 
 
+# ============ 回归:行级可见性 / 事务 / 字段保护 ============
+
+
+def test_leave_apps_all_scope_still_row_filtered(db_session):
+    """scope=all(默认)对非 admin/hr 也不能看见非下属的单。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    hm = _user(db_session, t, role="hiring_manager")
+    client = TestClient(app)
+    try:
+        lt = _mk_leave_type(client, _hdr(admin))
+        mgr_emp = _mk_emp(client, _hdr(admin), name="经理2")
+        sub_emp, sub_ess = _mk_ess_employee(client, _hdr(admin), name="下属2")
+        _, other_ess = _mk_ess_employee(client, _hdr(admin), name="外人2")
+        client.put(
+            f"/api/employees/{sub_emp['id']}", headers=_hdr(admin),
+            json={"name": "下属2", "reports_to_id": mgr_emp["id"]},
+        )
+        client.post(
+            f"/api/employees/{mgr_emp['id']}/account", headers=_hdr(admin),
+            json={"email": hm.email},
+        )
+        for e in (sub_ess, other_ess):
+            s = date.today() + timedelta(days=15)
+            client.post(
+                "/api/me/leave-applications", headers=e,
+                json={"leave_type_id": lt["id"], "start_date": str(s),
+                      "end_date": str(s), "days": 1},
+            )
+
+        # 不传 scope(默认 all)→ 仍只见下属+自己
+        res = client.get("/api/leave/applications", headers=_hdr(hm))
+        names = {i["employee_name"] for i in res.json()["items"]}
+        assert "下属2" in names and "外人2" not in names
+        # 显式 all 也一样
+        res = client.get("/api/leave/applications?scope=all", headers=_hdr(hm))
+        names = {i["employee_name"] for i in res.json()["items"]}
+        assert "外人2" not in names
+        # admin 不受限
+        res = client.get("/api/leave/applications", headers=_hdr(admin))
+        names = {i["employee_name"] for i in res.json()["items"]}
+        assert {"下属2", "外人2"} <= names
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_expense_claim_detail_row_scope(db_session):
+    """详情接口与列表同口径:非下属/无关人 404,不暴露存在性。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    hm = _user(db_session, t, role="hiring_manager")
+    viewer = _user(db_session, t, role="viewer")
+    client = TestClient(app)
+    try:
+        res = client.post(
+            "/api/expenses/types", headers=_hdr(admin), json={"name": "餐费"}
+        )
+        tid = res.json()["id"]
+        mgr_emp = _mk_emp(client, _hdr(admin), name="报销经理")
+        sub_emp, sub_ess = _mk_ess_employee(client, _hdr(admin), name="报销下属")
+        _, other_ess = _mk_ess_employee(client, _hdr(admin), name="报销外人")
+        client.put(
+            f"/api/employees/{sub_emp['id']}", headers=_hdr(admin),
+            json={"name": "报销下属", "reports_to_id": mgr_emp["id"]},
+        )
+        client.post(
+            f"/api/employees/{mgr_emp['id']}/account", headers=_hdr(admin),
+            json={"email": hm.email},
+        )
+        c1 = client.post(
+            "/api/me/expense-claims", headers=sub_ess,
+            json={"title": "下属单", "items": [
+                {"type_id": tid, "occurred_on": str(date.today()), "amount": 50}
+            ]},
+        ).json()
+        c2 = client.post(
+            "/api/me/expense-claims", headers=other_ess,
+            json={"title": "外人单", "items": [
+                {"occurred_on": str(date.today()), "amount": 60}
+            ]},
+        ).json()
+
+        # HM:下属单可读,外人单 404
+        assert client.get(
+            f"/api/expenses/claims/{c1['id']}", headers=_hdr(hm)
+        ).status_code == 200
+        assert client.get(
+            f"/api/expenses/claims/{c2['id']}", headers=_hdr(hm)
+        ).status_code == 404
+        # viewer:两个都 404
+        assert client.get(
+            f"/api/expenses/claims/{c1['id']}", headers=_hdr(viewer)
+        ).status_code == 404
+        # admin 不受限
+        assert client.get(
+            f"/api/expenses/claims/{c2['id']}", headers=_hdr(admin)
+        ).status_code == 200
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_spawn_appraisals_skips_duplicates_atomically(db_session):
+    """重复铺表:已存在的跳过,新插入的不应被 rollback 吞掉。"""
+    from app.domain.models import Appraisal
+
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        e1 = _mk_emp(client, _hdr(admin), name="考核1")
+        e2 = _mk_emp(client, _hdr(admin), name="考核2")
+        res = client.post(
+            "/api/performance/cycles", headers=_hdr(admin),
+            json={"name": "周期X", "period_start": "2026-01-01",
+                  "period_end": "2026-06-30"},
+        )
+        cid = res.json()["id"]
+        client.post(f"/api/performance/cycles/{cid}/open", headers=_hdr(admin))
+
+        res = client.post(
+            "/api/performance/appraisals", headers=_hdr(admin),
+            json={"cycle_id": cid, "employee_ids": [e1["id"], e2["id"]]},
+        )
+        assert res.status_code == 201 and len(res.json()) == 2
+
+        # 第二次:e1 重复 + e2 重复 + 一个新员工 e3 → 只应新增 e3
+        e3 = _mk_emp(client, _hdr(admin), name="考核3")
+        res = client.post(
+            "/api/performance/appraisals", headers=_hdr(admin),
+            json={"cycle_id": cid,
+                  "employee_ids": [e1["id"], e2["id"], e3["id"], e3["id"]]},
+        )
+        assert res.status_code == 201
+        got = res.json()
+        assert len(got) == 1 and got[0]["employee_id"] == e3["id"]
+        # 库内总数 = 3,响应里的行真实存在
+        db_session.expire_all()
+        n = db_session.scalars(
+            select(Appraisal.id).where(Appraisal.cycle_id == cid)
+        ).all()
+        assert len(n) == 3
+        assert db_session.get(Appraisal, got[0]["id"]) is not None
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_update_employee_preserves_personal(db_session):
+    """PUT 不带 personal → 员工自助端填的数据不能被清空。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        emp = _mk_emp(client, _hdr(admin), name="个人信息")
+        client.put(
+            f"/api/employees/{emp['id']}", headers=_hdr(admin),
+            json={"name": "个人信息",
+                  "personal": {"住址": "北京", "紧急联系人": "张三 138xx"}},
+        )
+        # 第二次编辑不带 personal
+        res = client.put(
+            f"/api/employees/{emp['id']}", headers=_hdr(admin),
+            json={"name": "个人信息", "designation": "新职位"},
+        )
+        assert res.status_code == 200
+        assert res.json()["personal"] == {"住址": "北京", "紧急联系人": "张三 138xx"}
+        # 显式传 null 才清空
+        res = client.put(
+            f"/api/employees/{emp['id']}", headers=_hdr(admin),
+            json={"name": "个人信息", "personal": None},
+        )
+        assert res.json()["personal"] is None
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_lifecycle_task_locked_after_complete(db_session):
+    """事件 completed/cancelled 后任务不可再勾选。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        emp = _mk_emp(client, _hdr(admin), name="锁定人")
+        res = client.post(
+            "/api/lifecycle/events", headers=_hdr(admin),
+            json={"employee_id": emp["id"], "kind": "onboarding"},
+        )
+        ev = res.json()
+        for task in ev["tasks"]:
+            client.post(
+                f"/api/lifecycle/tasks/{task['id']}/toggle", headers=_hdr(admin)
+            )
+        assert client.get(
+            f"/api/lifecycle/events/{ev['id']}", headers=_hdr(admin)
+        ).json()["status"] == "completed"
+        res = client.post(
+            f"/api/lifecycle/tasks/{ev['tasks'][0]['id']}/toggle",
+            headers=_hdr(admin),
+        )
+        assert res.status_code == 400
+    finally:
+        _cleanup(db_session, t)
+
+
+def test_expense_type_delete_guarded_by_usage(db_session):
+    """被报销明细引用的类型不能删;空类型可删。"""
+    t = _tenant(db_session)
+    admin = _user(db_session, t, role="admin")
+    client = TestClient(app)
+    try:
+        t1 = client.post(
+            "/api/expenses/types", headers=_hdr(admin), json={"name": "打车"}
+        ).json()
+        t2 = client.post(
+            "/api/expenses/types", headers=_hdr(admin), json={"name": "快递"}
+        ).json()
+        emp, ess = _mk_ess_employee(client, _hdr(admin))
+        client.post(
+            "/api/me/expense-claims", headers=ess,
+            json={"title": "用类型", "items": [
+                {"type_id": t1["id"], "occurred_on": str(date.today()),
+                 "amount": 30}
+            ]},
+        )
+        assert client.delete(
+            f"/api/expenses/types/{t1['id']}", headers=_hdr(admin)
+        ).status_code == 400
+        assert client.delete(
+            f"/api/expenses/types/{t2['id']}", headers=_hdr(admin)
+        ).status_code == 204
+    finally:
+        _cleanup(db_session, t)
+
+
 def test_hr_suite_feature_gate(db_session):
     """license 关掉 hr.suite → 全部新端点 402。"""
     from app.api import license as license_api

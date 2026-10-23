@@ -114,6 +114,16 @@ def main():
                 e = req("PUT", f"/employees/{e['id']}", tok, {
                     "name": e["name"], "reports_to_id": mgr["id"],
                 })
+        # 修复被历史编辑清掉的部门/职位(PUT 要带上现有值,避免其他字段被重置)
+        if e and (e.get("org_unit_id") != org or e.get("designation") != title):
+            mgr = emp_by_no.get(mgr_no) if mgr_no else None
+            e = req("PUT", f"/employees/{e['id']}", tok, {
+                "name": e["name"], "designation": title,
+                "org_unit_id": org,
+                "reports_to_id": e.get("reports_to_id") or (mgr["id"] if mgr else None),
+                "work_email": e.get("work_email"), "phone": e.get("phone"),
+                "hire_date": e.get("hire_date"), "status": e.get("status") or status_,
+            })
         emp_by_no[no] = e
         print(f"  {no} {name} → {e['id'][:8]}")
 
@@ -151,31 +161,42 @@ def main():
             print(f"  年假 10 天 → {e['name']}")
 
     apps = req("GET", "/leave/applications?limit=200", tok).get("items", [])
+
+    def _overlaps(emp_id: str, s: date, e: date) -> bool:
+        return any(
+            a["employee_id"] == emp_id and a["status"] != "cancelled"
+            and a["start_date"] <= str(e) and a["end_date"] >= str(s)
+            for a in apps
+        )
+
+    def _apply(emp_tok, emp_id, lt_id, offset: int, span: int, reason: str):
+        """幂等建申请:窗口与该员工现有申请重叠就往后挪一周再找。"""
+        for shift in range(0, 366, 7):
+            s = date.today() + timedelta(days=offset + shift)
+            e = s + timedelta(days=span - 1)
+            if _overlaps(emp_id, s, e):
+                continue
+            r = req("POST", "/me/leave-applications", emp_tok, {
+                "leave_type_id": lt_id, "start_date": str(s),
+                "end_date": str(e), "days": span, "reason": reason,
+            })
+            apps.append({"employee_id": emp_id, "status": "pending",
+                         "start_date": str(s), "end_date": str(e)})
+            return r
+        raise SystemExit("找不到可用的请假窗口(未来一年内全部重叠)")
+
     if not any(a["status"] == "pending" for a in apps):
-        r = req("POST", "/me/leave-applications", emp1, {
-            "leave_type_id": annual["id"],
-            "start_date": str(date.today() + timedelta(days=7)),
-            "end_date": str(date.today() + timedelta(days=8)),
-            "days": 2, "reason": "家中有事",
-        })
+        r = _apply(emp1, emp_by_no["EMP002"]["id"], annual["id"], 7, 2, "家中有事")
         print(f"  待审批申请 → {r['id'][:8]}")
     if not any(a["status"] == "approved" for a in apps):
-        r = req("POST", "/me/leave-applications", emp2, {
-            "leave_type_id": types["病假"]["id"],
-            "start_date": str(date.today() - timedelta(days=10)),
-            "end_date": str(date.today() - timedelta(days=9)),
-            "days": 2, "reason": "感冒发烧",
-        })
+        r = _apply(emp2, emp_by_no["EMP003"]["id"], types["病假"]["id"], -10, 2, "感冒发烧")
         req("POST", f"/leave/applications/{r['id']}/approve", tok, {"note": "注意休息"})
+        apps[-1]["status"] = "approved"
         print(f"  已批准申请 → {r['id'][:8]}")
     if not any(a["status"] == "rejected" for a in apps):
-        r = req("POST", "/me/leave-applications", emp2, {
-            "leave_type_id": types["事假"]["id"],
-            "start_date": str(date.today() + timedelta(days=20)),
-            "end_date": str(date.today() + timedelta(days=25)),
-            "days": 5, "reason": "长途旅行",
-        })
+        r = _apply(emp2, emp_by_no["EMP003"]["id"], types["事假"]["id"], 20, 5, "长途旅行")
         req("POST", f"/leave/applications/{r['id']}/reject", tok, {"note": "事假天数超限,请拆分"})
+        apps[-1]["status"] = "rejected"
         print(f"  已驳回申请 → {r['id'][:8]}")
 
     # ---------- 打卡 + 考勤 ----------

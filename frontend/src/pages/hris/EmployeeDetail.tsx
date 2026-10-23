@@ -255,6 +255,14 @@ function EmployeeEditModal({
     ev.preventDefault();
     setErr("");
     const fd = new FormData(ev.currentTarget);
+    // personal 保留员工自助端填的键(可能还有 HR 手工加的),只覆盖表单里的两项
+    const personal: Record<string, unknown> = { ...(emp.personal ?? {}) };
+    const addr = String(fd.get("address") || "").trim();
+    const emergency = String(fd.get("emergency_contact") || "").trim();
+    if (addr) personal["住址"] = addr;
+    else delete personal["住址"];
+    if (emergency) personal["紧急联系人"] = emergency;
+    else delete personal["紧急联系人"];
     mut.mutate({
       name: String(fd.get("name") || "").trim(),
       designation: String(fd.get("designation") || "").trim() || null,
@@ -265,6 +273,7 @@ function EmployeeEditModal({
       reports_to_id: reportsTo || null,
       employment_type: empType,
       status,
+      personal,
     });
   }
 
@@ -341,6 +350,22 @@ function EmployeeEditModal({
             defaultValue={emp.work_email ?? ""}
           />
         </Field>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="住址">
+            <Input
+              name="address"
+              defaultValue={String((emp.personal ?? {})["住址"] ?? "")}
+            />
+          </Field>
+          <Field label="紧急联系人">
+            <Input
+              name="emergency_contact"
+              defaultValue={String(
+                (emp.personal ?? {})["紧急联系人"] ?? "",
+              )}
+            />
+          </Field>
+        </div>
         {err && (
           <div className="text-[13px] text-[var(--color-danger)] font-body">
             {err}

@@ -153,6 +153,11 @@ def delete_type(
     t = db.get(ExpenseType, type_id)
     if not t or t.tenant_id != current.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "类型不存在")
+    used = db.scalars(
+        select(ExpenseItem.id).where(ExpenseItem.type_id == t.id).limit(1)
+    ).first()
+    if used:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "该类型下已有报销明细,不能删除")
     db.delete(t)
     db.commit()
 
@@ -175,7 +180,13 @@ def list_claims(
         stmt = stmt.where(ExpenseClaim.status == status_filter)
     if employee_id:
         stmt = stmt.where(ExpenseClaim.employee_id == employee_id)
-    if scope == "team" or current.role not in ("admin", "hr"):
+    if scope == "team":
+        stmt = stmt.where(
+            ExpenseClaim.employee_id.in_(
+                _team_ids_with_self(db, current) or ["__none__"]
+            )
+        )
+    elif current.role not in ("admin", "hr"):
         ids = visible_employee_ids(db, current)
         stmt = stmt.where(ExpenseClaim.employee_id.in_(ids or ["__none__"]))
     total = count_total(db, stmt)
@@ -207,11 +218,32 @@ def get_claim(
     c = db.get(ExpenseClaim, claim_id)
     if not c or c.tenant_id != current.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "报销单不存在")
+    ids = visible_employee_ids(db, current)
+    if ids is not None and c.employee_id not in ids:
+        # 与列表口径一致:非 admin/hr 仅见直属下属+自己,404 不暴露存在性
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "报销单不存在")
     emps, orgs, types = _maps(db, current.tenant_id)
     items = list(db.scalars(
         select(ExpenseItem).where(ExpenseItem.claim_id == c.id)
     ))
     return _claim_out(c, items, emps, orgs, types)
+
+
+def _team_ids_with_self(db: Session, user: User) -> list[str]:
+    """直属下属 + 自己 — 显式 scope=team 用语义,admin/hr 也按汇报线过滤。"""
+    own = get_linked_employee_id(db, user)
+    ids = [
+        r[0]
+        for r in db.execute(
+            select(Employee.id).where(
+                Employee.tenant_id == user.tenant_id,
+                Employee.reports_to_id == (own or "__none__"),
+            )
+        ).all()
+    ]
+    if own:
+        ids.append(own)
+    return ids
 
 
 def _can_decide(db: Session, user: User, c: ExpenseClaim) -> bool:

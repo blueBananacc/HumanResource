@@ -31,7 +31,7 @@ export function flattenOrgTree(
 export function useOrgOptions() {
   const { data } = useQuery<OrgTreeNode[]>({
     queryKey: ["org-tree"],
-    queryFn: () => fetchJSON("/api/auth/org-tree"),
+    queryFn: () => fetchJSON("/api/org/tree"),
     staleTime: 60_000,
   });
   return flattenOrgTree(data ?? []).map((o) => ({

@@ -10,6 +10,8 @@ import { Pagination } from "@/components/ui/pagination";
 import { Select } from "@/components/ui/select";
 import { fetchJSON, ApiError } from "@/lib/api";
 import { usePagedQuery, PAGE_SIZE } from "@/lib/usePagedQuery";
+import { useAuth } from "@/lib/auth";
+import { PERM } from "@/lib/roles";
 import {
   StatusPill,
   fmtTime,
@@ -35,6 +37,8 @@ export function AttendanceAdmin() {
   const scope = sp.get("scope") ?? "all";
   const [edit, setEdit] = useState<Attendance | null>(null);
   const qc = useQueryClient();
+  const { hasPermission } = useAuth();
+  const canManage = hasPermission(PERM.MANAGE_ATTENDANCE);
 
   const { data, isLoading, page, pageCount, total, goto } =
     usePagedQuery<Attendance>({
@@ -77,14 +81,16 @@ export function AttendanceAdmin() {
             按天汇总员工的上下班打卡 — 支持手工修正与整月重算。
           </p>
         </div>
-        <Button
-          variant="secondary"
-          onClick={() => summarize.mutate()}
-          disabled={summarize.isPending}
-        >
-          <RefreshCw className="w-4 h-4" />
-          {summarize.isPending ? "汇总中…" : "重算本月"}
-        </Button>
+        {canManage && (
+          <Button
+            variant="secondary"
+            onClick={() => summarize.mutate()}
+            disabled={summarize.isPending}
+          >
+            <RefreshCw className="w-4 h-4" />
+            {summarize.isPending ? "汇总中…" : "重算本月"}
+          </Button>
+        )}
       </div>
 
       <div className="flex items-center gap-3">
@@ -169,13 +175,15 @@ export function AttendanceAdmin() {
                     {a.work_hours != null ? `${a.work_hours}h` : "—"}
                   </td>
                   <td className="px-6 py-3 text-right">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setEdit(a)}
-                    >
-                      <Pencil className="w-3.5 h-3.5" />
-                    </Button>
+                    {canManage && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setEdit(a)}
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </Button>
+                    )}
                   </td>
                 </tr>
               ))}

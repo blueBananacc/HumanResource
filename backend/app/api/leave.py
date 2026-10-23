@@ -210,6 +210,23 @@ def _can_approve(db: Session, user: User, app: LeaveApplication) -> bool:
     return False
 
 
+def _team_ids_with_self(db: Session, user: User) -> list[str]:
+    """直属下属 + 自己 — 显式 scope=team 用语义,admin/hr 也按汇报线过滤。"""
+    own = get_linked_employee_id(db, user)
+    ids = [
+        r[0]
+        for r in db.execute(
+            select(Employee.id).where(
+                Employee.tenant_id == user.tenant_id,
+                Employee.reports_to_id == (own or "__none__"),
+            )
+        ).all()
+    ]
+    if own:
+        ids.append(own)
+    return ids
+
+
 def _write_ledger(
     db: Session, *, tenant_id: str, employee_id: str, leave_type_id: str,
     year: int, delta: float, ref_type: str, ref_id: str, note: str | None = None,
@@ -497,14 +514,21 @@ def list_applications(
         stmt = stmt.where(LeaveApplication.status == status_filter)
     if employee_id:
         stmt = stmt.where(LeaveApplication.employee_id == employee_id)
-    if scope == "team":
-        ids = visible_employee_ids(db, current)
-        stmt = stmt.where(LeaveApplication.employee_id.in_(ids or ["__none__"]))
-    elif scope == "mine":
+    if scope == "mine":
         own = get_linked_employee_id(db, current)
         stmt = stmt.where(
             LeaveApplication.employee_id == (own or "__none__")
         )
+    elif scope == "team":
+        stmt = stmt.where(
+            LeaveApplication.employee_id.in_(
+                _team_ids_with_self(db, current) or ["__none__"]
+            )
+        )
+    elif current.role not in ("admin", "hr"):
+        # scope=all:非管理角色仍按汇报线过滤(主管只见下属+自己)
+        ids = visible_employee_ids(db, current)
+        stmt = stmt.where(LeaveApplication.employee_id.in_(ids or ["__none__"]))
     stmt = apply_q_ilike(stmt, q, LeaveApplication.reason)
     total = count_total(db, stmt)
     rows = db.scalars(
@@ -603,7 +627,7 @@ def balances(
     y = year or datetime.now().year
     emp_ids: list[str] | None
     if scope == "team":
-        emp_ids = visible_employee_ids(db, current)
+        emp_ids = _team_ids_with_self(db, current)
     else:
         if current.role in ("admin", "hr"):
             emp_ids = None

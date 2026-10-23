@@ -334,9 +334,17 @@ def toggle_task(
     t = db.get(LifecycleTask, task_id)
     if not t or t.tenant_id != current.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
+    # 锁事件行:并发勾选必须串行,否则每个请求都看不到别人刚提交的
+    # done=True,"全勾→完成"会被跳过(事件永远卡在 in_progress)
+    ev = db.execute(
+        select(LifecycleEvent)
+        .where(LifecycleEvent.id == t.event_id)
+        .with_for_update()
+    ).scalar_one()
+    if not ev or ev.status != "in_progress":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "事件已结束,任务不能改动")
     t.done = not t.done
     t.done_at = _now() if t.done else None
-    ev = db.get(LifecycleEvent, t.event_id)
     # 全部勾选 → 事件完成,并落业务副作用
     tasks = _tasks_of(db, ev.id)
     if all(x.done for x in tasks) and ev.status == "in_progress":

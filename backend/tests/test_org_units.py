@@ -83,13 +83,14 @@ def test_list_org_tree_requires_auth():
     assert res.status_code == 401
 
 
-def test_non_admin_cannot_manage_org_tree(db_session):
+def test_non_admin_readonly_org_tree(db_session):
+    """hr/hm 可读组织树(员工/需求等选择器需要),但不能增删改。"""
     t = _make_tenant(db_session)
     hr = _make_user(db_session, t, role="hr")
     client = TestClient(app)
     try:
         res = client.get("/api/org/tree", headers=_hdr(hr))
-        assert res.status_code == 403
+        assert res.status_code == 200
 
         res = client.post(
             "/api/org/nodes",

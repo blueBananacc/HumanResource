@@ -14,7 +14,6 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, count_total, paginate_params
@@ -341,20 +340,30 @@ def spawn_appraisals(
     cycle = _cycle(db, body.cycle_id, current.tenant_id)
     if cycle.status != "open":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅开启中的周期可铺表")
+    # 先查重再插:(cycle_id, employee_id) 唯一,重复/非法 id 跳过而不是
+    # flush + rollback — 后者会把整批已 flush 的行一起回滚。
+    existing = {
+        r[0]
+        for r in db.execute(
+            select(Appraisal.employee_id).where(
+                Appraisal.cycle_id == cycle.id,
+                Appraisal.employee_id.in_(body.employee_ids),
+            )
+        ).all()
+    }
     made: list[Appraisal] = []
     for emp_id in body.employee_ids:
+        if emp_id in existing:
+            continue
+        existing.add(emp_id)  # 同时去重请求体里的重复 id
         emp = db.get(Employee, emp_id)
         if not emp or emp.tenant_id != current.tenant_id:
             continue
-        a = Appraisal(tenant_id=current.tenant_id, cycle_id=cycle.id,
+        made.append(
+            Appraisal(tenant_id=current.tenant_id, cycle_id=cycle.id,
                       employee_id=emp.id)
-        db.add(a)
-        try:
-            db.flush()
-            made.append(a)
-        except IntegrityError:
-            db.rollback()
-            continue
+        )
+    db.add_all(made)
     db.commit()
     cycles, emps, orgs = _perf_maps(db, current.tenant_id)
     return [_appraisal_out(a, cycles, emps, orgs) for a in made]

@@ -16,7 +16,7 @@ import {
   type LifecycleEvent,
   type LifecycleTemplate,
 } from "@/lib/hris";
-import { Field, useEmployeeOptions } from "./Employees";
+import { Field, useEmployeeOptions, useOrgOptions } from "./Employees";
 
 const KIND_OPTIONS = Object.entries(LIFECYCLE_KIND_LABEL).map(
   ([value, label]) => ({ value, label }),
@@ -198,9 +198,11 @@ function EventCreateModal({
 }) {
   const qc = useQueryClient();
   const empOptions = useEmployeeOptions();
+  const orgOptions = useOrgOptions();
   const [empId, setEmpId] = useState("");
   const [kind, setKind] = useState("onboarding");
   const [tplId, setTplId] = useState("");
+  const [toOrgId, setToOrgId] = useState("");
   const [err, setErr] = useState("");
   const tplOptions = templates
     .filter((t) => t.kind === kind)
@@ -227,11 +229,29 @@ function EventCreateModal({
       return;
     }
     const fd = new FormData(ev.currentTarget);
+    // transfer/promotion 的目标值放 payload,任务全部完成时后端回写员工档案
+    const payload: Record<string, string> = {};
+    if (kind === "transfer") {
+      if (!toOrgId) {
+        setErr("调动事件必须选择目标部门");
+        return;
+      }
+      payload.to_org_unit_id = toOrgId;
+    }
+    if (kind === "promotion") {
+      const toDesig = String(fd.get("to_designation") || "").trim();
+      if (!toDesig) {
+        setErr("晋升事件必须填写新职位");
+        return;
+      }
+      payload.to_designation = toDesig;
+    }
     mut.mutate({
       employee_id: empId,
       kind,
       effective_date: String(fd.get("effective_date") || "") || null,
       template_id: tplId || null,
+      payload: Object.keys(payload).length ? payload : null,
       note: String(fd.get("note") || "").trim() || null,
     });
   }
@@ -269,6 +289,21 @@ function EventCreateModal({
           <Field label="生效日期">
             <Input name="effective_date" type="date" />
           </Field>
+          {kind === "transfer" && (
+            <Field label="目标部门" required>
+              <Select
+                value={toOrgId}
+                onChange={setToOrgId}
+                options={orgOptions}
+                placeholder="选择部门"
+              />
+            </Field>
+          )}
+          {kind === "promotion" && (
+            <Field label="新职位" required>
+              <Input name="to_designation" placeholder="高级前端工程师" />
+            </Field>
+          )}
         </div>
         {tplOptions.length > 0 && (
           <Field label="任务模板">

@@ -387,9 +387,13 @@ def update_employee(
     before = {"name": e.name, "org_unit_id": e.org_unit_id, "status": e.status}
     for f in (
         "name", "org_unit_id", "designation", "reports_to_id", "phone",
-        "hire_date", "employment_type", "status", "personal",
+        "hire_date", "employment_type", "status",
     ):
         setattr(e, f, getattr(body, f))
+    # personal 只在显式传值时更新 — 前端编辑表单不带这个字段,
+    # 全量覆盖会把员工在自助端填的住址/紧急联系人清空。
+    if "personal" in body.model_fields_set:
+        e.personal = body.personal
     e.work_email = body.work_email
     if body.employee_no:
         e.employee_no = body.employee_no

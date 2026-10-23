@@ -11,3 +11,6 @@ __pycache__/
 *.tsbuildinfo
 
 assistant/data/
+
+backend/_seed_checkins.sql
+

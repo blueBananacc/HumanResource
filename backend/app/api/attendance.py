@@ -177,9 +177,30 @@ def list_attendance(
         stmt = stmt.where(Attendance.employee_id == employee_id)
     if status_filter:
         stmt = stmt.where(Attendance.status == status_filter)
-    emp_ids = visible_employee_ids(db, current)
-    if emp_ids is not None:
-        stmt = stmt.where(Attendance.employee_id.in_(emp_ids or ["__none__"]))
+    if scope == "team":
+        # 显式"我管理的":直属下属+自己,admin/hr 也按汇报线过滤
+        own = db.execute(
+            select(Employee.id).where(
+                Employee.tenant_id == current.tenant_id,
+                Employee.user_id == current.id,
+            )
+        ).scalar()
+        ids = [
+            r[0]
+            for r in db.execute(
+                select(Employee.id).where(
+                    Employee.tenant_id == current.tenant_id,
+                    Employee.reports_to_id == (own or "__none__"),
+                )
+            ).all()
+        ]
+        if own:
+            ids.append(own)
+        stmt = stmt.where(Attendance.employee_id.in_(ids or ["__none__"]))
+    else:
+        emp_ids = visible_employee_ids(db, current)
+        if emp_ids is not None:
+            stmt = stmt.where(Attendance.employee_id.in_(emp_ids or ["__none__"]))
     total = count_total(db, stmt)
     rows = db.scalars(
         stmt.order_by(Attendance.day.desc()).limit(limit).offset(offset)

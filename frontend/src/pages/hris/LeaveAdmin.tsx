@@ -7,7 +7,8 @@ import { Empty } from "@/components/ui/empty";
 import { Pagination } from "@/components/ui/pagination";
 import { Select } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { fetchJSON } from "@/lib/api";
+import { fetchJSON, ApiError } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { usePagedQuery, PAGE_SIZE } from "@/lib/usePagedQuery";
 import { formatRelative } from "@/lib/format";
 import { StatusPill, type LeaveApplication } from "@/lib/hris";
@@ -28,9 +29,13 @@ const SCOPE_OPTIONS = [
 export function LeaveAdmin() {
   const [sp, setSp] = useSearchParams();
   const status = sp.get("status") ?? "";
-  const scope = sp.get("scope") ?? "all";
+  const { user } = useAuth();
+  // 主管默认看自己管理的;admin/hr 看全部(后端对非管理角色始终按汇报线过滤)
+  const isManagerOnly = user?.role !== "admin" && user?.role !== "hr";
+  const scope = sp.get("scope") ?? (isManagerOnly ? "team" : "all");
   const qc = useQueryClient();
   const [notes, setNotes] = useState<Record<string, string>>({});
+  const [err, setErr] = useState("");
 
   const { data, isLoading, page, pageCount, total, goto } =
     usePagedQuery<LeaveApplication>({
@@ -62,7 +67,12 @@ export function LeaveAdmin() {
         method: "POST",
         body: JSON.stringify({ note: notes[id] || null }),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["leave-apps"] }),
+    onSuccess: () => {
+      setErr("");
+      qc.invalidateQueries({ queryKey: ["leave-apps"] });
+    },
+    onError: (e) =>
+      setErr(e instanceof ApiError ? e.message : "操作失败"),
   });
 
   return (
@@ -96,6 +106,11 @@ export function LeaveAdmin() {
           </span>{" "}
           条
         </span>
+        {err && (
+          <span className="text-[13px] text-[var(--color-danger)] font-body">
+            {err}
+          </span>
+        )}
       </div>
 
       <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">

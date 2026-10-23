@@ -20,6 +20,7 @@ from app.api.auth import require_admin
 from app.domain.models import OrgUnit, User
 from app.infra.db import get_db
 from app.services.audit import write_audit
+from app.services.permissions import PERM_VIEW_REPORTS, require_permission
 
 router = APIRouter(prefix="/org", tags=["org"])
 
@@ -118,7 +119,7 @@ def _ensure_not_descendant(
 @router.get("/tree", response_model=list[OrgNodeOut])
 def get_org_tree(
     db: Session = Depends(get_db),
-    current: User = Depends(require_admin),
+    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
 ) -> list[OrgNodeOut]:
     rows = db.scalars(
         select(OrgUnit)
