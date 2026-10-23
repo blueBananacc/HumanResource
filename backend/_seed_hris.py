@@ -151,7 +151,7 @@ def main():
             print(f"  年假 10 天 → {e['name']}")
 
     apps = req("GET", "/leave/applications?limit=200", tok).get("items", [])
-    if not any(a["status"] == "open" for a in apps):
+    if not any(a["status"] == "pending" for a in apps):
         r = req("POST", "/me/leave-applications", emp1, {
             "leave_type_id": annual["id"],
             "start_date": str(date.today() + timedelta(days=7)),
@@ -226,7 +226,7 @@ def main():
         })
         req("POST", f"/requisitions/{r['id']}/approve", tok, {"note": "Q4 编制内"})
         print(f"  已批准需求 → {r['title']}")
-    if not any(r["status"] == "open" for r in reqs):
+    if not any(r["status"] == "pending" for r in reqs):
         r = req("POST", "/requisitions", tok, {
             "title": "产品部-产品设计师", "org_unit_id": prod["id"],
             "headcount": 1, "level": "intermediate", "reason": "移动端改版",
@@ -296,7 +296,7 @@ def main():
         etypes = req("GET", "/expenses/types", tok)
     claims = req("GET", "/expenses/claims?limit=200", tok).get("items", [])
     et = {t["name"]: t["id"] for t in etypes}
-    if not any(c["status"] == "open" for c in claims):
+    if not any(c["status"] == "pending" for c in claims):
         req("POST", "/me/expense-claims", emp1, {
             "title": "上海出差(11月)",
             "items": [
