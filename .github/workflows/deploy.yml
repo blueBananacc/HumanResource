@@ -67,6 +67,19 @@ jobs:
             echo "$CHANGED" | grep -Eq '^(frontend|deploy)/' && SVC="$SVC frontend" || true
             echo "$CHANGED" | grep -Eq '^(assistant|deploy)/' && SVC="$SVC assistant" || true
             COMPOSE="docker compose"; docker compose version >/dev/null 2>&1 || COMPOSE="docker-compose"
+            # docker.io 直连不稳:基础镜像本地被回收后,build 的 load metadata /
+            # up 的 image pull 都会报 not found。先确保基础镜像在本地 —— 直连
+            # 与镜像站逐个尝试,从镜像站拉到的重打为 docker.io 名供后续使用
+            for img in python:3.11-slim node:20-alpine node:22-alpine nginx:1.27-alpine postgres:16-alpine redis:7-alpine; do
+              docker image inspect "$img" >/dev/null 2>&1 && continue
+              for src in "$img" "docker.m.daocloud.io/library/$img" "docker.1ms.run/library/$img" "docker.xuanyuan.me/library/$img"; do
+                if docker pull "$src"; then
+                  [ "$src" = "$img" ] || docker tag "$src" "$img"
+                  break
+                fi
+              done
+              docker image inspect "$img" >/dev/null 2>&1 || { echo "base image missing: $img"; exit 1; }
+            done
             if [ -n "${SVC// }" ]; then
               echo "rebuilding:$SVC"
               $COMPOSE -f docker-compose.yml -f docker-compose.prod.yml up -d --build $SVC
