@@ -44,9 +44,10 @@ jobs:
           script: |
             set -e
             cd /opt/hronfire
-            git pull --ff-only
-            # 浅克隆(depth=1)只留最新提交,基线 commit 可能不在本地历史 → 加深
-            git fetch --depth=50 origin >/dev/null 2>&1 || true
+            # fetch + reset 而非 pull:force-push/历史改写时 pull --ff-only 直接失败;
+            # 服务器是纯部署检出(无本地改动,生成物均未被跟踪),reset 到远端永远正确且自愈
+            git fetch --depth=50 origin
+            git reset --hard origin/main
             # 基线 = 上次【部署成功】的提交(写进 .last-deployed),不是 pull 前的
             # HEAD —— 否则上次 pull 成功但 build 超时/失败时,重跑会误判"无改动"
             # 而永远不重建。基线缺失或不可回溯 → 保守全量重建。
