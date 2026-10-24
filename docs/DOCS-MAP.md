@@ -16,9 +16,13 @@
 
 | 文件 | 说明 |
 |---|---|
-| [hibob-style-reference.md](design/hibob-style-reference.md) | HiBob 风格前端设计参考（配色/字体/形状/交互规则，前端改动先读） |
-| [minthcm-port-plan.md](design/minthcm-port-plan.md) | MintHCM 功能移植方案（管道看板/提示词/邮件模板/技能/会议室/问卷，表设计与验收基线） |
-| [minthcm-port-2-plan.md](design/minthcm-port-2-plan.md) | T3 第二批移植方案（公告/员工申请/薪酬带宽/HR工单 + 通知/watcher/知识库/报表订阅/外联/ICS/活动流/实体检索） |
+| [hibob-style-reference.md](design/hibob-style-reference.md) | 前端设计规范（配色/字体/形状/交互规则，前端改动先读） |
+| [hrms-suite-design.md](design/hrms-suite-design.md) | 员工核心（HRIS）领域模型与权限设计（Employee/假勤/生命周期/绩效/费用/薪酬） |
+| [ats-modules-design.md](design/ats-modules-design.md) | 招聘侧模块设计（管道看板/提示词/邮件模板/技能/会议室/问卷，表设计与验收基线） |
+| [employee-services-design.md](design/employee-services-design.md) | 员工服务与 AI 基建设计（公告/申请/薪酬带宽/HR工单 + 通知/watcher/知识库/报表订阅/外联/ICS/活动流/实体检索） |
+| [ai-platform-design.md](design/ai-platform-design.md) | AI 平台层设计（MCP Server/通用实体工具/SOP 剧本/混合检索/AI 留痕） |
+| [platform-capabilities-design.md](design/platform-capabilities-design.md) | 平台能力层设计（实体写 API/已存筛选/收藏/候选人合并/批量导入/字典/调度运维/变更历史/乐观锁） |
+| [ai-native-design.md](design/ai-native-design.md) | AI 原生工作流设计（工具富卡片/模块级提示词/产品帮助/字段级 AI/记录摘要/文档起草） |
 
 ## 维护约定
 

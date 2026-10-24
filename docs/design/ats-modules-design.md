@@ -1,13 +1,12 @@
-# MintHCM 功能移植实施方案
+# 招聘侧模块设计(管道/提示词/邮件模板/技能/预约/问卷)
 
-来源:`C:\Users\666\Desktop\minthcm`(SuiteCRM 系 HCM,191 模块)中筛选出 6 个与
-HROnfire 定位契合的模块。移植 = 功能设计移植(对方是 PHP,我们是
-FastAPI + SQLAlchemy + React),字段/状态机参考对方,落地遵循本项目既有约定:
+第一批功能建设的设计与实施记录:申请管道看板、AI 提示词模板、邮件模板、
+技能库、会议室/资源预约、问卷。落地遵循本项目既有约定:
 
 - `domain/models.py` 单文件模型,`String(36)` UUID 主键,所有表带 `tenant_id` FK CASCADE
 - `api/<module>.py` 单文件 router + pydantic In/Out,`_pagination` 分页,
   `require_feature("hr.suite")` 门 HRIS,`require_permission(PERM_*)` 鉴权
-- Alembic 顺序号迁移(下一个 `0032` 起),容器启动 `alembic upgrade head`
+- Alembic 顺序号迁移,容器启动 `alembic upgrade head`
 - 前端 React Query + `fetchJSON`,`pages/` + `nav.ts` 三级导航,UI 用 `components/ui/*`
 - 权限尽量复用现有 PERM,不新增角色映射
 
@@ -23,8 +22,8 @@ UI 测试用 ego-browser。
 
 ## T1-1 申请管道 job_applications + Kanban
 
-对应 minthcm `Candidatures`(16 态 ColoredEnum + Kanban 按状态分列)。
-我们收敛为 7 态,贴合现有实体:
+申请管道记录候选人 × 岗位的推进关系,看板按状态分列。
+状态机收敛为 7 态,贴合现有实体:
 
 ```
 applied → screening → interview → offer → hired
@@ -55,7 +54,7 @@ applied → screening → interview → offer → hired
 
 ## T1-2 AI 提示词模板 prompt_templates
 
-对应 minthcm `AIPromptTemplates`(只有 root_module+content,太薄,扩展之)。
+所有 AI 调用的 prompt 收进注册表化管理,支持租户覆盖与版本回滚。
 
 - 表 `prompt_templates`:tenant+`key` 唯一(`match.evaluate` /
   `interview.question` / `interview.report` / `question.generate` /
@@ -76,7 +75,7 @@ applied → screening → interview → offer → hired
 
 ## T1-3 邮件模板 email_templates
 
-对应 SuiteCRM `EmailTemplates`(subject + body + body_html + type)。
+事务性邮件文案同 prompt 模板一样注册表化:subject + body_text + body_html。
 
 - 表 `email_templates`:tenant+`key` 唯一(`interview.invite` /
   `interview.done` / `offer.letter`)、name、subject、body_text、
@@ -94,8 +93,7 @@ applied → screening → interview → offer → hired
 
 ## T2-1 技能库 skills
 
-对应 minthcm `Competencies + CompetencyRatings`(knowledge/skills/attitudes
-三维度收敛为统一技能字典 + 评分)。
+统一技能字典 + 岗位技能要求 + 候选人技能评分。
 
 - 表 `skills`:tenant+`name` 唯一、category(tech/language/soft/cert/
   other)、description
@@ -111,12 +109,11 @@ applied → screening → interview → offer → hired
   - `GET /jobs/{id}/skill-coverage` 每个岗位要求 ↔ 候选池覆盖数 +
     已建管道卡覆盖,给匹配页补"技能缺口"解释
 - 前端:JobDetail 加"技能要求"区块(搜索式 combobox 增删,标 must/nice);
-  TalentDetail 加"技能"区块(level 1-5 + 从简历导入按钮);
-  nav 招聘→规划区「人才标签」保留 soon,不动。
+  TalentDetail 加"技能"区块(level 1-5 + 从简历导入按钮)。
 
 ## T2-2 会议室/资源预约 rooms + reservations
 
-对应 minthcm `Rooms + Reservations + ReservationsCalendar`(冲突检查)。
+会议室与共享资源的时段预约,带冲突检查。
 
 - 表 `meeting_rooms`:name、location、capacity、equipment JSON、is_active
 - 表 `room_reservations`:room_id、title、start_at、end_at、
@@ -128,14 +125,12 @@ applied → screening → interview → offer → hired
     `POST`(`write_interview`,重叠校验:`s < e && e0 < e && s0 > s` → 409)、
     `POST /{id}/cancel`、`PUT /{id}` 改期
   - `GET /rooms/availability?date=` 各会议室当天占用段
-- 前端 `pages/Rooms.tsx`(面试 → 排期组,顶替 soon 占位「面试官排班」
-  改名"会议室预约"):左侧会议室列表,右侧选中日期的时段占用 + 预约弹窗
-  (会议室/标题/起止/备注) + 取消。周视图网格本期不做,日视图够用。
+- 前端 `pages/Schedule.tsx`:左侧会议室列表,右侧选中日期的时段占用 +
+  预约弹窗(会议室/标题/起止/备注) + 取消。
 
 ## T2-3 问卷 surveys(候选人反馈)
 
-对应 minthcm `Surveys + SurveyQuestions + SurveyResponses`(公开链接收卷)。
-收敛:管理员建卷 → 生成一次性公开链接 → 候选人无登录提交 → 统计。
+管理员建卷 → 生成一次性公开链接 → 候选人无登录提交 → 统计。
 
 - 表 `surveys`:title、description、status(draft/published/closed)
 - 表 `survey_questions`:survey_id、sort_order、type
@@ -150,10 +145,10 @@ applied → screening → interview → offer → hired
   `GET /{id}/stats`(每题聚合:选择计数/评分均值/文本列表)
 - 公开 API `api/public_surveys.py`(无鉴权,hash 校验 + 未用 + 未过期):
   `GET /public/surveys/{token}` 返回卷面、`POST .../submit` 存卷标记 used
-- 前端 `pages/Surveys.tsx` + `pages/SurveyDetail.tsx`(面试模块新组):
+- 前端 `pages/Surveys.tsx` + `pages/SurveyDetail.tsx`:
   问卷列表 → 编辑器(题目增删改、类型、选项、必填) → 发布 →
   链接列表(复制/绑定候选人) → 答卷与统计;
-  公开页 `pages/SurveyRespond.tsx` 路由 `/s/{token}`,免登录品牌风样式。
+  公开页 `pages/SurveyFill.tsx` 路由 `/s/{token}`,免登录。
 
 ## 实施顺序与验收
 
@@ -187,7 +182,7 @@ API 链路手工 curl 走通 + ego-browser 每模块至少一条 UI 全流程。
 - `reservations` 合并了计划的 `meeting_rooms + reservations` 两表为 `rooms + resources + reservations` 三表。
 - 候选覆盖接口 `GET /jobs/{id}/skill-coverage` 为新增(方案未列):每技能给全池/管道内人数。
 
-测试:30 个新测试 + 364 全量绿(`freehire_test`);开发库迁移到 `0037`。
+测试:30 个新测试 + 364 全量绿(`freehire_test`)。
 
 ## 审查修复(a2a996f5,2026-10-23)
 
@@ -205,7 +200,7 @@ API 链路手工 curl 走通 + ego-browser 每模块至少一条 UI 全流程。
 
 ## 复审修复(2026-10-24,alembic 0038)
 
-- **survey_links 一次性链接**(对齐方案与 invite_tokens 惯例):
+- **survey_links 一次性链接**(对齐 invite_tokens 惯例):
   `POST /surveys/{id}/links` 发明文一次(sha256 入库,可绑 candidate,
   默认 30 天,1-365 可调);公开端改 `/public/surveys/{token}`,
   原子 `UPDATE ... WHERE used_at IS NULL` 核销防并发双填;

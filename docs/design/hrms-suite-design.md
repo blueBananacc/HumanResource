@@ -1,6 +1,6 @@
 # HROnfire 员工核心(HRIS)设计
 
-> 参照 Frappe HRMS(hrms 仓库实测)的领域模型重写。以 Employee 为核心实体,
+> 以 Employee 为核心实体的领域模型,
 > 招聘/假勤/生命周期/绩效/费用/轻量薪酬全部挂在 Employee 上。
 > License 功能位:`hr.suite`(Professional+ 档)。
 
@@ -15,7 +15,7 @@ status(active|leave|suspended|terminated) /
 personal(JSON:address/emergency_contact/…) /
 source_candidate_id(→candidates,录用转化来源)
 
-### 员工账号(ESS,参照 Frappe "Employee Self Service")
+### 员工账号(ESS,Employee Self Service)
 - `users.role = "employee"`,`employee.user_id` 双向绑定
 - 员工账号**无业务权限项**,全部走 `/api/me/*` 自助端点,行级过滤 `employee_id == me`
 - HR 端 `/api/employees/*` 等管理端点走权限项,employee 角色天然拿不到
@@ -55,7 +55,7 @@ source_candidate_id(→candidates,录用转化来源)
   manager_rating,status(draft|self_submitted|reviewed)
 - `expense_types` + `expense_claims`(items 子表,total 聚合,审批流同请假)
 - `salary_slips`: employee × period('2026-10'),gross/deductions/net + items JSON
-  明细。**只登记不核算**(Frappe payroll 依赖 ERPNext 会计,明确不做),
+  明细。**只登记不核算**(不接外部会计系统,明确不做),
   HR 录入/编辑,员工只读
 
 ### 明确不做

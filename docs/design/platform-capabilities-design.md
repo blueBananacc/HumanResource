@@ -1,15 +1,15 @@
-# MintHCM 功能移植 · 第四批(T5)实施方案
+# 平台能力层设计(实体写 API/已存筛选/收藏/合并/批量导入/字典/调度/历史/乐观锁)
 
-来源:`C:\Users\666\Desktop\minthcm`。本批两个主题:**AI 工具面收口**(通用写工具)
-+ **平台甜点**(saved_filters/favorites/merge/import/dictionaries/schedulers/history/optimistic-lock)。
+第四批功能建设,两个主题:**AI 工具面收口**(通用写工具)+ **平台甜点**
+(saved_filters/favorites/merge/import/dictionaries/schedulers/history/optimistic-lock)。
 
-约定同前三批:`domain/models.py` 单文件、`String(36)` UUID、`tenant_id` CASCADE、
+约定:`domain/models.py` 单文件、`String(36)` UUID、`tenant_id` CASCADE、
 `api/<module>.py` + pydantic、`hr.suite` 门 HRIS、`require_permission` 复用现有 PERM、
-迁移从 `0050` 起。前端遵循 `docs/design/hibob-style-reference.md`。
+迁移 `0050`。前端遵循 `docs/design/hibob-style-reference.md`。
 
 ## T5-0 AI 工具收口(entities.py 扩展,无迁移)
 
-MintHCM 18 工具中剩余 6 个,全部以**白名单注册表**落地(不暴露通用 ORM):
+通用实体的写操作全部以**白名单注册表**落地(不暴露通用 ORM):
 
 - `GET /entities/{entity}/schema` → `{writable, linkable}` — 复用 WRITABLE/LINKS
   注册表生成字段+校验说明(类型/choices/required),供 LLM 事前发现。
@@ -25,9 +25,9 @@ MintHCM 18 工具中剩余 6 个,全部以**白名单注册表**落地(不暴露
   - `candidates.skills` → `CandidateSkill(candidate_id,skill_id,level,source=manual)`(write_resumes)
   - `candidates.groups` → `CandidateGroupMember`(write_resumes)
   join 字段(importance/level)走 validators;已存在→409;删除不存在→404。
-- `list_report_kinds` 输出加 `params` schema(5e)。
+- `list_report_kinds` 输出加 `params` schema。
 - sidecar `mcp.ts` 加 `resources/list` + `resources/read`:
-  `hr://playbooks/{id}`、`hr://entities/{entity}`(list/search 只读)(5f)。
+  `hr://playbooks/{id}`、`hr://entities/{entity}`(list/search 只读)。
 - assistant tools:`create_record`/`delete_record`/`link_records`/`unlink_records`/`get_record_fields`
   全部进 WRITE_TOOLS(前两个写确认)。
 
@@ -57,7 +57,7 @@ MintHCM 18 工具中剩余 6 个,全部以**白名单注册表**落地(不暴露
 
 - `POST /talents/import`(multipart CSV,write_resumes):列约定 name,email,phone,tags(分号分隔),org_name(可选按名匹配 org)。
   逐行:必填校验 → email_hash 撞重 → skip 记原因;成功建 Candidate + audit(bulk,单条 detail={row})。
-  返回 `{created, skipped:[{row,reason}], total}`。
+  文件内 + 库内双层去重。返回 `{created, skipped:[{row,reason}], total}`。
 - `POST /employees/import`(manage_employees):name,employee_no,work_email,designation,org_name 同构。
 - 前端:Talents/Employees 页「批量导入」抽屉:文件选择 → 结果表(成功/跳过行+原因)。
 
@@ -69,7 +69,6 @@ MintHCM 18 工具中剩余 6 个,全部以**白名单注册表**落地(不暴露
   - 写:`GET/POST/PUT/DELETE /dictionaries?key=` — `PERM_MANAGE_SETTINGS`
 - 内置 key 注册表 `DICT_KEYS = {"request_kind","case_kind","skill_category"}`:
   request/case kind 校验改为「字典非空 → 字典值;空 → 内置默认」(后向兼容)。
-  删除被引用值 → 仍允许(is_active=false 优于删除,前端禁用删除被引用的值…简化:删除即删,引用字段原样保留字符串)。
 - 前端 `pages/Dictionaries.tsx`(设置→HR 组):key 选择器 + 值 CRUD。
 - migration seed 内置默认三 key。
 
@@ -97,7 +96,7 @@ MintHCM 18 工具中剩余 6 个,全部以**白名单注册表**落地(不暴露
 
 `0050` saved_filters + favorites + dictionaries + job_runs(一次迁移四表,同批强相关)。
 
-## 前端页面清单(hibob 规范)
+## 前端页面清单
 
 - `SavedFilterSelect`(组件,接入 Talents/Employees/Cases)
 - TalentDetail:星标 + 「查找重复」+ 变更记录抽屉;Talents 列表:收藏筛选 + 「批量导入」抽屉
@@ -117,3 +116,11 @@ MintHCM 18 工具中剩余 6 个,全部以**白名单注册表**落地(不暴露
 - scheduler:record_run 不落异常+jobs 列表
 - optimistic lock:base_updated_at 匹配/失配 409
 - 链路:ego-browser 全 UI 流程 + curl API 真链路
+
+## 实施状态(2026-10-24,已完成)
+
+- `test_t5.py` 12/12;全量回归 456 通过 0 失败。
+- `scripts/verify_t5_live.py` 47/47 PASS(含 MCP PAT→tools/call create_record→`audit.via="mcp"`、
+  乐观锁 409、CSV 双层去重、merge 后关联迁移)。
+- ego-browser:筛选保存/应用回显/导入抽屉/收藏 toggle/合并 modal/变更记录抽屉/
+  字典 UI 即时生效/调度页实时打点全链路通过。

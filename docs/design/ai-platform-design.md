@@ -1,24 +1,28 @@
-# MintHCM 功能移植 · 第三批(T4-A · AI 产品层)实施方案
+# AI 平台层设计(MCP Server/工具面/SOP 剧本/混合检索/AI 留痕)
 
-来源:`C:\Users\666\Desktop\minthcm` 的 `legacy/include/AI/Tools`(18 工具已移一半)+
-`mcp/`(完整 MCP 服务端 + OAuth + UI widget)+ `MCPDocumentation`(agent 操作手册库)。
-本批主题:**把 AI 助手从"页内聊天工具"升级为"平台级 AI 产品"**。
+第三批功能建设:**把 AI 助手从"页内聊天工具"升级为"平台级 AI 产品"**。
+包含 MCP Server 对外开放、通用实体工具补齐、SOP 技能剧本、知识库混合检索、
+AI 操作留痕五项。
 
-约定同前两批:迁移从 `0047` 起;工具照旧 = 一次 backend API 调用,权限/租户/org/
+约定:迁移从 `0047` 起;工具照旧 = 一次 backend API 调用,权限/租户/org/
 license 全由 backend 判定;写工具照旧过 `beforeToolCall` 确认门。
 
 ## 调研结论(已核实)
 
-- MCP 协议:JSON-RPC 2.0 over Streamable HTTP,`initialize`/`tools/list`/`tools/call`/`ping`。
-  MintHCM 用独立 OAuth2 授权服务器;我们用**个人访问令牌**(PAT 模式)等价替代 ——
-  用户自助签发的长期凭证,sha256 入库,与 invite_tokens/survey_links 同一惯例。
-- sidecar 只对 docker 网内监听,**不对外发布端口** → MCP 由 backend `POST /api/mcp`
-  代理进 sidecar `/mcp`,保持"sidecar 不出网"约束。
-- `pg_trgm` 已确认可用(PG16,freehire 有 CREATE EXTENSION 权限),CJK 模糊匹配有效;
-  **pgvector 不可用** → embedding 存 JSONB,Python 侧 cosine(知识库量级几百条足够)。
-- `create_access_token` 已支持 `**claims` → tool_token 可带 `via` 声明,AI 留痕零侵入。
-- `write_audit` 是统一入口,actor 上加 `token_via` 属性即可全链路传导,不用改几十处调用点。
-- MintHCM MCP 对外不挂确认门(token=用户授权本身)→ 我们的 MCP 同样放行写工具;
+- MCP 协议:JSON-RPC 2.0 over Streamable HTTP,`initialize`/`tools/list`/
+  `tools/call`/`ping`。
+  对外身份用**个人访问令牌**(PAT 模式)——用户自助签发的长期凭证,
+  sha256 入库,与 invite_tokens/survey_links 同一惯例。
+- sidecar 只对 docker 网内监听,**不对外发布端口** → MCP 由 backend
+  `POST /api/mcp` 代理进 sidecar `/mcp`,保持"sidecar 不出网"约束。
+- `pg_trgm` 可用(PG16,freehire 有 CREATE EXTENSION 权限),CJK 模糊匹配有效;
+  **pgvector 不可用** → embedding 存 JSONB,Python 侧 cosine(知识库量级
+  几百条足够)。
+- `create_access_token` 支持 `**claims` → tool_token 可带 `via` 声明,
+  AI 留痕零侵入。
+- `write_audit` 是统一入口,actor 上加 `token_via` 属性即可全链路传导,
+  不用改几十处调用点。
+- MCP 对外不挂确认门(token=用户授权本身,写工具直接放行);
   页内聊天的确认卡行为不变。
 
 ## T4-1 MCP Server(迁移 `0047`)
@@ -54,7 +58,7 @@ license 全由 backend 判定;写工具照旧过 `beforeToolCall` 确认门。
 - `GET /entities/{entity}/aggregate?agg=sum|avg|min|max|count&field=&q=` —
   registry 加 `agg_fields: {field: column}` 白名单:
   expenses(total)/payslips(gross,net)/matches(score)/campaigns(total,sent,failed)。
-  新注册实体:expenses、 payslips、 matches、 campaigns(同样带 search/count builder)。
+  新注册实体:expenses、payslips、matches、campaigns(同样带 search/count builder)。
 - `PATCH /entities/{entity}/{id} {fields:{k:v}}` — `write_fields` 白名单 +
   per-entity write perm + org scope + `write_audit`:
   talents(tags,display_email,display_phone,status)/
@@ -76,18 +80,20 @@ license 全由 backend 判定;写工具照旧过 `beforeToolCall` 确认门。
 ## T4-3 技能剧本(迁移 `0048` 含 is_playbook)
 
 - `knowledge_articles.is_playbook` bool;`ArticleIn.is_playbook`;
-  `GET /knowledge/articles?is_playbook=true&status_filter=published`(已有过滤模式加参数);
-  `GET /knowledge/articles/{id}` 已有,供 get_playbook。
+  `GET /knowledge/articles?is_playbook=true&status_filter=published`;
+  `GET /knowledge/articles/{id}` 供 get_playbook 取全文。
 - assistant tools:`list_playbooks`(标题+category)、`get_playbook(id)`(全文)。
 - agent.ts SYSTEM_PROMPT 加规则:多步业务流程(发 offer/审批/面试/工单/报表等)
-  先 `list_playbooks` 查 SOP,命中则 `get_playbook` 严格按步骤执行;说明剧本是租户自定义的。
+  先 `list_playbooks` 查 SOP,命中则 `get_playbook` 严格按步骤执行;
+  剧本是租户自定义的。
 - 前端 Knowledge.tsx:编辑器加"AI 剧本"勾选 + 列表徽标。
 
 ## T4-4 知识库混合检索(迁移 `0048` 含 pg_trgm + embedding)
 
 - `llm_providers.embedding_model` 可空列;registry ResolvedProvider 透传;
   `services/embedding.py embed(db, tenant, texts)`:provider 有 base_url+key+
-  embedding_model 才 POST `{base_url}/embeddings`(OpenAI 格式,10s 超时),任何失败 → None。
+  embedding_model 才 POST `{base_url}/embeddings`(OpenAI 格式,10s 超时),
+  任何失败 → None。
 - `knowledge_articles.embedding` JSONB NULL;写路径(增/改/发布)尽力算 embedding
   (失败不阻塞);`POST /knowledge/embeddings/backfill`(manage_employees)→ celery
   `rebuild_knowledge_embeddings` 全量补齐。
@@ -97,7 +103,7 @@ license 全由 backend 判定;写工具照旧过 `beforeToolCall` 确认门。
   - 候选 = lex 命中 ∪ 旧 ILIKE 命中(回归保底),取 top-50
   - Python 侧重排:`score = lex + 0.8*cosine(q_emb, doc_emb)`(无 embedding → 纯 lex)
   - `SearchHit` 加 `score` 字段(可空,向后兼容)
-- `GET /me/knowledge` 同走混合检索(参数 published_only 已分)。
+- `GET /me/knowledge` 同走混合检索。
 
 ## T4-5 AI 操作留痕(迁移 `0049`)
 
@@ -133,9 +139,9 @@ run_report/list_playbooks)。
 
 - 全部 5 项功能已实现:MCP Server(令牌+exchange+sidecar /mcp)、工具缺口
   (aggregate/update/relations/run_report + 7 个新工具,共 37 个)、技能剧本
-  (is_playbook + list/get_playbook + system prompt 准则 6)、混合检索
+  (is_playbook + list/get_playbook + system prompt 准则)、混合检索
   (pg_trgm 词面 + JSONB embedding 语义召回)、AI 留痕(audit.via assistant/mcp + 前端徽标)。
-- 测试:	ests/test_t4_ai.py 12 用例全绿;全量 433 用例无回归。
+- 测试:`tests/test_t4_ai.py` 12 用例全绿;全量 433 用例无回归。
 - 功能链路:真实 docker 环境 MCP 端到端脚本验证(initialize/tools.list/tools.call/
   error/revoke 401);list_playbooks/get_playbook/aggregate/run_report/list_relationships
   经 /api/mcp 实际调用通过。
