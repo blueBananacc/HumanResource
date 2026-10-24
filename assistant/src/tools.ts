@@ -373,6 +373,101 @@ function makeTools(token: string): ToolDef[] {
         ),
     },
     {
+      name: "get_record_fields",
+      label: "查实体字段schema",
+      description:
+        "在 create/update/link 前先查:某实体可写字段(必填/类型/枚举值)与可建关系" +
+        "(linkable:jobs.skills/candidates.skills/candidates.groups)",
+      parameters: Type.Object({
+        entity: Type.String({ description: "实体 key" }),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/entities/${encodeURIComponent(p.entity)}/schema`),
+    },
+    {
+      name: "create_record",
+      label: "创建业务记录",
+      description:
+        "创建白名单实体(先 get_record_fields 查必填与类型);" +
+        "可建:notes(候选人备注,candidate_id+content)、knowledge(知识库草稿,title+content+category/tags/is_playbook)、" +
+        "announcements(公告草稿,title+content+audience_org_unit_id);员工/岗位/工单等走专用工具",
+      parameters: Type.Object({
+        entity: Type.String({ description: "实体 key" }),
+        fields: Type.Object({}, {
+          additionalProperties: true,
+          description: "字段与值",
+        }),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/entities/${encodeURIComponent(p.entity)}`, {
+          method: "POST",
+          body: { fields: p.fields ?? {} },
+        }),
+    },
+    {
+      name: "delete_record",
+      label: "删除业务记录",
+      description:
+        "删除白名单实体记录(高危,先确认);" +
+        "可删:knowledge/announcements/notes/skills(未被引用)/reservations(取消语义);" +
+        "候选人/岗位/员工/工单不可通用删除",
+      parameters: Type.Object({
+        entity: Type.String({ description: "实体 key" }),
+        id: Type.String({ description: "记录 id" }),
+      }),
+      execute: async (_id, p: any) =>
+        t(
+          `/api/entities/${encodeURIComponent(p.entity)}/${encodeURIComponent(p.id)}`,
+          { method: "DELETE" },
+        ),
+    },
+    {
+      name: "link_records",
+      label: "建立记录关系",
+      description:
+        "给两条已有记录建 M:N 关联(先 get_record_fields 查 linkable);" +
+        "jobs.skills(extra.importance=must|nice)、candidates.skills(extra.level=1-5)、candidates.groups",
+      parameters: Type.Object({
+        entity: Type.String({ description: "源实体 key" }),
+        id: Type.String({ description: "源记录 id" }),
+        rel_name: Type.String({ description: "关系名" }),
+        related_id: Type.String({ description: "目标记录 id" }),
+        extra: Type.Optional(Type.Object({}, {
+          additionalProperties: true,
+          description: "join 字段(如 importance/level)",
+        })),
+      }),
+      execute: async (_id, p: any) =>
+        t(
+          `/api/entities/${encodeURIComponent(p.entity)}/${encodeURIComponent(p.id)}/links`,
+          {
+            method: "POST",
+            body: {
+              rel_name: p.rel_name,
+              related_id: p.related_id,
+              extra: p.extra ?? {},
+            },
+          },
+        ),
+    },
+    {
+      name: "unlink_records",
+      label: "解除记录关系",
+      description: "拆除 link_records 建的 M:N 关联",
+      parameters: Type.Object({
+        entity: Type.String({ description: "源实体 key" }),
+        id: Type.String({ description: "源记录 id" }),
+        rel_name: Type.String({ description: "关系名" }),
+        related_id: Type.String({ description: "目标记录 id" }),
+      }),
+      execute: async (_id, p: any) =>
+        t(
+          `/api/entities/${encodeURIComponent(p.entity)}/${encodeURIComponent(p.id)}` +
+          `/links/${encodeURIComponent(p.rel_name)}/${encodeURIComponent(p.related_id)}`,
+          { method: "DELETE" },
+        ),
+    },
+    {
       name: "list_report_kinds",
       label: "查可跑报表",
       description: "列出当前用户可执行的内置报表类型(pipeline_funnel/weekly_summary/pending_items/headcount)",
@@ -671,6 +766,10 @@ export const WRITE_TOOLS = new Set([
   "publish_announcement",
   "update_case_status",
   "update_record",
+  "create_record",
+  "delete_record",
+  "link_records",
+  "unlink_records",
 ]);
 
 export function hrTools(token: string): AgentTool[] {

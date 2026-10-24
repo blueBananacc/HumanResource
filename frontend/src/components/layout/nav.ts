@@ -6,7 +6,9 @@ import {
   Clock,
   Goal,
   Home,
+  BookOpen,
   KeyRound,
+  ListChecks,
   LayoutDashboard,
   LifeBuoy,
   Mail,
@@ -309,6 +311,8 @@ export const bottomModules: NavModule[] = [
           { to: "/settings/team", label: "团队", icon: Users, permission: PERM.MANAGE_TEAM, keywords: "成员 组织 账号" },
           { to: "/settings/sso", label: "SSO 接入", icon: Shuffle, adminOnly: true, keywords: "单点登录" },
           { to: "/settings/audit", label: "审计中心", icon: ShieldCheck, adminOnly: true, keywords: "日志 audit" },
+          { to: "/settings/dictionaries", label: "数据字典", icon: BookOpen, permission: PERM.MANAGE_SETTINGS, keywords: "字典 枚举 下拉 dictionary" },
+          { to: "/settings/schedulers", label: "后台任务", icon: ListChecks, permission: PERM.MANAGE_SETTINGS, keywords: "任务 调度 scheduler 运维" },
         ],
       },
       {

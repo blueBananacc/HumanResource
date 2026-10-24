@@ -1,7 +1,9 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Lock, Network, Plus, Users } from "lucide-react";
+import { Lock, Network, Plus, Upload, Users } from "lucide-react";
+import { ImportDrawer } from "@/components/records/ImportDrawer";
+import { SavedFilters } from "@/components/records/SavedFilters";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
@@ -93,7 +95,9 @@ export function Field({
 }
 
 export function Employees() {
+  const qc = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const { data, isLoading, isError, error, page, pageCount, total, goto, q, setQ } =
     usePagedQuery<Employee>({ key: ["employees"], url: "/api/employees" });
   const items = data?.items ?? [];
@@ -132,6 +136,15 @@ export function Employees() {
           人
         </span>
         <div className="flex-1" />
+        <Button variant="secondary" size="sm" onClick={() => setImportOpen(true)}>
+          <Upload className="w-3.5 h-3.5" />
+          批量导入
+        </Button>
+        <SavedFilters
+          page="employees"
+          currentParams={() => ({ q: q || undefined })}
+          onApply={(p) => setQ(typeof p.q === "string" ? p.q : "")}
+        />
         <Link to="/org-chart">
           <Button variant="secondary" size="sm">
             <Network className="w-3.5 h-3.5" />
@@ -139,6 +152,13 @@ export function Employees() {
           </Button>
         </Link>
       </div>
+      <ImportDrawer
+        endpoint="/api/employees/import"
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        columnsHint="name(必填),employee_no,work_email,phone,designation,org_name,employment_type,hire_date"
+        onDone={() => qc.invalidateQueries({ queryKey: ["employees"] })}
+      />
 
       <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
         {isLoading ? (

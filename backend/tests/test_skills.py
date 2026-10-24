@@ -234,7 +234,7 @@ def test_skill_coverage(client, db_session):
         client.put(f"/api/jobs/{job.id}/skills", headers=hdr,
                    json={"items": [{"name": "Python", "importance": "must"},
                                     {"name": "Go", "importance": "nice"}]})
-        py = db_session.scalars(select(Skill).where(Skill.name == "Python")).one()
+        py = db_session.scalars(select(Skill).where(Skill.name == "Python", Skill.tenant_id == t.id)).one()
 
         # cand 会 Python 且在管道;cand2 会 Python 不在管道
         db_session.add_all([
@@ -405,7 +405,7 @@ def test_delete_skill_in_use_guard(client, db_session):
     try:
         client.put(f"/api/jobs/{job.id}/skills", headers=hdr,
                    json={"items": [{"name": "Python", "importance": "must"}]})
-        py = db_session.scalars(select(Skill).where(Skill.name == "Python")).one()
+        py = db_session.scalars(select(Skill).where(Skill.name == "Python", Skill.tenant_id == t.id)).one()
         r = client.delete(f"/api/skills/{py.id}", headers=hdr)
         assert r.status_code == 409
         assert "引用" in r.json()["detail"]

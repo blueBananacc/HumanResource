@@ -77,3 +77,45 @@ def _configure_celery_logging(**_kwargs: object) -> None:  # noqa: D401
         level=logging.INFO,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
+
+
+# ---------- job_runs 打点(T5,所有任务统一走信号,不改任务体)----------
+from celery.signals import task_postrun, task_prerun  # noqa: E402
+
+_task_started: dict[str, object] = {}
+
+
+@task_prerun.connect
+def _jobrun_prerun(task_id: str = "", task: object = None, **_kw: object) -> None:
+    from datetime import datetime, UTC
+
+    _task_started[task_id] = datetime.now(UTC)
+
+
+@task_postrun.connect
+def _jobrun_postrun(
+    task_id: str = "",
+    task: object = None,
+    retval: object = None,
+    state: str = "SUCCESS",
+    **_kw: object,
+) -> None:
+    from datetime import datetime, UTC
+
+    started = _task_started.pop(task_id, None) or datetime.now(UTC)
+    try:
+        from app.infra.db import SessionLocal
+        from app.services.jobruns import record_run
+
+        name = getattr(task, "name", "") or "unknown"
+        status = "failure" if state and state != "SUCCESS" else "success"
+        msg = None
+        if status == "failure":
+            msg = str(retval)[:256] if retval is not None else str(state)
+        db = SessionLocal()
+        try:
+            record_run(db, name=name, started_at=started, status=status, message=msg)
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger(__name__).warning("job_runs 打点失败: %s", e)

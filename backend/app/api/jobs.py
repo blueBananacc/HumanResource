@@ -45,6 +45,8 @@ class JobIn(BaseModel):
     level: str = Field("intermediate")
     description: str = Field("", max_length=20000)
     skills: list[str] = Field(default_factory=list)
+    # optimistic lock:带读取时的 updated_at,失配 → 409
+    base_updated_at: datetime | None = None
 
 
 class JobStatusIn(BaseModel):
@@ -228,6 +230,12 @@ def update_job(
     if not job or job.tenant_id != current.tenant_id:
         raise HTTPException(404, "岗位不存在")
     ensure_can_see(get_org_scope(db, current), job.org_unit_id)
+    if body.base_updated_at is not None and job.updated_at is not None:
+        cur = job.updated_at
+        if cur.tzinfo is None:
+            cur = cur.replace(tzinfo=UTC)
+        if cur != body.base_updated_at:
+            raise HTTPException(409, "记录已被他人修改,请刷新后重试")
     before = {
         "title": job.title,
         "level": job.level,

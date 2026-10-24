@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,9 +41,13 @@ from app.api import email_templates as email_templates_api
 from app.api import employees as employees_api
 from app.api import entities as entities_api
 from app.api import expenses as expenses_api
+from app.api import dictionaries as dictionaries_api
+from app.api import favorites as favorites_api
 from app.api import healthz
 from app.api import hiring as hiring_api
 from app.api import hr_me as hr_me_api
+from app.api import saved_filters as saved_filters_api
+from app.api import scheduler as scheduler_api
 from app.api import ics as ics_api
 from app.api import interview_invite as interview_invite_api
 from app.api import interviews as interviews_api
@@ -86,6 +91,7 @@ from app.infra.locks import redis_lock
 from app.infra.security import hash_password
 from app.integrations.llm.registry import seed_from_env
 from app.services.email_sync import sync_all_enabled
+from app.services.jobruns import record_run
 
 logger = logging.getLogger("free-hire.bootstrap")
 logging.basicConfig(level=logging.INFO)
@@ -262,7 +268,25 @@ async def _email_sync_loop() -> None:
                         "[email-sync-loop] another worker holds the lock or redis down, skip"
                     )
                 else:
-                    await sync_all_enabled(SessionLocal)
+                    _started = datetime.now(UTC)
+                    _err = None
+                    try:
+                        await sync_all_enabled(SessionLocal)
+                    except Exception as e:  # noqa: BLE001
+                        _err = e
+                        raise
+                    finally:
+                        _db = SessionLocal()
+                        try:
+                            record_run(
+                                _db,
+                                name="email_sync_loop",
+                                started_at=_started,
+                                status="failure" if _err else "success",
+                                message=str(_err)[:256] if _err else None,
+                            )
+                        finally:
+                            _db.close()
         except Exception as e:  # noqa: BLE001
             logger.exception("[email-sync-loop] 异常: %s", e)
         await asyncio.sleep(interval)
@@ -293,6 +317,8 @@ async def _watch_loop() -> None:
             if token is None:
                 return
             db = SessionLocal()
+            _started = datetime.now(UTC)
+            _err = None
             try:
                 fired = run_watchers(db)
                 if fired:
@@ -300,7 +326,17 @@ async def _watch_loop() -> None:
                 subs = due_subscriptions(db)
                 for s in subs:
                     send_report_subscription.delay(str(s.id))
+            except Exception as e:  # noqa: BLE001
+                _err = e
+                raise
             finally:
+                record_run(
+                    db,
+                    name="watch_loop",
+                    started_at=_started,
+                    status="failure" if _err else "success",
+                    message=str(_err)[:256] if _err else None,
+                )
                 db.close()
 
     while True:
@@ -399,6 +435,10 @@ def create_app() -> FastAPI:
     app.include_router(ics_api.router, prefix="/api")
     app.include_router(activity_api.router, prefix="/api")
     app.include_router(entities_api.router, prefix="/api")
+    app.include_router(saved_filters_api.router, prefix="/api")
+    app.include_router(favorites_api.router, prefix="/api")
+    app.include_router(dictionaries_api.router, prefix="/api")
+    app.include_router(scheduler_api.router, prefix="/api")
 
     return app
 

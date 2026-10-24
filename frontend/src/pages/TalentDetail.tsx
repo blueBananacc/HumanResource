@@ -8,6 +8,8 @@ import {
   ClipboardList,
   FileText,
   GitBranch,
+  GitMerge,
+  History,
   ListChecks,
   MessageCircle,
   Plus,
@@ -22,6 +24,9 @@ import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
 import { Modal } from "@/components/ui/modal";
 import { CandidateSkillsCard } from "@/components/skills/SkillWidgets";
+import { FavoriteStar } from "@/components/records/FavoriteStar";
+import { HistoryDrawer } from "@/components/records/HistoryDrawer";
+import { MergeTalentModal } from "@/components/records/MergeTalentModal";
 import { useConfirm } from "@/components/ui/confirm";
 import { ApiError, fetchJSON } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -136,6 +141,8 @@ export function TalentDetail() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const { deleteResume, deletingId } = useDeleteResume();
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const { data, isLoading, error } = useQuery<TalentDetail>({
     queryKey: ["talent", id],
@@ -200,6 +207,7 @@ export function TalentDetail() {
               <h2 className="font-heading font-semibold text-2xl text-[var(--color-text-primary)]">
                 {c.name}
               </h2>
+              <FavoriteStar entity="talents" entityId={c.id} />
               {c.is_blacklisted ? (
                 <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-[var(--color-danger-soft)] text-[var(--color-danger)] font-body">
                   <Ban className="w-3 h-3" />
@@ -222,7 +230,27 @@ export function TalentDetail() {
             </span>
           </div>
         </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {canWrite && (
+            <Button variant="secondary" onClick={() => setMergeOpen(true)}>
+              <GitMerge className="w-4 h-4" />
+              合并重复
+            </Button>
+          )}
+          <Button variant="secondary" onClick={() => setHistoryOpen(true)}>
+            <History className="w-4 h-4" />
+            变更记录
+          </Button>
+        </div>
       </div>
+      <MergeTalentModal
+        keepId={c.id}
+        keepName={c.name}
+        keep={c as unknown as Record<string, unknown>}
+        open={mergeOpen}
+        onClose={() => setMergeOpen(false)}
+      />
+      <HistoryDrawer entityId={c.id} open={historyOpen} onClose={() => setHistoryOpen(false)} />
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
         <div className="flex flex-col gap-6 min-w-0">

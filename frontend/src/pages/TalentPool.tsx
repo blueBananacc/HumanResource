@@ -16,6 +16,8 @@ import {
   ResumeUpload,
   type ResumeUploadHandle,
 } from "@/components/resume/ResumeUpload";
+import { ImportDrawer } from "@/components/records/ImportDrawer";
+import { SavedFilters } from "@/components/records/SavedFilters";
 import { useDeleteCandidate } from "@/components/resume/shared";
 import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
@@ -66,6 +68,7 @@ export function TalentPool() {
   const [blacklistOnly, setBlacklistOnly] = useState<string>("");
   const [groupFilter, setGroupFilter] = useState<string>("");
   const [openGroups, setOpenGroups] = useState(false);
+  const [openImport, setOpenImport] = useState(false);
   const uploadRef = useRef<ResumeUploadHandle>(null);
 
   const params = {
@@ -125,6 +128,13 @@ export function TalentPool() {
       </div>
 
       <ResumeUpload ref={uploadRef} />
+      <ImportDrawer
+        endpoint="/api/talents/import"
+        open={openImport}
+        onClose={() => setOpenImport(false)}
+        columnsHint="name(必填),email,phone,tags(分号分隔),org_name"
+        onDone={() => reset()}
+      />
 
       <section className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
         <div className="px-6 py-4 border-b border-[var(--color-border-subtle)] flex flex-wrap items-center gap-3">
@@ -166,6 +176,24 @@ export function TalentPool() {
             <Folder className="w-4 h-4" />
             人才分组
           </Button>
+          <Button variant="secondary" onClick={() => setOpenImport(true)}>
+            <Upload className="w-4 h-4" />
+            批量导入
+          </Button>
+          <SavedFilters
+            page="talents"
+            currentParams={() => ({
+              q: inputQ || undefined,
+              blacklisted: blacklistOnly || undefined,
+              group_id: groupFilter || undefined,
+            })}
+            onApply={(p) => {
+              setInputQ(typeof p.q === "string" ? p.q : "");
+              setQ(typeof p.q === "string" ? p.q : "");
+              setBlacklistOnly(typeof p.blacklisted === "string" ? p.blacklisted : "");
+              setGroupFilter(typeof p.group_id === "string" ? p.group_id : "");
+            }}
+          />
           {(blacklistOnly || groupFilter || q) && (
             <button
               type="button"

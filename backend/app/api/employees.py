@@ -19,7 +19,7 @@ import secrets
 from datetime import UTC, date, datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -93,6 +93,8 @@ class EmployeeIn(BaseModel):
     ] = "full_time"
     status: Literal["active", "leave", "suspended", "terminated"] = "active"
     personal: dict[str, Any] | None = None
+    # optimistic lock:带读取时的 updated_at,失配 → 409
+    base_updated_at: datetime | None = None
 
     @field_validator("name")
     @classmethod
@@ -377,6 +379,12 @@ def update_employee(
     current: User = Depends(require_permission(PERM_MANAGE_EMPLOYEES)),
 ):
     e = _emp(db, emp_id, current.tenant_id)
+    if body.base_updated_at is not None and e.updated_at is not None:
+        cur = e.updated_at
+        if cur.tzinfo is None:
+            cur = cur.replace(tzinfo=UTC)
+        if cur != body.base_updated_at:
+            raise HTTPException(status.HTTP_409_CONFLICT, "记录已被他人修改,请刷新后重试")
     if body.reports_to_id == e.id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "上级不能是自己")
     # 防环:新上级不能挂到自己的子孙下面
@@ -530,6 +538,115 @@ def unbind_account(
         if bound is not None and bound.role == "employee":
             bound.status = "disabled"
         db.commit()
+
+
+# ---------- T5-4 CSV 批量导入 ----------
+
+_EMPLOYMENT_TYPES = {"full_time", "part_time", "intern", "contractor"}
+_EMP_IMPORT_LIMIT = 5 * 1024 * 1024
+
+
+@router.post("/import")
+async def import_employees(
+    file: UploadFile,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_EMPLOYEES)),
+):
+    """CSV 批量导入员工。列:name(必填),employee_no,work_email,phone,
+    designation,org_name,employment_type,hire_date(YYYY-MM-DD)。"""
+    import csv
+    import io
+
+    data = await file.read()
+    if len(data) > _EMP_IMPORT_LIMIT:
+        raise HTTPException(400, "文件过大(>5MB)")
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(400, "文件编码必须是 UTF-8")
+    rows = list(csv.DictReader(io.StringIO(text)))
+    if not rows:
+        raise HTTPException(400, "CSV 为空")
+    cols = {c.strip().lower() for c in (rows[0] or {})}
+    if "name" not in cols:
+        raise HTTPException(
+            400,
+            "缺少 name 列;可用列:name,employee_no,work_email,phone,"
+            "designation,org_name,employment_type,hire_date",
+        )
+
+    created, skipped = 0, []
+    seen_nos: set[str] = set()  # 文件内工号去重(autoflush=False)
+    for i, row in enumerate(rows[:2000], start=2):
+        rec = {k.strip().lower(): (v or "").strip() for k, v in row.items() if k}
+        name = rec.get("name", "")
+        if not name:
+            skipped.append({"row": i, "reason": "name 为空"})
+            continue
+        emp_no = rec.get("employee_no") or None
+        if emp_no and emp_no in seen_nos:
+            skipped.append({"row": i, "reason": f"文件内工号重复:{emp_no}"})
+            continue
+        if emp_no and db.scalar(
+            select(Employee.id).where(
+                Employee.tenant_id == current.tenant_id,
+                Employee.employee_no == emp_no,
+            ).limit(1)
+        ):
+            skipped.append({"row": i, "reason": f"工号已存在:{emp_no}"})
+            continue
+        etype = rec.get("employment_type") or "full_time"
+        if etype not in _EMPLOYMENT_TYPES:
+            skipped.append({"row": i, "reason": f"employment_type 非法:{etype}"})
+            continue
+        hire = None
+        if rec.get("hire_date"):
+            try:
+                hire = date.fromisoformat(rec["hire_date"])
+            except ValueError:
+                skipped.append({"row": i, "reason": f"hire_date 格式非法:{rec['hire_date']}"})
+                continue
+        org_id = None
+        if rec.get("org_name"):
+            org = db.scalar(
+                select(OrgUnit).where(
+                    OrgUnit.tenant_id == current.tenant_id,
+                    OrgUnit.name == rec["org_name"],
+                ).limit(1)
+            )
+            if org is None:
+                skipped.append({"row": i, "reason": f"组织不存在:{rec['org_name']}"})
+                continue
+            org_id = org.id
+        db.add(
+            Employee(
+                tenant_id=current.tenant_id,
+                employee_no=emp_no or next_employee_no(db, current.tenant_id),
+                name=name[:128],
+                org_unit_id=org_id,
+                designation=(rec.get("designation") or None)[:128] if rec.get("designation") else None,
+                work_email=rec.get("work_email") or None,
+                phone=rec.get("phone") or None,
+                hire_date=hire,
+                employment_type=etype,
+                status="active",
+            )
+        )
+        created += 1
+        if emp_no:
+            seen_nos.add(emp_no)
+    write_audit(
+        db,
+        actor=current,
+        entity_type="employee",
+        entity_id="bulk",
+        action="import",
+        detail={"created": created, "skipped": len(skipped), "file": file.filename},
+        request=request,
+    )
+    db.commit()
+    return {"created": created, "skipped": skipped, "total": len(rows[:2000])}
 
 
 OrgChartNode.model_rebuild()

@@ -25,7 +25,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -39,14 +39,20 @@ from app.domain.models import (
     CandidateGroup,
     CandidateGroupMember,
     CandidateNote,
+    CandidateSkill,
     Interview,
     Job,
+    JobApplication,
+    JobOffer,
+    OrgUnit,
     Resume,
     ResumeJobMatch,
+    TalentCampaignSend,
     User,
 )
 from app.infra.db import get_db
 from app.services.audit import write_audit
+from app.services.candidates import _hash as _contact_hash
 from app.services.permissions import (
     PERM_DELETE_RESUMES,
     PERM_VIEW_REPORTS,
@@ -1059,3 +1065,257 @@ def _visible(scope: list[str] | None, target_org_id: str | None) -> bool:
     if target_org_id is None:
         return True
     return target_org_id in scope
+
+
+# ---------- T5-3 候选人合并 + T5-4 CSV 导入 ----------
+
+_MERGEABLE_FIELDS = ("name", "display_email", "display_phone", "tags", "status")
+
+
+class MergeIn(BaseModel):
+    drop_id: str
+    # 字段级取舍:{field: "keep"|"drop"},默认 keep。
+    field_choices: dict[str, str] = Field(default_factory=dict)
+
+
+@router.get(
+    "/{candidate_id}/duplicates",
+    dependencies=[Depends(require_permission(PERM_VIEW_REPORTS))],
+)
+def find_duplicates(
+    candidate_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """疑似重复:同 email_hash / phone_hash / 同名 的其他候选人。"""
+    c = _get_candidate(db, candidate_id=candidate_id, current=current)
+    conds = []
+    if c.email_hash:
+        conds.append(Candidate.email_hash == c.email_hash)
+    if c.phone_hash:
+        conds.append(Candidate.phone_hash == c.phone_hash)
+    conds.append(Candidate.name == c.name)
+    stmt = (
+        select(Candidate)
+        .where(
+            Candidate.tenant_id == current.tenant_id,
+            Candidate.id != c.id,
+            or_(*conds),
+        )
+        .limit(20)
+    )
+    scope = get_org_scope(db, current)
+    stmt = apply_org_filter(stmt, org_column=Candidate.org_unit_id, scope=scope)
+    rows = db.scalars(stmt).all()
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "display_email": r.display_email,
+            "display_phone": r.display_phone,
+            "status": r.status,
+            "match": (
+                "email"
+                if c.email_hash and r.email_hash == c.email_hash
+                else "phone"
+                if c.phone_hash and r.phone_hash == c.phone_hash
+                else "name"
+            ),
+        }
+        for r in rows
+    ]
+
+
+@router.post(
+    "/{candidate_id}/merge",
+    dependencies=[Depends(require_permission(PERM_WRITE_RESUMES))],
+)
+async def merge_talent(
+    candidate_id: str,
+    body: MergeIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """合并候选人:drop 的全部关联迁移到 keep,字段按 field_choices 取舍,删 drop。"""
+    keep = _get_candidate(db, candidate_id=candidate_id, current=current)
+    drop = _get_candidate(db, candidate_id=body.drop_id, current=current)
+    if keep.id == drop.id:
+        raise HTTPException(400, "不能与自己合并")
+    unknown = set(body.field_choices) - set(_MERGEABLE_FIELDS)
+    if unknown:
+        raise HTTPException(
+            400, f"不可取舍的字段:{','.join(sorted(unknown))};可用:{','.join(_MERGEABLE_FIELDS)}"
+        )
+    # 唯一约束对(skill/group/campaign_send):keep 已占的先删 drop 侧再迁移
+    keep_skill_ids = set(
+        db.scalars(select(CandidateSkill.skill_id).where(CandidateSkill.candidate_id == keep.id))
+    )
+    db.query(CandidateSkill).filter(
+        CandidateSkill.candidate_id == drop.id,
+        CandidateSkill.skill_id.in_(keep_skill_ids),
+    ).delete(synchronize_session=False)
+    keep_group_ids = set(
+        db.scalars(
+            select(CandidateGroupMember.group_id).where(
+                CandidateGroupMember.candidate_id == keep.id
+            )
+        )
+    )
+    db.query(CandidateGroupMember).filter(
+        CandidateGroupMember.candidate_id == drop.id,
+        CandidateGroupMember.group_id.in_(keep_group_ids),
+    ).delete(synchronize_session=False)
+    keep_campaign_ids = set(
+        db.scalars(
+            select(TalentCampaignSend.campaign_id).where(
+                TalentCampaignSend.candidate_id == keep.id
+            )
+        )
+    )
+    db.query(TalentCampaignSend).filter(
+        TalentCampaignSend.candidate_id == drop.id,
+        TalentCampaignSend.campaign_id.in_(keep_campaign_ids),
+    ).delete(synchronize_session=False)
+
+    # 关联迁移
+    for model in (
+        Resume,
+        JobApplication,
+        Interview,
+        JobOffer,
+        CandidateSkill,
+        CandidateNote,
+        CandidateGroupMember,
+        TalentCampaignSend,
+    ):
+        db.query(model).filter(model.candidate_id == drop.id).update(
+            {"candidate_id": keep.id}, synchronize_session=False
+        )
+    # 字段取舍
+    picked: dict[str, str] = {}
+    for field, choice in body.field_choices.items():
+        if choice not in ("keep", "drop"):
+            raise HTTPException(400, f"field_choices.{field} 必须是 keep/drop")
+        if choice == "drop":
+            setattr(keep, field, getattr(drop, field))
+            picked[field] = "drop"
+    _touch_last_active(keep)
+    write_audit(
+        db,
+        actor=current,
+        entity_type="candidate",
+        entity_id=keep.id,
+        action="merge",
+        detail={"drop_id": drop.id, "drop_name": drop.name, "picked": picked},
+        request=request,
+    )
+    # drop 的简历已迁走,delete_candidate_with_dependents 只会删行 + 留 delete 审计
+    await delete_candidate_with_dependents(
+        db, drop, actor=current, request=request, reason="merged"
+    )
+    db.commit()
+    return {"ok": True, "keep_id": keep.id}
+
+
+_CSV_LIMIT = 5 * 1024 * 1024
+
+
+@router.post(
+    "/import",
+    dependencies=[Depends(require_permission(PERM_WRITE_RESUMES))],
+)
+async def import_talents(
+    file: UploadFile,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """CSV 批量导入候选人。列:name(必填),email,phone,tags(分号),org_name。"""
+    import csv
+    import io
+
+    if file.content_type not in ("text/csv", "application/vnd.ms-excel", "application/octet-stream"):
+        raise HTTPException(400, "仅支持 CSV 文件")
+    data = await file.read()
+    if len(data) > _CSV_LIMIT:
+        raise HTTPException(400, "文件过大(>5MB)")
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(400, "文件编码必须是 UTF-8")
+    rows = list(csv.DictReader(io.StringIO(text)))
+    if not rows:
+        raise HTTPException(400, "CSV 为空")
+    cols = {c.strip().lower() for c in (rows[0] or {})}
+    if "name" not in cols:
+        raise HTTPException(400, "缺少 name 列;可用列:name,email,phone,tags,org_name")
+
+    created, skipped = 0, []
+    seen_hashes: set[str] = set()  # 文件内去重(autoflush=False,DB 查询看不到待插入行)
+    for i, row in enumerate(rows[:2000], start=2):  # 上限 2000 行,行号含表头
+        rec = {k.strip().lower(): (v or "").strip() for k, v in row.items() if k}
+        name = rec.get("name", "")
+        if not name:
+            skipped.append({"row": i, "reason": "name 为空"})
+            continue
+        email, phone = rec.get("email") or None, rec.get("phone") or None
+        e_hash = _contact_hash(email, current.tenant_id)
+        p_hash = _contact_hash(phone, current.tenant_id)
+        row_hashes = {h for h in (e_hash, p_hash) if h}
+        if row_hashes & seen_hashes:
+            skipped.append({"row": i, "reason": f"文件内重复({name})"})
+            continue
+        dup_conds = [
+            cond
+            for cond, h in (
+                (Candidate.email_hash == e_hash, e_hash),
+                (Candidate.phone_hash == p_hash, p_hash),
+            )
+            if h
+        ]
+        if dup_conds and db.scalar(
+            select(Candidate.id).where(
+                Candidate.tenant_id == current.tenant_id, or_(*dup_conds)
+            ).limit(1)
+        ):
+            skipped.append({"row": i, "reason": f"重复候选人({name})"})
+            continue
+        org_id = None
+        if rec.get("org_name"):
+            org = db.scalar(
+                select(OrgUnit).where(
+                    OrgUnit.tenant_id == current.tenant_id,
+                    OrgUnit.name == rec["org_name"],
+                ).limit(1)
+            )
+            if org is None:
+                skipped.append({"row": i, "reason": f"组织不存在:{rec['org_name']}"})
+                continue
+            org_id = org.id
+        tags = [t for t in (rec.get("tags") or "").split(";") if t][:20]
+        c = Candidate(
+            tenant_id=current.tenant_id,
+            name=name[:128],
+            email_hash=e_hash,
+            phone_hash=p_hash,
+            display_email=email,
+            display_phone=phone,
+            tags=tags or None,
+            org_unit_id=org_id,
+            last_active_at=_utcnow_naive(),
+        )
+        db.add(c)
+        seen_hashes |= row_hashes
+        created += 1
+    write_audit(
+        db,
+        actor=current,
+        entity_type="candidate",
+        entity_id="bulk",
+        action="import",
+        detail={"created": created, "skipped": len(skipped), "file": file.filename},
+        request=request,
+    )
+    db.commit()
+    return {"created": created, "skipped": skipped, "total": len(rows[:2000])}

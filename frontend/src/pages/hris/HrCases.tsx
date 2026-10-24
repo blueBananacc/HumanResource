@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { LifeBuoy, Lock, MessageSquare, UserCheck } from "lucide-react";
+import { History, LifeBuoy, Lock, MessageSquare, UserCheck } from "lucide-react";
+import { FavoriteStar } from "@/components/records/FavoriteStar";
+import { HistoryDrawer } from "@/components/records/HistoryDrawer";
+import { SavedFilters } from "@/components/records/SavedFilters";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
@@ -102,6 +105,17 @@ export function HrCases() {
               ]}
             />
           </div>
+          <SavedFilters
+            page="cases"
+            currentParams={() => ({
+              status_filter: statusFilter || undefined,
+              mine: mineOnly || undefined,
+            })}
+            onApply={(p) => {
+              setStatusFilter(typeof p.status_filter === "string" ? p.status_filter : "");
+              setMineOnly(Boolean(p.mine));
+            }}
+          />
         </div>
       </div>
 
@@ -149,6 +163,7 @@ function CaseDetail({ cid, onClose }: { cid: string; onClose: () => void }) {
   const [resolution, setResolution] = useState("");
   const [internal, setInternal] = useState(false);
   const [err, setErr] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const { data: c } = useQuery<HrCase>({
     queryKey: ["hr-case", cid],
@@ -184,8 +199,14 @@ function CaseDetail({ cid, onClose }: { cid: string; onClose: () => void }) {
       footer={<Button onClick={onClose}>关闭</Button>}
     >
       <div className="flex flex-col gap-4 text-[13px] font-body">
+        <HistoryDrawer entityId={c.id} open={historyOpen} onClose={() => setHistoryOpen(false)} />
         <div className="flex items-center gap-2">
           <span className={`text-[11px] px-1.5 py-0.5 rounded ${st.cls}`}>{st.label}</span>
+          <FavoriteStar entity="cases" entityId={c.id} />
+          <Button size="sm" variant="secondary" onClick={() => setHistoryOpen(true)}>
+            <History className="w-3.5 h-3.5" />
+            变更记录
+          </Button>
           <span className="text-[var(--color-text-secondary)]">
             受理人:{c.assignee_email ?? "未分配"}
           </span>

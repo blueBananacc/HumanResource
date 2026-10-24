@@ -613,7 +613,10 @@ def test_audit_via_assistant(db_session):
             "title": "AI 代写", "content": "x", "status": "published",
         })
         rows = db_session.scalars(
-            select(m.AuditLog).where(m.AuditLog.entity_type == "knowledge_article").order_by(m.AuditLog.created_at)
+            select(m.AuditLog).where(
+                m.AuditLog.entity_type == "knowledge_article",
+                m.AuditLog.tenant_id == t.id,
+            ).order_by(m.AuditLog.created_at)
         ).all()
         assert len(rows) == 2
         # 两条同 actor 但 via 不同 —— 用标题区分?detail 里没有标题;顺序断言即可
@@ -637,7 +640,11 @@ def test_audit_via_mcp(db_session):
             "title": "MCP 代写", "content": "x", "status": "published",
         })
         row = db_session.scalar(
-            select(m.AuditLog).where(m.AuditLog.entity_type == "knowledge_article")
+            select(m.AuditLog).where(
+                m.AuditLog.entity_type == "knowledge_article",
+                m.AuditLog.tenant_id == t.id,
+                m.AuditLog.via == "mcp",
+            )
         )
         assert row.via == "mcp"
         # /api/audit/events 输出也带 via
@@ -855,14 +862,20 @@ def test_via_claim_whitelist(db_session):
         client.post("/api/knowledge/articles", headers=_hdr(u, via="bogus_origin"), json={
             "title": "x", "content": "x", "status": "published",
         })
-        row = db_session.scalar(select(m.AuditLog).where(m.AuditLog.entity_type == "knowledge_article"))
+        row = db_session.scalar(select(m.AuditLog).where(
+            m.AuditLog.entity_type == "knowledge_article",
+            m.AuditLog.tenant_id == t.id,
+        ).order_by(m.AuditLog.created_at))
         assert row.via is None
         # 白名单值仍正常落列
         client.post("/api/knowledge/articles", headers=_hdr(u, via="assistant"), json={
             "title": "y", "content": "y", "status": "published",
         })
         rows = db_session.scalars(
-            select(m.AuditLog).where(m.AuditLog.entity_type == "knowledge_article").order_by(m.AuditLog.created_at)
+            select(m.AuditLog).where(
+                m.AuditLog.entity_type == "knowledge_article",
+                m.AuditLog.tenant_id == t.id,
+            ).order_by(m.AuditLog.created_at)
         ).all()
         assert rows[1].via == "assistant"
     finally:

@@ -25,6 +25,10 @@ from app.api.license import require_feature
 from app.domain.models import (
     Announcement,
     Candidate,
+    CandidateGroup,
+    CandidateGroupMember,
+    CandidateNote,
+    CandidateSkill,
     Employee,
     EmployeeRequest,
     ExpenseClaim,
@@ -36,8 +40,10 @@ from app.domain.models import (
     Job,
     JobApplication,
     JobOffer,
+    JobSkill,
     KnowledgeArticle,
     LeaveApplication,
+    OrgUnit,
     Reservation,
     Resume,
     ResumeJobMatch,
@@ -536,6 +542,8 @@ def aggregate_entities(
 
 class UpdateIn(BaseModel):
     fields: dict[str, Any] = Field(default_factory=dict)
+    # optimistic lock:前端带读取时的 updated_at,失配 → 409(MintHCM date_modified 校验)
+    base_updated_at: datetime | None = None
 
 
 def _v_str(v: Any, max_len: int) -> str:
@@ -778,6 +786,13 @@ def update_entity(
         raise HTTPException(400, f"字段不可写:{','.join(sorted(unknown))};可写:{','.join(w['fields'])}")
     scope = get_org_scope(db, current)
     row = w["get"](db, current, scope, rid)
+    if body.base_updated_at is not None:
+        cur = getattr(row, "updated_at", None)
+        if cur is not None:
+            if cur.tzinfo is None:
+                cur = cur.replace(tzinfo=UTC)
+            if cur != body.base_updated_at:
+                raise HTTPException(409, "记录已被他人修改,请刷新后重试")
     changed: dict[str, Any] = {}
     for name, raw in body.fields.items():
         attr, validator = w["fields"][name]
@@ -1027,3 +1042,483 @@ def entity_relations(
     if exists is None:
         raise HTTPException(404, "记录不存在")
     return {"entity": entity, "id": rid, "relations": rel["fn"](db, current, scope, rid)}
+
+
+# ---------- T5: schema / create / delete / links ----------
+
+
+class CreateIn(BaseModel):
+    fields: dict[str, Any] = Field(default_factory=dict)
+
+
+class LinkIn(BaseModel):
+    rel_name: str
+    related_id: str
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+def _get_knowledge_row(db, u, scope, rid):
+    row = db.get(KnowledgeArticle, rid)
+    if row is None or row.tenant_id != u.tenant_id:
+        raise HTTPException(404, "记录不存在")
+    return row
+
+
+def _get_announcement_row(db, u, scope, rid):
+    row = db.get(Announcement, rid)
+    if row is None or row.tenant_id != u.tenant_id:
+        raise HTTPException(404, "记录不存在")
+    return row
+
+
+def _get_note_row(db, u, scope, rid):
+    row = db.get(CandidateNote, rid)
+    if row is None or row.tenant_id != u.tenant_id:
+        raise HTTPException(404, "记录不存在")
+    # 行级 scope 挂在所属候选人上
+    _get_candidate_row(db, u, scope, row.candidate_id)
+    return row
+
+
+def _get_reservation_row(db, u, scope, rid):
+    row = db.get(Reservation, rid)
+    if row is None or row.tenant_id != u.tenant_id:
+        raise HTTPException(404, "记录不存在")
+    if row.created_by != u.id and not has_permission(u, PERM_MANAGE_SETTINGS):
+        raise HTTPException(403, "只能取消自己的预约")
+    return row
+
+
+def _create_note(db, u, scope, f):
+    cand = _get_candidate_row(db, u, scope, f["candidate_id"])
+    return CandidateNote(
+        tenant_id=u.tenant_id,
+        candidate_id=cand.id,
+        author_id=u.id,
+        author_email=u.email,
+        content=f["content"],
+    )
+
+
+def _create_article(db, u, scope, f):
+    return KnowledgeArticle(
+        tenant_id=u.tenant_id,
+        title=f["title"],
+        content=f["content"],
+        category=f.get("category") or "other",
+        tags=f.get("tags") or [],
+        is_playbook=f.get("is_playbook") or False,
+        status="draft",
+        updated_by=u.id,
+    )
+
+
+def _create_announcement(db, u, scope, f):
+    org_id = f.get("audience_org_unit_id")
+    if org_id is not None:
+        org = db.get(OrgUnit, org_id)
+        if org is None or org.tenant_id != u.tenant_id:
+            raise HTTPException(400, "组织不存在")
+    return Announcement(
+        tenant_id=u.tenant_id,
+        title=f["title"],
+        content=f["content"],
+        audience_org_unit_id=org_id,
+        status="draft",
+        created_by=u.id,
+    )
+
+
+# creatable: fields meta {name: (required, validator, meta)} — meta 供 schema 端点输出。
+# 收窄白名单:只放无重副作用的实体;employees/jobs/cases 等走专用端点。
+CREATABLE: dict[str, dict] = {
+    "notes": {
+        "perm": PERM_WRITE_RESUMES,
+        "create": _create_note,
+        "audit": "candidate_note",
+        "fields": {
+            "candidate_id": (
+                True,
+                lambda v: _v_str(v, 36),
+                {"type": "ref", "entity": "candidates"},
+            ),
+            "content": (True, lambda v: _v_str(v, 10000), {"type": "text"}),
+        },
+    },
+    "knowledge": {
+        "perm": PERM_MANAGE_EMPLOYEES,
+        "create": _create_article,
+        "audit": "knowledge_article",
+        "fields": {
+            "title": (True, lambda v: _v_str(v, 128), {"type": "string"}),
+            "content": (True, lambda v: _v_str(v, 20000), {"type": "text"}),
+            "category": (
+                False,
+                lambda v: _v_choice(
+                    v,
+                    ("onboarding", "policy", "faq", "playbook", "handbook", "other"),
+                ),
+                {
+                    "type": "choice",
+                    "choices": ["onboarding", "policy", "faq", "playbook", "handbook", "other"],
+                },
+            ),
+            "tags": (False, lambda v: _v_strlist(v, 64, 20), {"type": "strlist"}),
+            "is_playbook": (False, lambda v: _v_bool(v), {"type": "bool"}),
+        },
+    },
+    "announcements": {
+        "perm": PERM_MANAGE_EMPLOYEES,
+        "create": _create_announcement,
+        "audit": "announcement",
+        "fields": {
+            "title": (True, lambda v: _v_str(v, 128), {"type": "string"}),
+            "content": (True, lambda v: _v_str(v, 20000), {"type": "text"}),
+            "audience_org_unit_id": (
+                False,
+                lambda v: _v_str_null(v, 36),
+                {"type": "ref", "entity": "org_units"},
+            ),
+        },
+    },
+}
+
+
+def _delete_row(db, row):
+    db.delete(row)
+
+
+def _delete_reservation(db, row):
+    # 预约走取消语义而非硬删 —— 保留历史/审计。
+    row.status = "cancelled"
+    row.updated_at = _now()
+
+
+def _delete_skill(db, row):
+    used = db.scalar(
+        select(func.count())
+        .select_from(JobSkill)
+        .where(JobSkill.skill_id == row.id)
+    ) or 0
+    used += db.scalar(
+        select(func.count())
+        .select_from(CandidateSkill)
+        .where(CandidateSkill.skill_id == row.id)
+    ) or 0
+    if used:
+        raise HTTPException(409, "技能被岗位/候选人引用,不可删除")
+    db.delete(row)
+
+
+# deletable:收窄白名单;candidates/jobs/employees/interviews/cases/offers 不放
+# (业务删除语义复杂,走 status 流转或专用端点)。
+DELETABLE: dict[str, dict] = {
+    "knowledge": {
+        "perm": PERM_MANAGE_EMPLOYEES,
+        "get": _get_knowledge_row,
+        "delete": _delete_row,
+        "audit": "knowledge_article",
+    },
+    "announcements": {
+        "perm": PERM_MANAGE_EMPLOYEES,
+        "get": _get_announcement_row,
+        "delete": _delete_row,
+        "audit": "announcement",
+    },
+    "notes": {
+        "perm": PERM_WRITE_RESUMES,
+        "get": _get_note_row,
+        "delete": _delete_row,
+        "audit": "candidate_note",
+    },
+    "skills": {
+        "perm": PERM_MANAGE_SETTINGS,
+        "get": _get_skill_row,
+        "delete": _delete_skill,
+        "audit": "skill",
+    },
+    "reservations": {
+        "perm": PERM_VIEW_REPORTS,
+        "get": _get_reservation_row,
+        "delete": _delete_reservation,
+        "audit": "reservation",
+    },
+}
+
+
+# links:(from_entity, rel_name) → {perm, from_get, to_model, link_model, from_fk, to_fk, extra}
+# 每条关系显式声明,join 字段(extra)走 validators;不存在任意关系名。
+LINKS: dict[tuple[str, str], dict] = {
+    ("jobs", "skills"): {
+        "perm": PERM_WRITE_JOBS,
+        "from_get": _get_job_row,
+        "to_model": Skill,
+        "link_model": JobSkill,
+        "from_fk": "job_id",
+        "to_fk": "skill_id",
+        "to_entity": "skills",
+        "extra": {
+            "importance": (
+                lambda v: _v_choice(v, ("must", "nice")),
+                {"type": "choice", "choices": ["must", "nice"]},
+            )
+        },
+    },
+    ("candidates", "skills"): {
+        "perm": PERM_WRITE_RESUMES,
+        "from_get": _get_candidate_row,
+        "to_model": Skill,
+        "link_model": CandidateSkill,
+        "from_fk": "candidate_id",
+        "to_fk": "skill_id",
+        "to_entity": "skills",
+        "extra": {
+            "level": (lambda v: _v_int(v, 1, 5), {"type": "int", "min": 1, "max": 5})
+        },
+    },
+    ("candidates", "groups"): {
+        "perm": PERM_WRITE_RESUMES,
+        "from_get": _get_candidate_row,
+        "to_model": CandidateGroup,
+        "link_model": CandidateGroupMember,
+        "from_fk": "candidate_id",
+        "to_fk": "group_id",
+        "to_entity": "groups",
+        "extra": {},
+    },
+}
+
+
+@router.get("/{entity}/schema")
+def entity_schema(
+    entity: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """字段/关系 schema 发现 — 等价 MintHCM GetModuleFieldsTool。
+
+    LLM 在 create/update/link 之前先查这个端点,避免靠 400 试错。
+    """
+    if entity not in ENTITIES and entity not in CREATABLE and entity not in DELETABLE:
+        raise HTTPException(404, f"未知实体,可用:{','.join(ENTITIES)}")
+    _entity_gate(entity, current)
+    out: dict[str, Any] = {
+        "entity": entity,
+        "creatable": entity in CREATABLE,
+        "deletable": entity in DELETABLE,
+        "writable": {},
+        "linkable": {},
+    }
+    w = WRITABLE.get(entity)
+    if w is not None:
+        for name, fspec in w["fields"].items():
+            meta = fspec[2] if len(fspec) > 2 else {"type": "any"}
+            out["writable"][name] = {"required": False, **meta}
+    c = CREATABLE.get(entity)
+    if c is not None:
+        for name, (required, _v, meta) in c["fields"].items():
+            out["writable"][name] = {"required": required, **meta}
+    for (src, rel_name), lspec in LINKS.items():
+        if src == entity:
+            out["linkable"][rel_name] = {
+                "to_entity": lspec["to_entity"],
+                "extra": {k: m for k, (_v, m) in lspec["extra"].items()},
+            }
+    return out
+
+
+@router.post("/{entity}", status_code=201)
+def create_entity(
+    entity: str,
+    body: CreateIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """白名单字段创建 — 等价 MintHCM CreateRecordTool(收窄到安全实体)。"""
+    _entity_gate(entity, current)
+    c = CREATABLE.get(entity)
+    if c is None:
+        raise HTTPException(400, "该实体不支持通用创建")
+    if not has_permission(current, c["perm"]):
+        raise HTTPException(403, "权限不足")
+    unknown = set(body.fields) - set(c["fields"])
+    if unknown:
+        raise HTTPException(
+            400,
+            f"字段不可写:{','.join(sorted(unknown))};可写:{','.join(c['fields'])}",
+        )
+    missing = [n for n, (req, _v, _m) in c["fields"].items() if req and n not in body.fields]
+    if missing:
+        raise HTTPException(400, f"缺少必填字段:{','.join(missing)}")
+    cleaned: dict[str, Any] = {}
+    for name, raw in body.fields.items():
+        _req, validator, _meta = c["fields"][name]
+        cleaned[name] = validator(raw)
+    scope = get_org_scope(db, current)
+    row = c["create"](db, current, scope, cleaned)
+    db.add(row)
+    db.flush()
+    write_audit(
+        db,
+        actor=current,
+        entity_type=c["audit"],
+        entity_id=row.id,
+        action="create",
+        detail={"fields": cleaned},
+        request=request,
+    )
+    db.commit()
+    return {"ok": True, "id": row.id}
+
+
+@router.delete("/{entity}/{rid}")
+def delete_entity(
+    entity: str,
+    rid: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """白名单实体删除 — 等价 MintHCM DeleteRecordTool(收窄到安全实体)。"""
+    _entity_gate(entity, current)
+    d = DELETABLE.get(entity)
+    if d is None:
+        raise HTTPException(400, "该实体不支持通用删除")
+    if not has_permission(current, d["perm"]):
+        raise HTTPException(403, "权限不足")
+    scope = get_org_scope(db, current)
+    row = d["get"](db, current, scope, rid)
+    d["delete"](db, row)
+    write_audit(
+        db,
+        actor=current,
+        entity_type=d["audit"],
+        entity_id=rid,
+        action="delete",
+        request=request,
+    )
+    db.commit()
+    return {"ok": True}
+
+
+def _link_spec(entity: str, rel_name: str, current: User) -> dict:
+    _entity_gate(entity, current)
+    lspec = LINKS.get((entity, rel_name))
+    if lspec is None:
+        raise HTTPException(400, "该实体不支持此关系")
+    if not has_permission(current, lspec["perm"]):
+        raise HTTPException(403, "权限不足")
+    return lspec
+
+
+def _entity_gate(entity: str, current: User) -> None:
+    """新端点的实体/权限门:ENTITIES 里有 → 走读口径;仅在写注册表里的(notes)
+    → 由写注册表自己的 perm 把关。"""
+    spec = ENTITIES.get(entity)
+    if spec is not None:
+        if not has_permission(current, spec["perm"]):
+            raise HTTPException(403, "权限不足")
+        if spec["feature"]:
+            require_feature(spec["feature"])()
+
+
+def _resolve_link(lspec, db, current, scope, rid, related_id):
+    """from_row(scope)+ to_row(同租户)双校验,返回 (from_row, to_row)。"""
+    from_row = lspec["from_get"](db, current, scope, rid)
+    to_row = db.get(lspec["to_model"], related_id)
+    if to_row is None or to_row.tenant_id != current.tenant_id:
+        raise HTTPException(404, "关联记录不存在")
+    return from_row, to_row
+
+
+@router.post("/{entity}/{rid}/links", status_code=201)
+def link_records(
+    entity: str,
+    rid: str,
+    body: LinkIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """建关系 — 等价 MintHCM CreateRelationshipTool(收窄到注册关系)。"""
+    lspec = _link_spec(entity, body.rel_name, current)
+    scope = get_org_scope(db, current)
+    from_row, _to = _resolve_link(lspec, db, current, scope, rid, body.related_id)
+    exists = db.scalar(
+        select(lspec["link_model"].id).where(
+            getattr(lspec["link_model"], lspec["from_fk"]) == from_row.id,
+            getattr(lspec["link_model"], lspec["to_fk"]) == body.related_id,
+        )
+    )
+    if exists is not None:
+        raise HTTPException(409, "关系已存在")
+    unknown_extra = set(body.extra) - set(lspec["extra"])
+    if unknown_extra:
+        raise HTTPException(
+            400,
+            f"不支持的关系字段:{','.join(sorted(unknown_extra))};"
+            f"可用:{','.join(lspec['extra'])}",
+        )
+    link_kwargs: dict[str, Any] = {
+        lspec["from_fk"]: from_row.id,
+        lspec["to_fk"]: body.related_id,
+    }
+    # CandidateGroupMember 这类纯 join 表没有 tenant_id 列
+    if hasattr(lspec["link_model"], "tenant_id"):
+        link_kwargs["tenant_id"] = current.tenant_id
+    if hasattr(lspec["link_model"], "added_by"):
+        link_kwargs["added_by"] = current.id
+    link = lspec["link_model"](**link_kwargs)
+    for name, raw in body.extra.items():
+        validator, _meta = lspec["extra"][name]
+        setattr(link, name, validator(raw))
+    db.add(link)
+    db.flush()
+    write_audit(
+        db,
+        actor=current,
+        entity_type=entity,
+        entity_id=rid,
+        action="link",
+        detail={"rel": body.rel_name, "related_id": body.related_id, "extra": body.extra},
+        request=request,
+    )
+    db.commit()
+    return {"ok": True, "id": link.id}
+
+
+@router.delete("/{entity}/{rid}/links/{rel_name}/{related_id}")
+def unlink_records(
+    entity: str,
+    rid: str,
+    rel_name: str,
+    related_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """拆关系 — 等价 MintHCM DeleteRelationshipTool。"""
+    lspec = _link_spec(entity, rel_name, current)
+    scope = get_org_scope(db, current)
+    from_row, _to = _resolve_link(lspec, db, current, scope, rid, related_id)
+    link = db.scalar(
+        select(lspec["link_model"]).where(
+            getattr(lspec["link_model"], lspec["from_fk"]) == from_row.id,
+            getattr(lspec["link_model"], lspec["to_fk"]) == related_id,
+        )
+    )
+    if link is None:
+        raise HTTPException(404, "关系不存在")
+    db.delete(link)
+    write_audit(
+        db,
+        actor=current,
+        entity_type=entity,
+        entity_id=rid,
+        action="unlink",
+        detail={"rel": rel_name, "related_id": related_id},
+        request=request,
+    )
+    db.commit()
+    return {"ok": True}

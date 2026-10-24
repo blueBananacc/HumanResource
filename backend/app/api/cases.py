@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, apply_q_ilike, count_total, paginate_params
 from app.api.auth import get_current_user
+from app.api.dictionaries import kind_values
 from app.api.license import require_feature
 from app.domain.models import (
     Employee,
@@ -67,8 +68,10 @@ class CaseIn(BaseModel):
     @field_validator("kind")
     @classmethod
     def _v_kind(cls, v: str) -> str:
-        if v not in HrCase.KINDS:
-            raise ValueError(f"未知类型,可选:{','.join(HrCase.KINDS)}")
+        # 合法值在端点校验(租户字典可扩展,内置 KINDS 兜底)
+        v = v.strip()
+        if not v or len(v) > 64:
+            raise ValueError("类型不合法")
         return v
 
     @field_validator("priority")
@@ -220,6 +223,9 @@ def me_create(
     current: User = Depends(get_current_user),
 ):
     emp_id = require_linked_employee(db, current)
+    allowed = kind_values(db, current.tenant_id, "case_kind", HrCase.KINDS)
+    if body.kind not in allowed:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"未知类型,可选:{','.join(sorted(allowed))}")
     c = HrCase(
         tenant_id=current.tenant_id,
         case_no=_next_case_no(db, current.tenant_id),

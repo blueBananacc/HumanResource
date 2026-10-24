@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_user
+from app.api.dictionaries import kind_values
 from app.domain.models import (
     Candidate,
     CandidateSkill,
@@ -252,8 +253,9 @@ def create_skill(
     current: User = Depends(get_current_user),
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
-    if body.category not in CATEGORIES:
-        raise HTTPException(400, f"category 必须是 {CATEGORIES} 之一")
+    allowed = kind_values(db, current.tenant_id, "skill_category", CATEGORIES)
+    if body.category not in allowed:
+        raise HTTPException(400, f"category 必须是 {sorted(allowed)} 之一")
     name = body.name.strip()
     exists = db.scalars(
         select(Skill).where(Skill.tenant_id == current.tenant_id, Skill.name == name)
@@ -288,8 +290,9 @@ def update_skill(
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
     s = _skill_or_404(db, current.tenant_id, skill_id)
-    if body.category not in CATEGORIES:
-        raise HTTPException(400, f"category 必须是 {CATEGORIES} 之一")
+    allowed = kind_values(db, current.tenant_id, "skill_category", CATEGORIES)
+    if body.category not in allowed:
+        raise HTTPException(400, f"category 必须是 {sorted(allowed)} 之一")
     name = body.name.strip()
     dup = db.scalars(
         select(Skill).where(

@@ -105,13 +105,103 @@ function toolSchemas(tools: AgentTool[]) {
   }));
 }
 
+// MCP resources(只读数据订阅面)—— 与 tools 同一 tool_token 鉴权。
+// URI 空间:
+//   hr://entities                                  可检索实体目录
+//   hr://playbooks                                 AI 剧本列表
+//   hr://playbook/{id}                             单篇剧本正文
+//   hr://entity/{entity}/search?q=                 实体搜索(同 search_records)
+//   hr://entity/{entity}/record/{id}/relations     记录关联穿透
+async function readResource(sess: McpSession, uri: string): Promise<{
+  status: number;
+  body: unknown;
+}> {
+  const u = new URL(uri);
+  let path: string | null = null;
+  const parts = u.pathname.replace(/^\/+/, "").split("/");
+  if (u.pathname === "/entities" || u.pathname === "entities") {
+    path = "/api/entities";
+  } else if (u.pathname === "/playbooks" || u.pathname === "playbooks") {
+    path =
+      "/api/knowledge/articles?is_playbook=true&status_filter=published&limit=50&brief=true";
+  } else if (
+    parts[0] === "playbook" && parts.length === 2 && parts[1]
+  ) {
+    path = `/api/knowledge/articles/${encodeURIComponent(parts[1])}`;
+  } else if (
+    parts[0] === "entity" && parts[2] === "search" && parts.length === 3
+  ) {
+    path = `/api/entities/${encodeURIComponent(parts[1])}/search?limit=20` +
+      (u.searchParams.get("q")
+        ? `&q=${encodeURIComponent(u.searchParams.get("q")!)}`
+        : "");
+  } else if (
+    parts[0] === "entity" && parts[2] === "record" &&
+    parts.length === 5 && parts[4] === "relations"
+  ) {
+    path =
+      `/api/entities/${encodeURIComponent(parts[1])}/` +
+      `${encodeURIComponent(parts[3])}/relations`;
+  }
+  if (!path) return { status: 404, body: { error: `未知资源: ${uri}` } };
+  const resp = await fetch(`${BACKEND}${path}`, {
+    headers: { authorization: `Bearer ${sess.toolToken}` },
+  });
+  let body: unknown;
+  try {
+    body = await resp.json();
+  } catch {
+    body = await resp.text();
+  }
+  return { status: resp.status, body };
+}
+
+const STATIC_RESOURCES = [
+  {
+    uri: "hr://entities",
+    name: "可检索实体目录",
+    description: "所有可搜索实体的 key/label/字段",
+    mimeType: "application/json",
+  },
+  {
+    uri: "hr://playbooks",
+    name: "AI 剧本列表",
+    description: "知识库中标记为剧本的 SOP 文档",
+    mimeType: "application/json",
+  },
+];
+
+const RESOURCE_TEMPLATES = [
+  {
+    uriTemplate: "hr://playbook/{id}",
+    name: "单篇剧本",
+    description: "按文章 id 取剧本正文",
+    mimeType: "application/json",
+  },
+  {
+    uriTemplate: "hr://entity/{entity}/search?q={q}",
+    name: "实体搜索",
+    description: "对某实体做模糊搜索(同 search_records 工具)",
+    mimeType: "application/json",
+  },
+  {
+    uriTemplate: "hr://entity/{entity}/record/{id}/relations",
+    name: "记录关联",
+    description: "一条记录的关联实体穿透(同 list_relationships 工具)",
+    mimeType: "application/json",
+  },
+];
+
 async function handleRpc(sess: McpSession, rpc: JsonRpc): Promise<unknown> {
   const tools = hrTools(sess.toolToken);
   switch (rpc.method) {
     case "initialize":
       return result(rpc.id, {
         protocolVersion: PROTOCOL_VERSION,
-        capabilities: { tools: { listChanged: false } },
+        capabilities: {
+          tools: { listChanged: false },
+          resources: { subscribe: false, listChanged: false },
+        },
         serverInfo: SERVER_INFO,
       });
     case "notifications/initialized":
@@ -121,6 +211,35 @@ async function handleRpc(sess: McpSession, rpc: JsonRpc): Promise<unknown> {
       return result(rpc.id, {});
     case "tools/list":
       return result(rpc.id, { tools: toolSchemas(tools) });
+    case "resources/list":
+      return result(rpc.id, { resources: STATIC_RESOURCES });
+    case "resources/templates/list":
+      return result(rpc.id, { resourceTemplates: RESOURCE_TEMPLATES });
+    case "resources/read": {
+      const uri = rpc.params?.uri as string | undefined;
+      if (!uri || !uri.startsWith("hr://")) {
+        return rpcError(rpc.id, -32602, "uri 必须是 hr:// 前缀");
+      }
+      const r = await readResource(sess, uri);
+      if (r.status >= 400) {
+        return result(rpc.id, {
+          contents: [
+            { uri, mimeType: "application/json", text: JSON.stringify(r.body) },
+          ],
+          isError: true,
+        });
+      }
+      return result(rpc.id, {
+        contents: [
+          {
+            uri,
+            mimeType: "application/json",
+            text:
+              typeof r.body === "string" ? r.body : JSON.stringify(r.body),
+          },
+        ],
+      });
+    }
     case "tools/call": {
       const name = rpc.params?.name as string | undefined;
       const args = (rpc.params?.arguments ?? {}) as JsonObject;
