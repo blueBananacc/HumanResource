@@ -143,7 +143,7 @@ export function GlobalSearch() {
           )}
         />
         {!open && (
-          <kbd className="text-[10px] font-body font-bold text-white/60 border border-white/20 rounded px-1.5 py-0.5">
+          <kbd className="hidden lg:block text-[10px] font-body font-bold text-white/60 border border-white/20 rounded px-1.5 py-0.5">
             {isMac ? "⌘" : "Ctrl"} K
           </kbd>
         )}

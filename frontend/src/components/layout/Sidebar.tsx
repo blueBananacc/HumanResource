@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { ChevronRight, ChevronsLeft, ChevronsRight, PanelLeftClose } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useMediaQuery } from "@/lib/useMediaQuery";
 import {
   isItemActive,
   isModuleActive,
@@ -25,17 +26,24 @@ export function Sidebar() {
   const navigate = useNavigate();
   const search = new URLSearchParams(loc.search);
 
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSE_KEY) === "1");
+  // 窄屏自适应:用户没手动收起过(<lg)时一级栏自动收成图标轨;
+  // 二级面板在 <xl 下改为悬浮层,不再挤压内容区宽度。
+  const narrow = useMediaQuery("(max-width: 1023px)");
+  const panelOverlay = useMediaQuery("(max-width: 1279px)");
+
+  // localStorage 记的是「用户显式选择」;没选过时跟随窄屏默认值。
+  const [userPref, setUserPref] = useState<string | null>(() => localStorage.getItem(COLLAPSE_KEY));
+  const collapsed = userPref !== null ? userPref === "1" : narrow;
+  const toggleCollapsed = () => {
+    const next = collapsed ? "0" : "1";
+    localStorage.setItem(COLLAPSE_KEY, next);
+    setUserPref(next);
+  };
   const [panelOpen, setPanelOpenState] = useState(() => localStorage.getItem(PANEL_KEY) !== "0");
   const setPanelOpen = (v: boolean) => {
     localStorage.setItem(PANEL_KEY, v ? "1" : "0");
     setPanelOpenState(v);
   };
-  const toggleCollapsed = () =>
-    setCollapsed((v) => {
-      localStorage.setItem(COLLAPSE_KEY, v ? "0" : "1");
-      return !v;
-    });
 
   const all = [...main, ...bottom];
   const active = all.find((m) => isModuleActive(m, loc.pathname, search));
@@ -65,7 +73,7 @@ export function Sidebar() {
   );
 
   return (
-    <div className="h-full flex shrink-0">
+    <div className="relative h-full flex shrink-0">
       <aside
         className={cn(
           "h-full bg-[var(--color-brand)] flex flex-col py-4 shrink-0 transition-[width] duration-300 ease-[var(--ease-bob)]",
@@ -99,10 +107,20 @@ export function Sidebar() {
         </div>
       </aside>
 
-      {/* 二级面板:只在当前模块有分组时出现;宽度动画收放,内容固定宽度避免挤压换行 */}
+      {/* 二级面板:<xl 改悬浮层(不占内容宽度,点遮罩/点条目后收起),>=xl 内联栏。
+          宽度动画收放,内容固定宽度避免挤压换行 */}
+      {panelOverlay && showPanel && (
+        <div
+          className="fixed inset-0 z-20"
+          onClick={() => setPanelOpen(false)}
+          aria-hidden
+        />
+      )}
       <div
         className={cn(
           "h-full overflow-hidden bg-[var(--color-bg-base)] border-[var(--color-border-subtle)] transition-[width] duration-300 ease-[var(--ease-bob)]",
+          panelOverlay &&
+            "absolute left-full top-0 z-30 shadow-[0_8px_24px_rgba(58,58,55,0.14)]",
           showPanel ? "w-[208px] border-r" : "w-0",
         )}
         aria-hidden={!showPanel}
@@ -113,6 +131,7 @@ export function Sidebar() {
             pathname={loc.pathname}
             search={search}
             onClose={() => setPanelOpen(false)}
+            onNavigate={panelOverlay ? () => setPanelOpen(false) : undefined}
           />
         )}
       </div>
@@ -180,11 +199,13 @@ function SubPanel({
   pathname,
   search,
   onClose,
+  onNavigate,
 }: {
   module: NavModule;
   pathname: string;
   search: URLSearchParams;
   onClose: () => void;
+  onNavigate?: () => void;
 }) {
   return (
     <div className="w-[208px] h-full flex flex-col" aria-label={`${m.label}二级导航`}>
@@ -199,7 +220,7 @@ function SubPanel({
           <PanelLeftClose className="w-4 h-4" />
         </button>
       </div>
-      <nav className="flex-1 overflow-y-auto px-3 pb-4 flex flex-col gap-4">
+      <nav className="flex-1 overflow-y-auto px-3 pb-4 flex flex-col gap-4" onClick={onNavigate}>
         {m.groups!.map((g, gi) => (
           <div key={g.label ?? gi} className="flex flex-col gap-0.5">
             {g.label && (

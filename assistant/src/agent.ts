@@ -4,6 +4,7 @@
  * - 写工具经 beforeToolCall 停放,等前端 POST /confirm 裁决
  * - subscribe 事件统一翻译成 SSE 帧写给当前 res
  */
+import { randomUUID } from "node:crypto";
 import { Agent } from "@earendil-works/pi-agent-core";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import type { MutableModels } from "@earendil-works/pi-ai";
@@ -102,6 +103,18 @@ const SYSTEM_PROMPT = `你是 HROnfire 招聘平台的 AI 助手,服务对象是
 - dismiss_interview_suggestion:忽略某条推荐面试(需用户确认才执行)
 - create_interview:发起远程面试生成邀请链接(需用户确认才执行)
 - generate_questions:AI 生成题目存题库(需用户确认才执行)
+- search_knowledge:知识库全文检索(制度/FAQ/福利,回答政策问题先查这里)
+- list_entities / search_records / count_records:通用实体检索与计数
+  (不确定查什么实体时先 list_entities)
+- list_announcements / publish_announcement:公司公告(发布需确认)
+- create_request / list_my_requests:员工申请(创建需确认)
+- create_case / list_my_cases / list_cases / update_case_status:
+  HR 工单(创建/改状态需确认)
+- check_salary_band:offer 定薪是否落在薪酬带宽内
+- create_watcher / list_watchers / delete_watcher:触发式提醒(写需确认)
+- create_report_subscription / list_report_subscriptions /
+  delete_report_subscription:每周定时邮件报表(写需确认)
+- get_activity:租户近期动态流
 
 行为准则:
 1. 涉及"查/有哪些/多少"的问题,先调工具拿数据再回答;数据为空就如实说没有
@@ -118,6 +131,11 @@ function waitForConfirm(
   tenantId: string,
   userId: string,
 ): Promise<boolean> {
+  // callId 由 LLM 生成,可能在一轮里重复 — 撞号会覆盖 pending 注册,
+  // 前一个调用被迫等满 120s 超时。重复时补随机后缀隔离。
+  if (pendingConfirms.has(callId)) {
+    callId = `${callId}#${randomUUID().slice(0, 8)}`;
+  }
   emit("confirm_required", {
     call_id: callId,
     name,
