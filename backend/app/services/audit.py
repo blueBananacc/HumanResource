@@ -79,6 +79,15 @@ def write_audit(
         detail=detail,
     )
     db.add(log)
+    # id 由 Python 端 default 在 INSERT 时才生成;dispatch 的 event_key 需要它,
+    # flush 一下确保拿到(不提交事务)。
+    db.flush()
+    # 事件驱动自动化:审计是全部业务写的统一漏斗,在这里分发规则引擎,
+    # 60+ 写端点零改动获得全域覆盖。lazy import 防 audit↔automation 循环。
+    if result == "success":
+        from app.services import automation
+
+        automation.dispatch(db, log=log, actor=actor)
     return log
 
 

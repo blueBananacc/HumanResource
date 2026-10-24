@@ -20,6 +20,7 @@ import { SsoSettings } from "@/pages/SsoSettings";
 import { McpTokens } from "@/pages/McpTokens";
 import { Dictionaries } from "@/pages/Dictionaries";
 import { Schedulers } from "@/pages/Schedulers";
+import { Automations } from "@/pages/Automations";
 import { TalentPool } from "@/pages/TalentPool";
 import { TalentDetail } from "@/pages/TalentDetail";
 import { LegacyQuestionSetRedirect, QuestionSetDetail } from "@/pages/QuestionSetDetail";
@@ -51,6 +52,7 @@ import { LeaveTypes } from "@/pages/hris/LeaveTypes";
 import { AttendanceAdmin } from "@/pages/hris/AttendanceAdmin";
 import { Checkins } from "@/pages/hris/Checkins";
 import { AttendanceRequests } from "@/pages/hris/AttendanceRequests";
+import { AttendanceFlagsPage } from "@/pages/hris/AttendanceFlags";
 import { WorkCalendarPage } from "@/pages/hris/WorkCalendarPage";
 import { Requisitions } from "@/pages/hris/Requisitions";
 import { Offers } from "@/pages/hris/Offers";
@@ -118,6 +120,7 @@ export const router = createBrowserRouter([
       { path: "attendance", element: <AttendanceAdmin /> },
       { path: "attendance/checkins", element: <Checkins /> },
       { path: "attendance/requests", element: <AttendanceRequests /> },
+      { path: "attendance/flags", element: <AttendanceFlagsPage /> },
       { path: "attendance/calendar", element: <WorkCalendarPage /> },
       { path: "overtime", element: <OvertimeRequests /> },
       // ── HRIS 招聘扩展 ──
@@ -179,6 +182,7 @@ export const router = createBrowserRouter([
       { path: "settings/mcp", element: <McpTokens /> },
       { path: "settings/dictionaries", element: <Dictionaries /> },
       { path: "settings/schedulers", element: <Schedulers /> },
+      { path: "settings/automations", element: <Automations /> },
     ],
   },
   { path: "*", element: <Navigate to="/" replace /> },

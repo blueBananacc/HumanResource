@@ -14,21 +14,26 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, count_total, paginate_params
 from app.api.license import require_feature
 from app.domain.models import (
     Attendance,
+    AttendanceFlag,
+    AttendancePolicy,
     AttendanceRequest,
     Employee,
     EmployeeCheckin,
     LeaveApplication,
     OrgUnit,
+    OvertimeRequest,
     User,
+    WorkCalendar,
 )
 from app.infra.db import get_db
+from app.services.attendance_policy import evaluate_flags, get_policy, validate_cidrs
 from app.services.audit import write_audit
 from app.services.permissions import (
     PERM_APPROVE_LEAVE,
@@ -111,13 +116,15 @@ def summarize_day(
     db: Session, *, tenant_id: str, employee_id: str, day: date,
     workdays: frozenset[int] | set[int] | None = None,
     hols: dict | None = None,
+    policy: "AttendancePolicy | None" = None,
+    calendar: "WorkCalendar | None" = None,
 ) -> Attendance:
     """单日汇总:checkin → first_in/last_out;approved 请假覆盖的工作日 → leave
     (非工作日即使被请假区间覆盖也只算 holiday,与台账只扣工作日同口径);
     工作日无记录 → absent;否则 present(有 checkin)。
 
-    ``workdays``/``hols`` 传预先按整段拉好的日历(批量 summarize 防 N+1);
-    不传则按单日查(is_workday_day)。
+    ``workdays``/``hols``/``policy``/``calendar`` 传预先按整段拉好的值
+    (批量 summarize 防 N+1);不传则按单日查(is_workday_day)。
     """
     day_start = datetime.combine(day, datetime.min.time())
     day_end = day_start + timedelta(days=1)
@@ -151,6 +158,8 @@ def summarize_day(
             tenant_id=tenant_id, employee_id=employee_id, day=day, source="checkin"
         )
         db.add(att)
+        db.flush()  # flag 关联需要 att.id 外键可引用
+    wd: bool | None = None
     if att.source != "manual":
         if not on_leave and first_in:
             # 最常见路径:有打卡无请假 → present,完全不用查日历
@@ -181,6 +190,21 @@ def summarize_day(
             round((last_out - first_in).total_seconds() / 3600, 2)
             if first_in and last_out and last_out > first_in
             else None
+        )
+    # 迟到/早退异常台账:present + 工作日才评;其余状态清理可能过期的旧 flag。
+    # 工作日口径已知则复用(免二次查询);fast path 需要时才补查一次。
+    if att.status == "present" and (att.first_in or att.last_out):
+        if wd is None:
+            if workdays is not None and hols is not None:
+                wd = is_workday(day, workdays, hols)
+            else:
+                wd = is_workday_day(db, tenant_id, day)
+        evaluate_flags(
+            db, att=att, is_workday=bool(wd), calendar=calendar, policy=policy
+        )
+    else:
+        evaluate_flags(
+            db, att=att, is_workday=False, calendar=calendar, policy=policy
         )
     return att
 
@@ -245,46 +269,6 @@ def list_attendance(
     )
 
 
-@router.put("/{att_id}", response_model=AttendanceOut)
-def update_attendance(
-    att_id: str,
-    body: AttendanceIn,
-    request: Request,
-    db: Session = Depends(get_db),
-    current: User = Depends(require_permission(PERM_MANAGE_ATTENDANCE)),
-):
-    a = db.get(Attendance, att_id)
-    if not a or a.tenant_id != current.tenant_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "考勤记录不存在")
-    a.status = body.status
-    a.source = "manual"
-    # model_fields_set:显式传 null = 清空时间;不传字段则不覆盖
-    if "first_in" in body.model_fields_set:
-        a.first_in = body.first_in
-    if "last_out" in body.model_fields_set:
-        a.last_out = body.last_out
-    a.work_hours = (
-        round((a.last_out - a.first_in).total_seconds() / 3600, 2)
-        if a.first_in and a.last_out and a.last_out > a.first_in
-        else None
-    )
-    write_audit(
-        db, actor=current, entity_type="attendance", entity_id=a.id,
-        action="manual_correct",
-        detail={
-            "employee_id": a.employee_id, "day": str(a.day),
-            "status": a.status,
-            "first_in": a.first_in.isoformat() if a.first_in else None,
-            "last_out": a.last_out.isoformat() if a.last_out else None,
-        },
-        request=request,
-    )
-    db.commit()
-    db.refresh(a)
-    emps, orgs = _maps(db, current.tenant_id)
-    return _out(a, emps, orgs)
-
-
 @router.post("/summarize")
 def summarize(
     body: SummarizeIn,
@@ -298,16 +282,20 @@ def summarize(
             Employee.tenant_id == current.tenant_id, Employee.status == "active"
         )
     )]
-    # 日历按整段拉一次传给 summarize_day,避免每个员工每天再查两次
+    # 日历/策略按整段拉一次传给 summarize_day,避免每个员工每天再查
     wd = workday_set(db, current.tenant_id)
     hols = holiday_map(db, current.tenant_id, body.start, body.end)
+    policy = get_policy(db, current.tenant_id)
+    cal = db.scalars(
+        select(WorkCalendar).where(WorkCalendar.tenant_id == current.tenant_id)
+    ).first()
     day = body.start
     n = 0
     while day <= body.end:
         for emp_id in emp_ids:
             summarize_day(
                 db, tenant_id=current.tenant_id, employee_id=emp_id, day=day,
-                workdays=wd, hols=hols,
+                workdays=wd, hols=hols, policy=policy, calendar=cal,
             )
             n += 1
         day += timedelta(days=1)
@@ -534,3 +522,387 @@ def reject_request(
     db.commit()
     emps, orgs, users = _req_maps(db, current.tenant_id)
     return _req_out(r, emps, orgs, users, current.id)
+
+
+# ============ 考勤策略 / 迟到早退异常 / 月度汇总 ============
+
+
+class PolicyOut(BaseModel):
+    grace_in_minutes: int
+    grace_out_minutes: int
+    track_late_early: bool
+    ip_check_enabled: bool
+    allowed_ips: list[str]
+    notify_on_flag: bool
+
+
+class PolicyIn(BaseModel):
+    grace_in_minutes: int = 0
+    grace_out_minutes: int = 0
+    track_late_early: bool = True
+    ip_check_enabled: bool = False
+    allowed_ips: list[str] = []
+    notify_on_flag: bool = True
+
+
+def _policy_out(p: AttendancePolicy) -> PolicyOut:
+    return PolicyOut(
+        grace_in_minutes=p.grace_in_minutes,
+        grace_out_minutes=p.grace_out_minutes,
+        track_late_early=p.track_late_early,
+        ip_check_enabled=p.ip_check_enabled,
+        allowed_ips=list(p.allowed_ips or []),
+        notify_on_flag=p.notify_on_flag,
+    )
+
+
+@router.get("/policy", response_model=PolicyOut)
+def read_policy(
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_ATTENDANCE)),
+):
+    return _policy_out(get_policy(db, current.tenant_id))
+
+
+@router.put("/policy", response_model=PolicyOut)
+def update_policy(
+    body: PolicyIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_ATTENDANCE)),
+):
+    if body.grace_in_minutes < 0 or body.grace_out_minutes < 0:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "宽限分钟数不能为负")
+    err = validate_cidrs(body.allowed_ips)
+    if err:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, err)
+    p = get_policy(db, current.tenant_id)
+    p.grace_in_minutes = body.grace_in_minutes
+    p.grace_out_minutes = body.grace_out_minutes
+    p.track_late_early = body.track_late_early
+    p.ip_check_enabled = body.ip_check_enabled
+    p.allowed_ips = [s.strip() for s in body.allowed_ips if s.strip()]
+    p.notify_on_flag = body.notify_on_flag
+    p.updated_at = datetime.now(UTC).replace(tzinfo=None)
+    write_audit(
+        db, actor=current, entity_type="attendance_policy",
+        entity_id=p.id, action="update",
+        detail=body.model_dump(), request=request,
+    )
+    db.commit()
+    return _policy_out(p)
+
+
+class FlagOut(BaseModel):
+    id: str
+    employee_id: str
+    employee_name: str
+    org_unit_name: str | None
+    day: date
+    kind: str
+    minutes: int
+    detail: dict | None
+    excused: bool
+    excused_note: str | None
+    created_at: datetime
+
+
+def _flag_out(f: AttendanceFlag, emps: dict, orgs: dict) -> FlagOut:
+    e = emps.get(f.employee_id)
+    return FlagOut(
+        id=f.id, employee_id=f.employee_id,
+        employee_name=e.name if e else "?",
+        org_unit_name=orgs.get(e.org_unit_id) if e and e.org_unit_id else None,
+        day=f.day, kind=f.kind, minutes=f.minutes, detail=f.detail,
+        excused=f.excused, excused_note=f.excused_note, created_at=f.created_at,
+    )
+
+
+@router.get("/flags", response_model=PageOut[FlagOut])
+def list_flags(
+    pagination: tuple = Depends(paginate_params),
+    month: str | None = Query(None, description="YYYY-MM"),
+    employee_id: str | None = None,
+    kind: Literal["late_in", "early_out"] | None = None,
+    excused: bool | None = None,
+    scope: Literal["all", "team", "mine"] = "all",
+    db: Session = Depends(get_db),
+    current: User = Depends(
+        require_permission(PERM_MANAGE_ATTENDANCE, PERM_APPROVE_LEAVE)),
+):
+    limit, offset, _ = pagination
+    stmt = select(AttendanceFlag).where(
+        AttendanceFlag.tenant_id == current.tenant_id)
+    if month:
+        try:
+            y, m = month.split("-")
+            start = date(int(y), int(m), 1)
+            end = (date(int(y), int(m) + 1, 1) if int(m) < 12
+                   else date(int(y) + 1, 1, 1))
+        except ValueError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "month 格式应为 YYYY-MM")
+        stmt = stmt.where(AttendanceFlag.day >= start, AttendanceFlag.day < end)
+    if employee_id:
+        stmt = stmt.where(AttendanceFlag.employee_id == employee_id)
+    if kind:
+        stmt = stmt.where(AttendanceFlag.kind == kind)
+    if excused is not None:
+        stmt = stmt.where(AttendanceFlag.excused.is_(excused))
+    if scope == "mine":
+        own = get_linked_employee_id(db, current)
+        stmt = stmt.where(AttendanceFlag.employee_id == (own or "__none__"))
+    elif scope == "team":
+        stmt = stmt.where(
+            AttendanceFlag.employee_id.in_(
+                team_ids_with_self(db, current) or ["__none__"]))
+    elif current.role not in ("admin", "hr"):
+        ids = visible_employee_ids(db, current)
+        stmt = stmt.where(
+            AttendanceFlag.employee_id.in_(ids or ["__none__"]))
+    total = count_total(db, stmt)
+    rows = db.scalars(
+        stmt.order_by(AttendanceFlag.day.desc(), AttendanceFlag.created_at.desc())
+        .limit(limit).offset(offset)
+    ).all()
+    emps, orgs = _maps(db, current.tenant_id)
+    return PageOut(
+        items=[_flag_out(f, emps, orgs) for f in rows],
+        total=total, limit=limit, offset=offset,
+    )
+
+
+class ExcuseIn(BaseModel):
+    note: str | None = None
+
+
+def _flag_scope_guard(db: Session, current: User, flag: AttendanceFlag) -> None:
+    """免计权限:manage_attendance 或能对下属做决定的审批人。"""
+    if not can_decide_for_employee(db, current, flag.employee_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "只能免计直属下属或具备考勤管理权限")
+
+
+@router.post("/flags/{flag_id}/excuse", response_model=FlagOut)
+def excuse_flag(
+    flag_id: str,
+    body: ExcuseIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(
+        require_permission(PERM_MANAGE_ATTENDANCE, PERM_APPROVE_LEAVE)),
+):
+    f = db.get(AttendanceFlag, flag_id)
+    if not f or f.tenant_id != current.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "异常记录不存在")
+    _flag_scope_guard(db, current, f)
+    f.excused = True
+    f.excused_by_id = current.id
+    f.excused_note = body.note
+    f.excused_at = datetime.now(UTC).replace(tzinfo=None)
+    f.updated_at = f.excused_at
+    write_audit(
+        db, actor=current, entity_type="attendance_flag", entity_id=f.id,
+        action="excuse",
+        detail={"employee_id": f.employee_id, "day": str(f.day), "kind": f.kind},
+        request=request,
+    )
+    db.commit()
+    emps, orgs = _maps(db, current.tenant_id)
+    return _flag_out(f, emps, orgs)
+
+
+@router.post("/flags/{flag_id}/unexcuse", response_model=FlagOut)
+def unexcuse_flag(
+    flag_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(
+        require_permission(PERM_MANAGE_ATTENDANCE, PERM_APPROVE_LEAVE)),
+):
+    f = db.get(AttendanceFlag, flag_id)
+    if not f or f.tenant_id != current.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "异常记录不存在")
+    _flag_scope_guard(db, current, f)
+    f.excused = False
+    f.excused_by_id = None
+    f.excused_note = None
+    f.excused_at = None
+    f.updated_at = datetime.now(UTC).replace(tzinfo=None)
+    write_audit(
+        db, actor=current, entity_type="attendance_flag", entity_id=f.id,
+        action="unexcuse", detail={}, request=request,
+    )
+    db.commit()
+    emps, orgs = _maps(db, current.tenant_id)
+    return _flag_out(f, emps, orgs)
+
+
+class MonthlyRow(BaseModel):
+    employee_id: str
+    employee_name: str
+    org_unit_name: str | None
+    present: int
+    absent: int
+    leave: int
+    remote: int
+    holiday: int
+    work_hours: float
+    late_count: int
+    early_count: int
+    late_minutes: int
+    overtime_hours: float
+
+
+def _month_bounds(month: str) -> tuple[date, date]:
+    try:
+        y, m = month.split("-")
+        start = date(int(y), int(m), 1)
+        end = (date(int(y), int(m) + 1, 1) if int(m) < 12
+               else date(int(y) + 1, 1, 1))
+    except (ValueError, IndexError):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "month 格式应为 YYYY-MM")
+    return start, end
+
+
+def monthly_summary_rows(
+    db: Session, tenant_id: str, month: str, emp_ids: list[str]
+) -> list[MonthlyRow]:
+    """月度汇总:考勤状态计数 + 工时 + 未免计异常 + 批准加班。供 HR/ESS 复用。"""
+    start, end = _month_bounds(month)
+    if not emp_ids:
+        return []
+    rows = db.execute(
+        select(
+            Attendance.employee_id,
+            Attendance.status,
+            func.count(Attendance.id),
+            func.coalesce(func.sum(Attendance.work_hours), 0),
+        ).where(
+            Attendance.tenant_id == tenant_id,
+            Attendance.employee_id.in_(emp_ids),
+            Attendance.day >= start,
+            Attendance.day < end,
+        ).group_by(Attendance.employee_id, Attendance.status)
+    ).all()
+    flags = db.execute(
+        select(
+            AttendanceFlag.employee_id,
+            AttendanceFlag.kind,
+            func.count(AttendanceFlag.id),
+            func.coalesce(func.sum(AttendanceFlag.minutes), 0),
+        ).where(
+            AttendanceFlag.tenant_id == tenant_id,
+            AttendanceFlag.employee_id.in_(emp_ids),
+            AttendanceFlag.day >= start,
+            AttendanceFlag.day < end,
+            AttendanceFlag.excused.is_(False),
+        ).group_by(AttendanceFlag.employee_id, AttendanceFlag.kind)
+    ).all()
+    ots = db.execute(
+        select(
+            OvertimeRequest.employee_id,
+            func.coalesce(func.sum(OvertimeRequest.hours), 0),
+        ).where(
+            OvertimeRequest.tenant_id == tenant_id,
+            OvertimeRequest.employee_id.in_(emp_ids),
+            OvertimeRequest.status == "approved",
+            OvertimeRequest.work_date >= start,
+            OvertimeRequest.work_date < end,
+        ).group_by(OvertimeRequest.employee_id)
+    ).all()
+    emps, orgs = _maps(db, tenant_id)
+    agg: dict[str, MonthlyRow] = {}
+    for emp_id in emp_ids:
+        e = emps.get(emp_id)
+        agg[emp_id] = MonthlyRow(
+            employee_id=emp_id, employee_name=e.name if e else "?",
+            org_unit_name=orgs.get(e.org_unit_id) if e and e.org_unit_id else None,
+            present=0, absent=0, leave=0, remote=0, holiday=0,
+            work_hours=0.0, late_count=0, early_count=0,
+            late_minutes=0, overtime_hours=0.0,
+        )
+    for emp_id, st, cnt, wh in rows:
+        r = agg.get(emp_id)
+        if r is None:
+            continue
+        if st in ("present", "absent", "leave", "remote", "holiday"):
+            setattr(r, st, int(cnt))
+        r.work_hours = round(r.work_hours + float(wh or 0), 2)
+    for emp_id, kind, cnt, mins in flags:
+        r = agg.get(emp_id)
+        if r is None:
+            continue
+        if kind == "late_in":
+            r.late_count = int(cnt)
+            r.late_minutes = int(mins or 0)
+        else:
+            r.early_count = int(cnt)
+    for emp_id, hours in ots:
+        r = agg.get(emp_id)
+        if r is not None:
+            r.overtime_hours = round(float(hours or 0), 2)
+    return [agg[e] for e in emp_ids]
+
+
+@router.get("/monthly-summary", response_model=list[MonthlyRow])
+def monthly_summary(
+    month: str = Query(..., description="YYYY-MM"),
+    scope: Literal["all", "team"] = "all",
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+):
+    if scope == "team":
+        emp_ids = team_ids_with_self(db, current) or []
+    else:
+        ids = visible_employee_ids(db, current)
+        emp_ids = ids if ids is not None else [
+            e.id for e in db.scalars(
+                select(Employee).where(
+                    Employee.tenant_id == current.tenant_id,
+                    Employee.status == "active",
+                )
+            )
+        ]
+    return monthly_summary_rows(db, current.tenant_id, month, emp_ids)
+
+
+# 参数路由沉底 —— 若放在 /policy 等字面量路由之前,PUT /policy 会被
+# {att_id} 吃掉并命中 AttendanceIn 校验(422),FastAPI 按声明序匹配。
+@router.put("/{att_id}", response_model=AttendanceOut)
+def update_attendance(
+    att_id: str,
+    body: AttendanceIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_ATTENDANCE)),
+):
+    a = db.get(Attendance, att_id)
+    if not a or a.tenant_id != current.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "考勤记录不存在")
+    a.status = body.status
+    a.source = "manual"
+    # model_fields_set:显式传 null = 清空时间;不传字段则不覆盖
+    if "first_in" in body.model_fields_set:
+        a.first_in = body.first_in
+    if "last_out" in body.model_fields_set:
+        a.last_out = body.last_out
+    a.work_hours = (
+        round((a.last_out - a.first_in).total_seconds() / 3600, 2)
+        if a.first_in and a.last_out and a.last_out > a.first_in
+        else None
+    )
+    write_audit(
+        db, actor=current, entity_type="attendance", entity_id=a.id,
+        action="manual_correct",
+        detail={
+            "employee_id": a.employee_id, "day": str(a.day),
+            "status": a.status,
+            "first_in": a.first_in.isoformat() if a.first_in else None,
+            "last_out": a.last_out.isoformat() if a.last_out else None,
+        },
+        request=request,
+    )
+    db.commit()
+    db.refresh(a)
+    emps, orgs = _maps(db, current.tenant_id)
+    return _out(a, emps, orgs)

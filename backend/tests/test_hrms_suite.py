@@ -1690,7 +1690,12 @@ def test_work_calendar_holidays_and_attendance(db_session):
         # 默认日历:周一~周五 8h
         res = client.get("/api/work-calendar", headers=_hdr(admin))
         assert res.status_code == 200
-        assert res.json() == {"workdays": [1, 2, 3, 4, 5], "workday_hours": 8.0}
+        assert res.json() == {
+            "workdays": [1, 2, 3, 4, 5],
+            "workday_hours": 8.0,
+            "work_start": "09:00:00",
+            "work_end": "18:00:00",
+        }
 
         # 改成周一~周六、7.5h
         res = client.put(

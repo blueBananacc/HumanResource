@@ -24,6 +24,8 @@ from app.api.auth import get_current_user
 from app.api.license import require_feature
 from app.domain.models import (
     Announcement,
+    AttendanceFlag,
+    AutomationRule,
     Candidate,
     CandidateGroup,
     CandidateGroupMember,
@@ -288,6 +290,42 @@ def _campaigns(db, u, scope, q, extra=None):
     return stmt
 
 
+def _attendance_flags(db, u, scope, q, extra=None):
+    stmt = (
+        select(
+            AttendanceFlag.id,
+            Employee.name.label("label"),
+            AttendanceFlag.kind.label("secondary"),
+            *(extra or []),
+        )
+        .join(Employee, Employee.id == AttendanceFlag.employee_id)
+        .where(AttendanceFlag.tenant_id == u.tenant_id)
+    )
+    # 与 /api/attendance/flags 同口径:行级按员工可见范围收敛
+    emp_ids = visible_employee_ids(db, u)
+    if emp_ids is not None:
+        stmt = stmt.where(AttendanceFlag.employee_id.in_(emp_ids or ["__none__"]))
+    if q:
+        stmt = stmt.where(or_(_like(Employee.name, q), _like(AttendanceFlag.kind, q)))
+    return stmt
+
+
+def _automation_rules(db, u, scope, q, extra=None):
+    stmt = (
+        select(
+            AutomationRule.id,
+            AutomationRule.name.label("label"),
+            AutomationRule.entity_type.label("secondary"),
+            *(extra or []),
+        )
+        .where(AutomationRule.tenant_id == u.tenant_id)
+    )
+    if q:
+        stmt = stmt.where(or_(_like(AutomationRule.name, q),
+                              _like(AutomationRule.entity_type, q)))
+    return stmt
+
+
 ENTITIES: dict[str, dict] = {
     "talents": {
         "label": "候选人",
@@ -426,6 +464,23 @@ ENTITIES: dict[str, dict] = {
             "sent_count": TalentCampaign.sent_count,
             "failed_count": TalentCampaign.failed_count,
         },
+    },
+    "attendance_flags": {
+        "label": "考勤异常",
+        "description": "迟到/早退异常台账(员工名/类型搜索)",
+        "fields": ["employee_name", "kind", "day", "minutes", "excused"],
+        "perm": PERM_VIEW_REPORTS,
+        "build": _attendance_flags,
+        "feature": "hr.suite",
+        "agg_fields": {"minutes": AttendanceFlag.minutes},
+    },
+    "automation_rules": {
+        "label": "自动化规则",
+        "description": "事件驱动自动化规则(名称/实体搜索)",
+        "fields": ["name", "entity_type", "trigger", "is_active"],
+        "perm": PERM_MANAGE_SETTINGS,
+        "build": _automation_rules,
+        "feature": "hr.suite",
     },
 }
 

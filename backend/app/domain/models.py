@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Any
 
 from sqlalchemy import (
@@ -28,6 +28,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    Time,
     UniqueConstraint,
     func,
 )
@@ -1133,6 +1134,8 @@ class EmployeeCheckin(Base):
     kind: Mapped[str] = mapped_column(String(8), nullable=False)  # in / out
     method: Mapped[str] = mapped_column(String(16), nullable=False, server_default="web")
     note: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # 打卡来源 IP(ip_check 开关之外也留痕,供审计/争议取证)
+    ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -1192,8 +1195,97 @@ class WorkCalendar(Base):
         JSON, nullable=False, default=lambda: [1, 2, 3, 4, 5]
     )
     workday_hours: Mapped[float] = mapped_column(Float, nullable=False, server_default="8")
+    # 期望作息(部署时区墙钟),迟到/早退判定的基准时刻
+    work_start: Mapped[time] = mapped_column(
+        Time, nullable=False, default=lambda: time(9, 0), server_default="09:00:00"
+    )
+    work_end: Mapped[time] = mapped_column(
+        Time, nullable=False, default=lambda: time(18, 0), server_default="18:00:00"
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class AttendancePolicy(Base):
+    """考勤策略(每租户一行)。
+
+    - 宽限:``grace_in_minutes`` 分钟内到班不算迟到;``grace_out_minutes``
+      分钟内离岗不算早退
+    - ``ip_check_enabled`` + ``allowed_ips``(CIDR)开启打卡网络白名单;
+      开关开但列表为空时按未启用处理,避免管理员把自己锁死
+    - ``track_late_early`` 总开关关闭时 summarize 不产生 attendance_flags
+    """
+
+    __tablename__ = "attendance_policies"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False, index=True, unique=True,
+    )
+    grace_in_minutes: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    grace_out_minutes: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    track_late_early: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_true()
+    )
+    ip_check_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_false()
+    )
+    allowed_ips: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    notify_on_flag: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_true()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class AttendanceFlag(Base):
+    """迟到/早退异常台账(summarize_day 自动产出,HR 可免计)。
+
+    ``minutes`` 是超出期望时刻的实际分钟数(明细口径);``detail`` 留
+    判定现场(expected/actual 墙钟)。upsert 时保留已免计状态;考勤事实
+    不再满足条件时整行删除,台账与事实保持一致。
+    """
+
+    __tablename__ = "attendance_flags"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    attendance_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("attendances.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # late_in / early_out
+    minutes: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    detail: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    excused: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_false()
+    )
+    excused_by_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    excused_note: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    excused_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("attendance_id", "kind", name="uq_attflag_att_kind"),
     )
 
 
@@ -2362,6 +2454,91 @@ class AiWatcher(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class AutomationRule(Base):
+    """事件驱动自动化规则(租户级)。
+
+    挂在 ``write_audit`` 漏斗上:``entity_type`` + ``trigger`` 命中审计
+    (entity_type, action) 后,先过 ``watch_fields``(仅 update,与
+    ``detail.fields`` 键取交集)再过 ``conditions`` 快照条件,全通过则
+    按 ``action`` 分发 —— notify 写 Notification,email 走 celery。
+
+    ``trigger`` 取值为审计动作名:create/update/delete 是快捷值,
+    其余具名动作(approve/reject/merge/…)自由匹配。
+    """
+
+    __tablename__ = "automation_rules"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    trigger: Mapped[str] = mapped_column(String(64), nullable=False)
+    # update 触发时限定关注字段;[]/None = 任意字段变更都算
+    watch_fields: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    # [{field, op, value}] AND 语义;field 必须是注册表快照白名单键
+    conditions: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    action: Mapped[str] = mapped_column(String(16), nullable=False, server_default="notify")
+    # [{"kind":"actor"|"role"|"user"|"record_owner"|"record_manager","value":?}]
+    recipients: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    title_tpl: Mapped[str] = mapped_column(String(256), nullable=False)
+    body_tpl: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_true()
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    last_fired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class AutomationRun(Base):
+    """自动化执行记账 —— 幂等键 + 可观测性。
+
+    ``UniqueConstraint(rule_id, event_key)``:event_key 取触发审计行的
+    id,同一事件对同一规则只会执行一次,重复分发被唯一约束拦截。
+    """
+
+    __tablename__ = "automation_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    rule_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("automation_rules.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    event_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    trigger: Mapped[str] = mapped_column(String(64), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    # ok / skipped_no_recipients / queued_email / sent / email_failed / error
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="ok")
+    recipients: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("rule_id", "event_key", name="uq_autorun_rule_event"),
     )
 
 

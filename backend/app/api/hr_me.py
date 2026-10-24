@@ -31,7 +31,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -42,6 +42,7 @@ from app.domain.models import (
     Appraisal,
     AppraisalCycle,
     Attendance,
+    AttendanceFlag,
     AttendanceRequest,
     Employee,
     EmployeeCheckin,
@@ -61,6 +62,8 @@ from app.domain.models import (
     User,
 )
 from app.infra.db import get_db
+from app.services.attendance_policy import client_ip, get_policy, ip_allowed
+from app.services.audit import write_audit_denied
 from app.services.permissions import require_linked_employee
 from app.services.work_calendar import count_workdays, workday_hours
 
@@ -575,13 +578,25 @@ class CheckinOut(BaseModel):
 @router.post("/checkins", response_model=CheckinOut, status_code=status.HTTP_201_CREATED)
 def me_checkin(
     body: CheckinIn,
+    request: Request,
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
     e = _me(db, current)
+    ip = client_ip(request)
+    policy = get_policy(db, current.tenant_id)
+    if not ip_allowed(policy, ip):
+        write_audit_denied(
+            db, actor=current, entity_type="employee_checkin",
+            entity_id=e.id, action="create",
+            reason="ip_not_allowed", detail={"ip": ip}, request=request,
+        )
+        db.commit()
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "当前网络环境不允许打卡")
     c = EmployeeCheckin(
         tenant_id=current.tenant_id, employee_id=e.id, ts=_now(),
-        kind=body.kind, method="web", note=body.note,
+        kind=body.kind, method="web", note=body.note, ip=ip,
     )
     db.add(c)
     db.commit()
@@ -651,6 +666,54 @@ def me_attendance(
         day=a.day, status=a.status, first_in=a.first_in,
         last_out=a.last_out, work_hours=a.work_hours,
     ) for a in rows]
+
+
+class MeFlagOut(BaseModel):
+    id: str
+    day: date
+    kind: str
+    minutes: int
+    detail: dict | None
+    excused: bool
+    excused_note: str | None
+
+
+@router.get("/attendance-flags", response_model=list[MeFlagOut])
+def me_attendance_flags(
+    month: str | None = Query(None, description="YYYY-MM"),
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    e = _me(db, current)
+    stmt = select(AttendanceFlag).where(
+        AttendanceFlag.employee_id == e.id)
+    if month:
+        try:
+            y, m = month.split("-")
+            start = date(int(y), int(m), 1)
+            end = (date(int(y), int(m) + 1, 1) if int(m) < 12
+                   else date(int(y) + 1, 1, 1))
+        except ValueError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "month 格式应为 YYYY-MM")
+        stmt = stmt.where(AttendanceFlag.day >= start, AttendanceFlag.day < end)
+    rows = db.scalars(stmt.order_by(AttendanceFlag.day.desc())).all()
+    return [MeFlagOut(
+        id=f.id, day=f.day, kind=f.kind, minutes=f.minutes,
+        detail=f.detail, excused=f.excused, excused_note=f.excused_note,
+    ) for f in rows]
+
+
+@router.get("/attendance-summary")
+def me_attendance_summary(
+    month: str = Query(..., description="YYYY-MM"),
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    e = _me(db, current)
+    from app.api.attendance import monthly_summary_rows
+
+    rows = monthly_summary_rows(db, current.tenant_id, month, [e.id])
+    return rows[0] if rows else None
 
 
 # ============ attendance requests(补卡申请)============

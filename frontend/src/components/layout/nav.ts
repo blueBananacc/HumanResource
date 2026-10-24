@@ -25,6 +25,7 @@ import {
   Users,
   Video,
   Wallet,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -199,6 +200,7 @@ export const mainModules: NavModule[] = [
           { to: "/attendance", label: "考勤记录", permission: PERM.VIEW_REPORTS, keywords: "出勤 考勤 attendance" },
           { to: "/attendance/checkins", label: "打卡流水", permission: PERM.VIEW_REPORTS, keywords: "打卡 签到 checkin" },
           { to: "/attendance/requests", label: "补卡审批", permission: PERM.APPROVE_LEAVE, keywords: "补卡 漏打卡 申诉" },
+          { to: "/attendance/flags", label: "考勤异常", permission: PERM.APPROVE_LEAVE, keywords: "迟到 早退 异常 工时 汇总" },
           { to: "/overtime", label: "加班审批", permission: PERM.APPROVE_LEAVE, keywords: "加班 调休 overtime" },
           { to: "/attendance/calendar", label: "节假日历", permission: PERM.MANAGE_ATTENDANCE, keywords: "节假日 工作日历 调休" },
         ],
@@ -312,6 +314,7 @@ export const bottomModules: NavModule[] = [
           { to: "/settings/sso", label: "SSO 接入", icon: Shuffle, adminOnly: true, keywords: "单点登录" },
           { to: "/settings/audit", label: "审计中心", icon: ShieldCheck, adminOnly: true, keywords: "日志 audit" },
           { to: "/settings/dictionaries", label: "数据字典", icon: BookOpen, permission: PERM.MANAGE_SETTINGS, keywords: "字典 枚举 下拉 dictionary" },
+          { to: "/settings/automations", label: "自动化规则", icon: Zap, permission: PERM.MANAGE_SETTINGS, keywords: "自动化 规则 触发 automation 通知" },
           { to: "/settings/schedulers", label: "后台任务", icon: ListChecks, permission: PERM.MANAGE_SETTINGS, keywords: "任务 调度 scheduler 运维" },
         ],
       },

@@ -11,6 +11,7 @@ import { fetchJSON, ApiError } from "@/lib/api";
 import {
   StatusPill,
   fmtTime,
+  type MeFlag,
   type MeAttendance,
   type MeAttRequest,
   type MeCheckin,
@@ -35,6 +36,10 @@ export function MyAttendance() {
   const { data: attReqs } = useQuery<MeAttRequest[]>({
     queryKey: ["me-att-reqs"],
     queryFn: () => fetchJSON("/api/me/attendance-requests"),
+  });
+  const { data: myFlags } = useQuery<MeFlag[]>({
+    queryKey: ["me-flags", month],
+    queryFn: () => fetchJSON(`/api/me/attendance-flags?month=${month}`),
   });
 
   const todayStr = new Date().toISOString().slice(0, 10);
@@ -158,6 +163,28 @@ export function MyAttendance() {
           className="w-[160px]"
         />
       </div>
+
+      {(myFlags ?? []).length > 0 && (
+        <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] px-6 py-4 flex flex-col gap-2">
+          <span className="text-[13px] font-medium text-[var(--color-text-primary)] font-body">
+            本月考勤异常 {(myFlags ?? []).length} 条
+          </span>
+          {(myFlags ?? []).map((f) => (
+            <div key={f.id} className="flex items-center gap-3 text-[13px] font-body">
+              <span className="font-mono text-[var(--color-text-secondary)]">{f.day}</span>
+              <StatusPill status={f.kind} />
+              <span className="text-[var(--color-warning-text)] font-medium">{f.minutes} 分钟</span>
+              {f.excused ? (
+                <span className="text-[12px] text-[var(--color-success)]">
+                  已免计{f.excused_note ? `:${f.excused_note}` : ""}
+                </span>
+              ) : (
+                <span className="text-[12px] text-[var(--color-text-tertiary)]">如需免计请联系 HR</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
         {isLoading ? (

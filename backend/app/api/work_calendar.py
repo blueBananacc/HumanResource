@@ -9,7 +9,7 @@
 """
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
@@ -42,11 +42,15 @@ router = APIRouter(prefix="/work-calendar", tags=["hris-work-calendar"], depende
 class CalendarOut(BaseModel):
     workdays: list[int]
     workday_hours: float
+    work_start: time
+    work_end: time
 
 
 class CalendarIn(BaseModel):
     workdays: list[int] = Field(..., min_length=1)
     workday_hours: float = Field(8, gt=0, le=24)
+    work_start: time = time(9, 0)
+    work_end: time = time(18, 0)
 
     @field_validator("workdays")
     @classmethod
@@ -89,6 +93,8 @@ def _cal_out(cal: WorkCalendar | None) -> CalendarOut:
     return CalendarOut(
         workdays=sorted(cal.workdays) if cal else sorted(DEFAULT_WORKDAYS),
         workday_hours=cal.workday_hours if cal else DEFAULT_WORKDAY_HOURS,
+        work_start=cal.work_start if cal else time(9, 0),
+        work_end=cal.work_end if cal else time(18, 0),
     )
 
 
@@ -116,11 +122,17 @@ def update_calendar(
         db.add(cal)
     cal.workdays = body.workdays
     cal.workday_hours = body.workday_hours
+    cal.work_start = body.work_start
+    cal.work_end = body.work_end
     cal.updated_at = datetime.now(UTC).replace(tzinfo=None)
     write_audit(
         db, actor=current, entity_type="work_calendar", entity_id=current.tenant_id,
         action="update",
-        detail={"workdays": body.workdays, "workday_hours": body.workday_hours},
+        detail={
+            "workdays": body.workdays, "workday_hours": body.workday_hours,
+            "work_start": body.work_start.isoformat(),
+            "work_end": body.work_end.isoformat(),
+        },
         request=request,
     )
     db.commit()

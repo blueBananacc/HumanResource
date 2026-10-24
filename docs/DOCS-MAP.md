@@ -23,6 +23,7 @@
 | [ai-platform-design.md](design/ai-platform-design.md) | AI 平台层设计（MCP Server/通用实体工具/SOP 剧本/混合检索/AI 留痕） |
 | [platform-capabilities-design.md](design/platform-capabilities-design.md) | 平台能力层设计（实体写 API/已存筛选/收藏/候选人合并/批量导入/字典/调度运维/变更历史/乐观锁） |
 | [ai-native-design.md](design/ai-native-design.md) | AI 原生工作流设计（工具富卡片/模块级提示词/产品帮助/字段级 AI/记录摘要/文档起草） |
+| [automation-attendance-design.md](design/automation-attendance-design.md) | 事件驱动自动化 + 考勤深化设计（审计漏斗规则引擎/迟到早退/IP 白名单/月度汇总） |
 
 ## 维护约定
 

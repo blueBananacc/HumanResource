@@ -18,7 +18,9 @@ from sqlalchemy.orm import Session
 
 from app.domain.models import (
     AiWatcher,
+    AttendanceFlag,
     Candidate,
+    Employee,
     EmployeeRequest,
     HrCase,
     Interview,
@@ -34,6 +36,7 @@ from app.services.permissions import (
     get_linked_employee_id,
     get_org_scope,
     has_permission,
+    visible_employee_ids,
 )
 from app.services.timeutil import local_day_start_utc, local_now
 
@@ -209,12 +212,56 @@ def _eval_reservation_upcoming(db: Session, w: AiWatcher) -> list[dict[str, Any]
     ]
 
 
+def _eval_late_repeat(db: Session, w: AiWatcher) -> list[dict[str, Any]]:
+    """范围内员工近 params.days 天未免计迟到 ≥ params.count 次。"""
+    days = _days(w, default=30)
+    try:
+        count = max(1, int(w.params.get("count", 3)))
+    except (TypeError, ValueError):
+        count = 3
+    cutoff = (_now() - timedelta(days=days)).date()
+    owner = db.get(User, w.user_id)
+    if owner is None:
+        return []
+    emp_ids = visible_employee_ids(db, owner)
+    stmt = (
+        select(AttendanceFlag.employee_id, func.count(AttendanceFlag.id))
+        .where(
+            AttendanceFlag.tenant_id == w.tenant_id,
+            AttendanceFlag.kind == "late_in",
+            AttendanceFlag.excused.is_(False),
+            AttendanceFlag.day >= cutoff,
+        )
+        .group_by(AttendanceFlag.employee_id)
+        .having(func.count(AttendanceFlag.id) >= count)
+    )
+    if emp_ids is not None:
+        stmt = stmt.where(AttendanceFlag.employee_id.in_(emp_ids or ["__none__"]))
+    rows = db.execute(stmt.limit(20)).all()
+    names = {
+        e.id: e.name
+        for e in db.scalars(
+            select(Employee).where(Employee.id.in_([r[0] for r in rows]))
+        ).all()
+    } if rows else {}
+    return [
+        {
+            "title": "多次迟到提醒",
+            "body": f"「{names.get(emp_id, '?')}」近 {days} 天已迟到 {cnt} 次",
+            "link": "/attendance/flags",
+            "dedupe_key": f"late-repeat:{emp_id}:{cutoff.isoformat()}",
+        }
+        for emp_id, cnt in rows
+    ]
+
+
 EVALUATORS = {
     "candidate_stalled": _eval_candidate_stalled,
     "interview_pending_report": _eval_interview_pending,
     "case_open_hours": _eval_case_open_hours,
     "request_pending_days": _eval_request_pending,
     "reservation_upcoming": _eval_reservation_upcoming,
+    "late_repeat": _eval_late_repeat,
 }
 
 WATCHER_KINDS = tuple(EVALUATORS.keys())
@@ -230,6 +277,7 @@ WATCHER_PERMS: dict[str, str | None] = {
     "case_open_hours": PERM_MANAGE_EMPLOYEES,
     "request_pending_days": None,
     "reservation_upcoming": None,
+    "late_repeat": PERM_VIEW_REPORTS,
 }
 
 

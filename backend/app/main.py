@@ -34,6 +34,7 @@ from app.api import applications as applications_api
 from app.api import assistant as assistant_api
 from app.api import attendance as attendance_api
 from app.api import audit as audit_api
+from app.api import automations as automations_api
 from app.api import auth as auth_api
 from app.api import campaigns as campaigns_api
 from app.api import cases as cases_api
@@ -441,6 +442,7 @@ def create_app() -> FastAPI:
     app.include_router(favorites_api.router, prefix="/api")
     app.include_router(dictionaries_api.router, prefix="/api")
     app.include_router(scheduler_api.router, prefix="/api")
+    app.include_router(automations_api.router, prefix="/api")
     app.include_router(ai_api.router, prefix="/api")
     app.include_router(doc_templates_api.router, prefix="/api")
 

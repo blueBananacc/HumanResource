@@ -84,7 +84,7 @@ export function WorkCalendarPage() {
           </div>
         ) : (
           <CalendarForm
-            key={`${cal.workdays.join()}|${cal.workday_hours}`}
+            key={`${cal.workdays.join()}|${cal.workday_hours}|${cal.work_start}|${cal.work_end}`}
             cal={cal}
             canManage={canManage}
             onSaved={() =>
@@ -197,6 +197,8 @@ function CalendarForm({
 }) {
   const [days, setDays] = useState<number[]>(cal.workdays);
   const [hours, setHours] = useState(String(cal.workday_hours));
+  const [workStart, setWorkStart] = useState(cal.work_start.slice(0, 5));
+  const [workEnd, setWorkEnd] = useState(cal.work_end.slice(0, 5));
   const [err, setErr] = useState("");
   const mut = useMutation({
     mutationFn: () =>
@@ -205,6 +207,8 @@ function CalendarForm({
         body: JSON.stringify({
           workdays: [...days].sort((a, b) => a - b),
           workday_hours: Number(hours) || 8,
+          work_start: `${workStart}:00`,
+          work_end: `${workEnd}:00`,
         }),
       }),
     onSuccess: () => {
@@ -244,6 +248,24 @@ function CalendarForm({
           ))}
         </div>
       </div>
+      <Field label="上班时间">
+        <Input
+          type="time"
+          value={workStart}
+          onChange={(e) => setWorkStart(e.target.value)}
+          disabled={!canManage}
+          className="w-[110px]"
+        />
+      </Field>
+      <Field label="下班时间">
+        <Input
+          type="time"
+          value={workEnd}
+          onChange={(e) => setWorkEnd(e.target.value)}
+          disabled={!canManage}
+          className="w-[110px]"
+        />
+      </Field>
       <Field label="日标准工时(加班折算)">
         <Input
           type="number"

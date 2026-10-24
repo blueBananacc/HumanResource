@@ -178,6 +178,59 @@ export type WorkCalendar = {
   workdays: number[];
   /** 日标准工时,加班折算调休用 */
   workday_hours: number;
+  /** 期望上下班时刻(HH:MM:SS),迟到/早退判定基准 */
+  work_start: string;
+  work_end: string;
+};
+
+export type AttendancePolicy = {
+  grace_in_minutes: number;
+  grace_out_minutes: number;
+  track_late_early: boolean;
+  ip_check_enabled: boolean;
+  allowed_ips: string[];
+  notify_on_flag: boolean;
+};
+
+export type AttendanceFlag = {
+  id: string;
+  employee_id: string;
+  employee_name: string;
+  org_unit_name: string | null;
+  day: string;
+  /** late_in 迟到 / early_out 早退 */
+  kind: string;
+  minutes: number;
+  detail: { label?: string; expected?: string; actual?: string } | null;
+  excused: boolean;
+  excused_note: string | null;
+  created_at: string;
+};
+
+export type MonthlySummaryRow = {
+  employee_id: string;
+  employee_name: string;
+  org_unit_name: string | null;
+  present: number;
+  absent: number;
+  leave: number;
+  remote: number;
+  holiday: number;
+  work_hours: number;
+  late_count: number;
+  early_count: number;
+  late_minutes: number;
+  overtime_hours: number;
+};
+
+export type MeFlag = {
+  id: string;
+  day: string;
+  kind: string;
+  minutes: number;
+  detail: { label?: string; expected?: string; actual?: string } | null;
+  excused: boolean;
+  excused_note: string | null;
 };
 
 export type LeavePolicyItem = {
@@ -529,6 +582,9 @@ const STATUS_LABEL: Record<string, string> = {
   cancelled: "已取消",
   paid: "已支付",
   issued: "已发放",
+  // 考勤异常
+  late_in: "迟到",
+  early_out: "早退",
   // 员工在职
   active: "在职",
   leave: "休假中",
@@ -580,6 +636,8 @@ const STATUS_TONE: Record<string, string> = {
   absent: RED,
   declined: RED,
   terminated: RED,
+  late_in: AMBER,
+  early_out: AMBER,
   cancelled: GRAY,
   withdrawn: GRAY,
   suspended: GRAY,
