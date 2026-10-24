@@ -24,6 +24,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -2255,4 +2256,391 @@ class PromptTemplateVersion(Base):
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
+    )
+
+class Notification(Base):
+    """站内通知 — watcher / 工单 / 申请等事件的统一投递渠道。
+
+    前端通知铃按 (user_id, read_at IS NULL) 计未读。
+    """
+
+    __tablename__ = "notifications"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, server_default="system")
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    body: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    link: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_notifications_user_unread", "user_id", "read_at"),
+    )
+
+
+class AiWatcher(Base):
+    """触发式任务(AI-native 工作流,MintHCM AOW_WorkFlow 的轻量等价物)。
+
+    ``kind`` 注册于 ``app.services.watchers.EVALUATORS``,每个评估器读 params
+    检查条件,满足即写 Notification。每 tick 由 lifespan 的 _watch_loop 驱动。
+    """
+
+    __tablename__ = "ai_watchers"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    params: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default="{}"
+    )
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_fired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_true()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class Announcement(Base):
+    """公司公告(MintHCM News)。audience 为空 = 全公司。"""
+
+    __tablename__ = "announcements"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    audience_org_unit_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("org_units.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="draft")
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class AnnouncementRead(Base):
+    """公告已读打点。"""
+
+    __tablename__ = "announcement_reads"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    announcement_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("announcements.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    read_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("announcement_id", "user_id", name="uq_announcement_reads_one"),
+    )
+
+
+class EmployeeRequest(Base):
+    """员工申请枢纽(MintHCM Requests):培训/福利/设备等诉求的统一入口。
+
+    ESS 提交 -> HR 队列审批;留言流双方可见。
+    """
+
+    __tablename__ = "employee_requests"
+
+    KINDS = ("training", "benefit", "equipment", "wellness", "general")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, server_default="general")
+    subject: Mapped[str] = mapped_column(String(128), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    decided_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class RequestComment(Base):
+    """员工申请留言(员工与 HR 双方可见)。"""
+
+    __tablename__ = "request_comments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    request_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("employee_requests.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    author_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class SalaryBand(Base):
+    """薪酬带宽(MintHCM SalaryRanges):岗位/职级 -> 薪资区间参考。
+
+    ``designation`` 为空表示通用带宽;``org_unit_id`` 为空表示全公司。
+    gross 单位为元(整数);employer_cost 可选记录雇主成本侧。
+    """
+
+    __tablename__ = "salary_bands"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    designation: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    org_unit_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("org_units.id", ondelete="SET NULL"), nullable=True
+    )
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, server_default="CNY")
+    gross_min: Mapped[int] = mapped_column(Integer, nullable=False)
+    gross_max: Mapped[int] = mapped_column(Integer, nullable=False)
+    employer_cost_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    employer_cost_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    effective_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_true()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_salary_bands_tenant_name"),
+    )
+
+
+class HrCase(Base):
+    """HR 工单(SuiteCRM Cases):员工诉求通道。
+
+    ``case_no`` 是租户内递增序列(insert 时锁 tenant 行取 max+1)。
+    """
+
+    __tablename__ = "hr_cases"
+
+    KINDS = ("it", "admin", "payroll", "facility", "leave_dispute", "other")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    case_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    subject: Mapped[str] = mapped_column(String(128), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, server_default="other")
+    priority: Mapped[str] = mapped_column(String(16), nullable=False, server_default="normal")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="new")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requester_employee_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    assignee_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "case_no", name="uq_hr_cases_tenant_no"),
+    )
+
+
+class HrCaseUpdate(Base):
+    """工单留言;``is_internal`` 的备注员工侧不可见。"""
+
+    __tablename__ = "hr_case_updates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    case_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("hr_cases.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    author_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    is_internal: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_false()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class KnowledgeArticle(Base):
+    """知识库文章(SuiteCRM AOK_KnowledgeBase)—— 制度文档 + assistant RAG 语料。"""
+
+    __tablename__ = "knowledge_articles"
+
+    CATEGORIES = ("policy", "benefit", "it", "faq", "onboarding", "other")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False, server_default="other")
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    tags: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default="[]"
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="draft")
+    updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class ReportSubscription(Base):
+    """定时报表订阅:_watch_loop 按 weekday+hour 投递邮件摘要。"""
+
+    __tablename__ = "report_subscriptions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    weekday: Mapped[int] = mapped_column(Integer, nullable=False)
+    hour: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_true()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_id", "kind", name="uq_report_subs_one"),
+    )
+
+
+class TalentCampaign(Base):
+    """人才再激活外联(MintHCM Campaigns/EmailMarketing 的收敛版)。
+
+    ``filter`` 快照存筛选条件:{group_id?, skill_ids?, query?};
+    创建时 resolve 成 ``talent_campaign_sends`` 行,无邮箱的记 skipped。
+    """
+
+    __tablename__ = "talent_campaigns"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    filter: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default="{}"
+    )
+    subject: Mapped[str] = mapped_column(String(128), nullable=False)
+    body_text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="draft")
+    total: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    sent_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    done_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class TalentCampaignSend(Base):
+    """外联逐条投递记录。"""
+
+    __tablename__ = "talent_campaign_sends"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    campaign_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("talent_campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    candidate_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    to_email: Mapped[str] = mapped_column(String(256), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="queued")
+    error: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "candidate_id", name="uq_campaign_sends_one"),
     )

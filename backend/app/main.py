@@ -26,28 +26,36 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
+from app.api import activity as activity_api
+from app.api import announcements as announcements_api
 from app.api import applications as applications_api
 from app.api import assistant as assistant_api
 from app.api import attendance as attendance_api
 from app.api import audit as audit_api
 from app.api import auth as auth_api
+from app.api import campaigns as campaigns_api
+from app.api import cases as cases_api
 from app.api import email as email_api
 from app.api import email_templates as email_templates_api
 from app.api import employees as employees_api
+from app.api import entities as entities_api
 from app.api import expenses as expenses_api
 from app.api import healthz
 from app.api import hiring as hiring_api
 from app.api import hr_me as hr_me_api
+from app.api import ics as ics_api
 from app.api import interview_invite as interview_invite_api
 from app.api import interviews as interviews_api
 from app.api import job_governance as job_governance_api
 from app.api import jobs as jobs_api
+from app.api import knowledge as knowledge_api
 from app.api import leave as leave_api
 from app.api import license as license_api
 from app.api import lifecycle as lifecycle_api
 from app.api import llm as llm_api
 from app.api import matches as matches_api
 from app.api import metrics as metrics_api
+from app.api import notifications as notifications_api
 from app.api import org as org_api
 from app.api import overtime as overtime_api
 from app.api import payroll as payroll_api
@@ -56,8 +64,10 @@ from app.api import prompt_templates as prompt_templates_api
 from app.api import question_library as question_library_api
 from app.api import question_sets as question_sets_api
 from app.api import reports as reports_api
+from app.api import requests as requests_api
 from app.api import resumes as resumes_api
 from app.api import rooms as rooms_api
+from app.api import salary_bands as salary_bands_api
 from app.api import skills as skills_api
 from app.api import smtp as smtp_api
 from app.api import sso as sso_api
@@ -210,16 +220,19 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
         seed_from_env(db)
     finally:
         db.close()
-    # 启动后台邮箱同步任务
+    # 启动后台邮箱同步任务 + watcher/报表订阅调度
     task = asyncio.create_task(_email_sync_loop())
+    watch_task = asyncio.create_task(_watch_loop())
     try:
         yield
     finally:
         task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
+        watch_task.cancel()
+        for t in (task, watch_task):
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
 
 
 async def _email_sync_loop() -> None:
@@ -250,6 +263,49 @@ async def _email_sync_loop() -> None:
                     await sync_all_enabled(SessionLocal)
         except Exception as e:  # noqa: BLE001
             logger.exception("[email-sync-loop] 异常: %s", e)
+        await asyncio.sleep(interval)
+
+
+WATCH_LOOP_LOCK_KEY = "free-hire:lock:watch-loop"
+
+
+async def _watch_loop() -> None:
+    """触发式任务 + 报表订阅调度:默认 300s 一轮,模式同 _email_sync_loop。
+
+    - ``run_watchers``:评估所有 active AiWatcher,命中写 Notification(日内去重)
+    - ``due_subscriptions``:本周此时应发的报表订阅 → 逐条 enqueue celery task
+    """
+    from app.services.watchers import run_watchers
+    from app.workers.tasks.notify import due_subscriptions, send_report_subscription
+
+    interval = settings.watch_interval_seconds
+    if interval <= 0:
+        logger.info("WATCH_INTERVAL_SECONDS<=0,跳过 watcher 调度")
+        return
+    logger.info("启动 watcher 调度循环,间隔 %d 秒", interval)
+
+    def _tick() -> None:
+        """一轮同步工作:redis 锁 + DB 评估 + celery enqueue 全是阻塞调用,
+        放 worker 线程跑,不占 API 事件循环。"""
+        with redis_lock(WATCH_LOOP_LOCK_KEY, interval * 2000) as token:
+            if token is None:
+                return
+            db = SessionLocal()
+            try:
+                fired = run_watchers(db)
+                if fired:
+                    logger.info("[watch-loop] 触发 %d 条通知", fired)
+                subs = due_subscriptions(db)
+                for s in subs:
+                    send_report_subscription.delay(str(s.id))
+            finally:
+                db.close()
+
+    while True:
+        try:
+            await asyncio.to_thread(_tick)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("[watch-loop] 异常: %s", e)
         await asyncio.sleep(interval)
 
 
@@ -323,6 +379,21 @@ def create_app() -> FastAPI:
     app.include_router(rooms_api.interviewers_router, prefix="/api")
     app.include_router(surveys_api.router, prefix="/api")
     app.include_router(surveys_api.public_router, prefix="/api")
+    # T3 第二批移植:通知/公告/申请/带宽/工单/知识库/订阅/触达/ICS/活动流/实体检索
+    app.include_router(notifications_api.router, prefix="/api")
+    app.include_router(announcements_api.router, prefix="/api")
+    app.include_router(announcements_api.me_router, prefix="/api")
+    app.include_router(requests_api.router, prefix="/api")
+    app.include_router(requests_api.me_router, prefix="/api")
+    app.include_router(salary_bands_api.router, prefix="/api")
+    app.include_router(cases_api.router, prefix="/api")
+    app.include_router(cases_api.me_router, prefix="/api")
+    app.include_router(knowledge_api.router, prefix="/api")
+    app.include_router(knowledge_api.me_router, prefix="/api")
+    app.include_router(campaigns_api.router, prefix="/api")
+    app.include_router(ics_api.router, prefix="/api")
+    app.include_router(activity_api.router, prefix="/api")
+    app.include_router(entities_api.router, prefix="/api")
 
     return app
 

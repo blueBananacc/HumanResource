@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Calendar,
   MessageSquare,
   Mic,
   Plus,
@@ -17,7 +18,7 @@ import { useConfirm } from "@/components/ui/confirm";
 import { Select as SelectUI } from "@/components/ui/select";
 import { SearchInput } from "@/components/ui/search-input";
 import { Pagination } from "@/components/ui/pagination";
-import { ApiError, fetchJSON } from "@/lib/api";
+import { ApiError, downloadApiFile, fetchJSON } from "@/lib/api";
 import { usePagedQuery, PAGE_SIZE } from "@/lib/usePagedQuery";
 import { formatRelative, levelLabel } from "@/lib/format";
 import { InviteDialog } from "@/components/interview/InviteDialog";
@@ -494,6 +495,24 @@ function InterviewRow({
           查看链接
         </Button>
       )}
+
+      <button
+        type="button"
+        aria-label="下载日历文件"
+        title="下载 .ics 导入 Outlook/日历"
+        onClick={(e) => {
+          e.stopPropagation();
+          downloadApiFile(
+            `/api/interviews/${interview.id}/ics`,
+            `interview-${interview.id.slice(0, 8)}.ics`,
+          ).catch((e) =>
+            alert(e instanceof ApiError ? e.message : "下载失败"),
+          );
+        }}
+        className="p-1.5 rounded-md text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-muted)] transition-colors shrink-0"
+      >
+        <Calendar className="w-4 h-4" />
+      </button>
 
       {interview.deletable && (
         <button

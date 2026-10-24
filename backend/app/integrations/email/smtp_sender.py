@@ -93,10 +93,16 @@ def send_email(
         raise SMTPSendError(f"收件人邮箱无效: {to!r}")
 
     msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = _format_from(cfg)
-    msg["To"] = to
-    msg["Message-ID"] = make_msgid(domain=cfg.from_email.split("@", 1)[-1] or "free-hire")
+    try:
+        msg["Subject"] = subject
+        msg["From"] = _format_from(cfg)
+        msg["To"] = to
+        msg["Message-ID"] = make_msgid(domain=cfg.from_email.split("@", 1)[-1] or "free-hire")
+    except ValueError as e:
+        # 主题/收件人/发件人含 \r\n 时 EmailMessage 抛 ValueError —— 统一转成
+        # SMTPSendError 走「发送失败」路径;否则调用方只接 SMTPSendError,
+        # 单条脏数据会逃逸出来把批量任务(如人才外联)整个中断。
+        raise SMTPSendError(f"邮件头含非法字符: {e}") from e
     msg.set_content(text)
     if html:
         msg.add_alternative(html, subtype="html")

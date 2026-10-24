@@ -82,7 +82,9 @@ function makeTools(token: string): ToolDef[] {
         limit: Type.Optional(Type.Number({ description: "返回条数,默认 10" })),
       }),
       execute: async (_id, p: any) =>
-        t(`/api/talents?q=${encodeURIComponent(p.q ?? "")}&limit=${p.limit ?? 10}`),
+        t(
+          `/api/talents?q=${encodeURIComponent(p.q ?? "")}&limit=${Number(p.limit ?? 10) || 10}`,
+        ),
     },
     {
       name: "list_jobs",
@@ -114,7 +116,7 @@ function makeTools(token: string): ToolDef[] {
       }),
       execute: async (_id, p: any) =>
         t(
-          `/api/matches/job/${p.job_id}?min_score=${p.min_score ?? 0}&limit=${p.limit ?? 20}`,
+          `/api/matches/job/${encodeURIComponent(p.job_id)}?min_score=${Number(p.min_score ?? 0) || 0}&limit=${Number(p.limit ?? 20) || 20}`,
         ),
     },
     {
@@ -127,7 +129,7 @@ function makeTools(token: string): ToolDef[] {
       }),
       execute: async (_id, p: any) =>
         t(
-          `/api/interviews/?q=${encodeURIComponent(p.q ?? "")}&limit=${p.limit ?? 10}`,
+          `/api/interviews/?q=${encodeURIComponent(p.q ?? "")}&limit=${Number(p.limit ?? 10) || 10}`,
         ),
     },
     {
@@ -146,7 +148,8 @@ function makeTools(token: string): ToolDef[] {
       parameters: Type.Object({
         interview_id: Type.String({ description: "面试 id" }),
       }),
-      execute: async (_id, p: any) => t(`/api/interviews/${p.interview_id}/report`),
+      execute: async (_id, p: any) =>
+        t(`/api/interviews/${encodeURIComponent(p.interview_id)}/report`),
     },
     {
       name: "list_question_items",
@@ -174,7 +177,9 @@ function makeTools(token: string): ToolDef[] {
         match_id: Type.String({ description: "匹配记录 id" }),
       }),
       execute: async (_id, p: any) =>
-        t(`/api/matches/${p.match_id}/dismiss-suggestion`, { method: "POST" }),
+        t(`/api/matches/${encodeURIComponent(p.match_id)}/dismiss-suggestion`, {
+          method: "POST",
+        }),
     },
     {
       name: "create_interview",
@@ -249,6 +254,277 @@ function makeTools(token: string): ToolDef[] {
           },
         }),
     },
+    // ===== T3:知识库 RAG =====
+    {
+      name: "search_knowledge",
+      label: "检索知识库",
+      description:
+        "在公司知识库(制度/FAQ/福利/IT 指引)里做全文检索;回答员工政策类问题时先查这里,并引用文章标题",
+      parameters: Type.Object({
+        q: Type.String({ description: "检索关键词" }),
+        limit: Type.Optional(Type.Number({ description: "默认 5" })),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/knowledge/search", {
+          method: "POST",
+          body: { q: p.q, limit: p.limit ?? 5 },
+        }),
+    },
+    // ===== T3:通用实体元工具(MintHCM AI Tools search_records 思路)=====
+    {
+      name: "list_entities",
+      label: "列出可检索实体",
+      description:
+        "列出当前用户可检索的业务实体类型(候选人/岗位/员工/面试/工单/公告等)及各自可搜索字段;不确定查什么时先调它",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/entities"),
+    },
+    {
+      name: "search_records",
+      label: "通用实体搜索",
+      description:
+        "对任意实体做模糊搜索(先用 list_entities 看可用 entity 与字段),返回 {id,label,secondary}",
+      parameters: Type.Object({
+        entity: Type.String({ description: "实体 key,如 talents/jobs/cases/employees" }),
+        q: Type.Optional(Type.String({ description: "关键词" })),
+        limit: Type.Optional(Type.Number({ description: "默认 10" })),
+      }),
+      execute: async (_id, p: any) =>
+        t(
+          `/api/entities/${encodeURIComponent(p.entity)}/search?q=${encodeURIComponent(p.q ?? "")}&limit=${Number(p.limit ?? 10) || 10}`,
+        ),
+    },
+    {
+      name: "count_records",
+      label: "通用实体计数",
+      description: "统计某实体有多少条命中(可带关键词),回答'有多少…'类问题",
+      parameters: Type.Object({
+        entity: Type.String({ description: "实体 key" }),
+        q: Type.Optional(Type.String({ description: "关键词" })),
+      }),
+      execute: async (_id, p: any) =>
+        t(
+          `/api/entities/${encodeURIComponent(p.entity)}/count?q=${encodeURIComponent(p.q ?? "")}`,
+        ),
+    },
+    // ===== T3:员工服务 =====
+    {
+      name: "list_announcements",
+      label: "查公司公告",
+      description: "列出对当前用户可见的已发布公告(含已读标记)",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/me/announcements"),
+    },
+    {
+      name: "create_request",
+      label: "提交员工申请",
+      description:
+        "帮当前用户提交员工申请(培训/福利/设备/健康/通用);先和用户确认类型与内容再调用",
+      parameters: Type.Object({
+        kind: Type.String({
+          description: "general/training/benefit/equipment/wellness",
+        }),
+        subject: Type.String({ description: "一句话主题,≤128 字" }),
+        detail: Type.Optional(Type.String({ description: "详细说明" })),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/me/requests", {
+          method: "POST",
+          body: { kind: p.kind, subject: p.subject, detail: p.detail },
+        }),
+    },
+    {
+      name: "list_my_requests",
+      label: "查我的申请",
+      description: "列出当前用户提交的员工申请及状态",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/me/requests"),
+    },
+    {
+      name: "create_case",
+      label: "提交 HR 工单",
+      description:
+        "帮当前用户提交 HR 服务台工单(薪酬/IT/行政/设施/假勤争议等);先和用户确认类型与优先级",
+      parameters: Type.Object({
+        subject: Type.String({ description: "一句话主题,≤128 字" }),
+        kind: Type.Optional(
+          Type.String({ description: "payroll/admin/it/facility/leave_dispute/other,默认 other" }),
+        ),
+        priority: Type.Optional(
+          Type.String({ description: "low/normal/high/urgent,默认 normal" }),
+        ),
+        description: Type.Optional(Type.String({ description: "详细描述" })),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/me/cases", {
+          method: "POST",
+          body: {
+            subject: p.subject,
+            kind: p.kind ?? "other",
+            priority: p.priority ?? "normal",
+            description: p.description,
+          },
+        }),
+    },
+    {
+      name: "list_my_cases",
+      label: "查我的工单",
+      description: "列出当前用户提交的 HR 工单及处理进展",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/me/cases"),
+    },
+    // ===== T3:薪酬带宽 =====
+    {
+      name: "check_salary_band",
+      label: "查薪酬带宽",
+      description:
+        "查询某职级/岗位的薪酬带宽与建议薪资是否落在区间内(offer 定薪参考)",
+      parameters: Type.Object({
+        designation: Type.Optional(Type.String({ description: "职级/岗位名" })),
+        amount: Type.Number({ description: "月薪金额(数字)" }),
+      }),
+      execute: async (_id, p: any) =>
+        t(
+          `/api/salary-bands/check?amount=${Number(p.amount) || 0}${p.designation ? `&designation=${encodeURIComponent(p.designation)}` : ""}`,
+        ),
+    },
+    // ===== T3:触发式任务 + 报表订阅 =====
+    {
+      name: "create_watcher",
+      label: "创建自动提醒",
+      description:
+        "创建触发式提醒:可选类型 candidate_stalled(候选人停滞,params.days)/interview_pending_report(面试未出报告)/case_open_hours(工单超时,params.hours)/request_pending_days(申请积压,params.days)/reservation_upcoming(预约将开始,params.minutes)",
+      parameters: Type.Object({
+        kind: Type.String({ description: "watcher 类型" }),
+        params: Type.Optional(
+          Type.Object({}, { additionalProperties: true }),
+        ),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/me/watchers", {
+          method: "POST",
+          body: { kind: p.kind, params: p.params ?? {} },
+        }),
+    },
+    {
+      name: "list_watchers",
+      label: "查我的提醒",
+      description: "列出当前用户创建的触发式提醒(watcher)及启用状态",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/me/watchers"),
+    },
+    {
+      name: "delete_watcher",
+      label: "删除提醒",
+      description: "删除当前用户的一条触发式提醒(先用 list_watchers 拿 id)",
+      parameters: Type.Object({
+        watcher_id: Type.String({ description: "watcher id" }),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/me/watchers/${encodeURIComponent(p.watcher_id)}`, {
+          method: "DELETE",
+        }),
+    },
+    {
+      name: "create_report_subscription",
+      label: "订阅定时报表",
+      description:
+        "创建每周定时邮件报表:kind=pipeline_funnel(管道漏斗)/weekly_summary(每周摘要)/pending_items(待办提醒);weekday 0=周一,hour 0-23",
+      parameters: Type.Object({
+        kind: Type.String({ description: "报表类型" }),
+        weekday: Type.Number({ description: "0=周一…6=周日" }),
+        hour: Type.Number({ description: "发送小时 0-23" }),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/me/report-subscriptions", {
+          method: "POST",
+          body: { kind: p.kind, weekday: p.weekday, hour: p.hour },
+        }),
+    },
+    {
+      name: "list_report_subscriptions",
+      label: "查我的报表订阅",
+      description: "列出当前用户的每周报表订阅及启用状态",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/me/report-subscriptions"),
+    },
+    {
+      name: "delete_report_subscription",
+      label: "取消报表订阅",
+      description: "删除当前用户的一条报表订阅(先用 list_report_subscriptions 拿 id)",
+      parameters: Type.Object({
+        subscription_id: Type.String({ description: "订阅 id" }),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/me/report-subscriptions/${encodeURIComponent(p.subscription_id)}`, {
+          method: "DELETE",
+        }),
+    },
+    // ===== T3:HR 侧补充工具 =====
+    {
+      name: "publish_announcement",
+      label: "发布公司公告",
+      description:
+        "代当前用户发布一条全公司公告(需 manage_employees 权限);先和用户确认标题与内容",
+      parameters: Type.Object({
+        title: Type.String({ description: "公告标题,≤128 字" }),
+        content: Type.String({ description: "公告正文" }),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/announcements?publish=true", {
+          method: "POST",
+          body: { title: p.title, content: p.content },
+        }),
+    },
+    {
+      name: "list_cases",
+      label: "查 HR 工单队列",
+      description:
+        "列出 HR 工单队列(需 manage_employees 权限);可按 status(new/assigned/in_progress/resolved/closed)过滤",
+      parameters: Type.Object({
+        status: Type.Optional(Type.String({ description: "状态过滤" })),
+        q: Type.Optional(Type.String({ description: "主题关键词" })),
+      }),
+      execute: async (_id, p: any) => {
+        const qs = new URLSearchParams({ limit: "20" });
+        if (p.status) qs.set("status_filter", p.status);
+        if (p.q) qs.set("q", p.q);
+        return t(`/api/cases?${qs}`);
+      },
+    },
+    {
+      name: "update_case_status",
+      label: "更新工单状态",
+      description:
+        "更新 HR 工单状态(需 manage_employees 权限);status=resolved 时必须给 resolution",
+      parameters: Type.Object({
+        case_id: Type.String({ description: "工单 id" }),
+        status: Type.String({
+          description: "new/assigned/in_progress/resolved/closed",
+        }),
+        resolution: Type.Optional(
+          Type.String({ description: "解决方案(resolved 必填)" }),
+        ),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/cases/${encodeURIComponent(p.case_id)}/status`, {
+          method: "POST",
+          body: { status: p.status, resolution: p.resolution },
+        }),
+    },
+    {
+      name: "get_activity",
+      label: "查近期动态",
+      description: "获取租户近期活动流(创建/流转/预约/答卷等),回答'最近发生了什么'",
+      parameters: Type.Object({
+        days: Type.Optional(Type.Number({ description: "回看天数 1-30,默认 7" })),
+        limit: Type.Optional(Type.Number({ description: "条数上限,默认 30" })),
+      }),
+      execute: async (_id, p: any) =>
+        t(
+          `/api/activity?days=${Number(p.days ?? 7) || 7}&limit=${Number(p.limit ?? 30) || 30}`,
+        ),
+    },
   ];
 }
 
@@ -257,6 +533,14 @@ export const WRITE_TOOLS = new Set([
   "create_interview",
   "generate_questions",
   "dismiss_interview_suggestion",
+  "create_request",
+  "create_case",
+  "create_watcher",
+  "create_report_subscription",
+  "delete_watcher",
+  "delete_report_subscription",
+  "publish_announcement",
+  "update_case_status",
 ]);
 
 export function hrTools(token: string): AgentTool[] {

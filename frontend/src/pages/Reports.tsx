@@ -1,13 +1,19 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, type FormEvent } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChartBar,
   Users as UsersIcon,
   Briefcase,
+  MailCheck,
   Video,
   Sparkles,
 } from "lucide-react";
-import { fetchJSON } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Modal } from "@/components/ui/modal";
+import { Select } from "@/components/ui/select";
+import { fetchJSON, ApiError } from "@/lib/api";
+import { Field } from "@/pages/hris/Employees";
 
 type Range = "7d" | "30d" | "90d" | "all";
 
@@ -62,6 +68,7 @@ const INTERVIEW_STATUS_LABEL: Record<string, string> = {
 
 export function Reports() {
   const [range, setRange] = useState<Range>("30d");
+  const [subOpen, setSubOpen] = useState(false);
   const { data, isLoading } = useQuery({
     queryKey: ["reports-overview", range],
     queryFn: () =>
@@ -79,8 +86,15 @@ export function Reports() {
             跨候选人 / 岗位 / 面试的聚合数据;租户隔离,租户内 admin / hr 可见
           </p>
         </div>
-        <RangeSwitcher value={range} onChange={setRange} />
+        <div className="flex items-center gap-2 shrink-0">
+          <Button variant="secondary" onClick={() => setSubOpen(true)}>
+            <MailCheck className="w-4 h-4" />
+            订阅周报
+          </Button>
+          <RangeSwitcher value={range} onChange={setRange} />
+        </div>
       </div>
+      {subOpen && <SubscribeModal onClose={() => setSubOpen(false)} />}
 
       {isLoading || !data ? (
         <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-12 text-center text-sm text-[var(--color-text-tertiary)] font-body">
@@ -399,5 +413,90 @@ function EmptyHint({ text }: { text: string }) {
     <div className="grid place-items-center py-8 text-[12px] text-[var(--color-text-tertiary)] font-body">
       {text}
     </div>
+  );
+}
+
+const SUB_KIND_LABEL: Record<string, string> = {
+  pipeline_funnel: "管道漏斗周报",
+  weekly_summary: "每周招聘摘要",
+  pending_items: "待办事项提醒",
+};
+
+const WEEKDAY_OPTIONS = ["一", "二", "三", "四", "五", "六", "日"].map(
+  (l, i) => ({ value: String(i), label: `周${l}` }),
+);
+
+/** 订阅定时邮件报表:与 AI 助手 create_report_subscription 走同一接口,
+ * 创建后可在 /me 提醒卡启停或删除。 */
+function SubscribeModal({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const [kind, setKind] = useState("weekly_summary");
+  const [weekday, setWeekday] = useState("0");
+  const [hour, setHour] = useState("9");
+  const [err, setErr] = useState("");
+
+  const mut = useMutation({
+    mutationFn: () =>
+      fetchJSON("/api/me/report-subscriptions", {
+        method: "POST",
+        body: JSON.stringify({
+          kind,
+          weekday: Number(weekday),
+          hour: Number(hour),
+        }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["me-report-subs"] });
+      onClose();
+    },
+    onError: (e) => setErr(e instanceof ApiError ? e.message : "订阅失败"),
+  });
+
+  function submit(ev: FormEvent<HTMLFormElement>) {
+    ev.preventDefault();
+    setErr("");
+    const h = Number(hour);
+    if (!Number.isInteger(h) || h < 0 || h > 23) {
+      setErr("发送小时必须是 0-23 的整数");
+      return;
+    }
+    mut.mutate();
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="订阅周报"
+      description="每周定时把聚合报表发到你的登录邮箱;时间按本地时间理解。"
+      width={480}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>取消</Button>
+          <Button type="submit" form="sub-form" disabled={mut.isPending}>
+            {mut.isPending ? "订阅中…" : "订阅"}
+          </Button>
+        </>
+      }
+    >
+      <form id="sub-form" onSubmit={submit} className="flex flex-col gap-4">
+        <Field label="报表类型">
+          <Select
+            value={kind}
+            onChange={setKind}
+            options={Object.entries(SUB_KIND_LABEL).map(([v, l]) => ({ value: v, label: l }))}
+          />
+        </Field>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="发送日">
+            <Select value={weekday} onChange={setWeekday} options={WEEKDAY_OPTIONS} />
+          </Field>
+          <Field label="发送小时(0-23)">
+            <Input type="number" min={0} max={23} value={hour} onChange={(e) => setHour(e.target.value)} required />
+          </Field>
+        </div>
+        {err && <div className="text-[13px] text-[var(--color-danger)] font-body">{err}</div>}
+      </form>
+    </Modal>
   );
 }

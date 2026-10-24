@@ -6,8 +6,9 @@ JWT 密钥、首次启动管理员账号、以及自配的 LLM Provider。
 from __future__ import annotations
 
 from functools import lru_cache
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,6 +33,25 @@ class Settings(BaseSettings):
     # dev 默认公开 ``/api/healthz?detail=1`` 与 ``/api/metrics`` 方便本地调试。
     # prod/staging 默认隐藏,仅在内网网关/Prometheus 已做好访问控制时显式打开。
     expose_operational_diagnostics: bool = False
+
+    # ---- 部署时区 ----
+    # 排期类字段(预约起止 / 公告过期 / 报表订阅的 weekday+hour)按「客户端
+    # 墙钟」落库 —— 前端 datetime-local 输入的本地时间原样存,不换算
+    # (见 app.api.rooms._naive 与 app.services.timeutil 的注释)。调度器与
+    # 到期判断跟"现在"比较时必须用同一墙钟口径,即本时区的当前时间。
+    # 私有化部署应设为主要用户群所在时区;容器自身跑 UTC 不影响该口径。
+    app_timezone: str = "Asia/Shanghai"
+
+    @field_validator("app_timezone")
+    @classmethod
+    def _valid_timezone(cls, v: str) -> str:
+        try:
+            ZoneInfo(v)
+        except ZoneInfoNotFoundError as e:
+            raise ValueError(
+                f"APP_TIMEZONE 必须是合法 IANA 时区名,当前值:{v}"
+            ) from e
+        return v
 
     # ---- 对象存储 ----
     storage_backend: str = Field(default="local", description="local / s3 / seaweedfs ...")
@@ -107,6 +127,11 @@ class Settings(BaseSettings):
     # 全局 loop 锁 TTL: 防止 multi-worker 多个 _email_sync_loop 同时进入
     # 0 = 运行时按 email_sync_interval_seconds * 2 计算 (留一倍余量)
     email_sync_loop_lock_ttl_seconds: int = 0
+
+    # ---- watcher / 报表订阅调度 ----
+    # _watch_loop 每轮间隔秒数:评估 ai_watchers + 投递到期报表订阅。
+    # <=0 表示禁用该后台循环。
+    watch_interval_seconds: int = 300
 
     # ---- Celery (简历解析异步化) ----
     # broker / result backend 留空时,默认复用 redis_url(broker -> /1, backend -> /2),

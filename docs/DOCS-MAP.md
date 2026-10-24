@@ -18,6 +18,7 @@
 |---|---|
 | [hibob-style-reference.md](design/hibob-style-reference.md) | HiBob 风格前端设计参考（配色/字体/形状/交互规则，前端改动先读） |
 | [minthcm-port-plan.md](design/minthcm-port-plan.md) | MintHCM 功能移植方案（管道看板/提示词/邮件模板/技能/会议室/问卷，表设计与验收基线） |
+| [minthcm-port-2-plan.md](design/minthcm-port-2-plan.md) | T3 第二批移植方案（公告/员工申请/薪酬带宽/HR工单 + 通知/watcher/知识库/报表订阅/外联/ICS/活动流/实体检索） |
 
 ## 维护约定
 

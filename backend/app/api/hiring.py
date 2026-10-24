@@ -33,6 +33,7 @@ from app.domain.models import (
     LifecycleTask,
     LifecycleTemplate,
     OrgUnit,
+    SalaryBand,
     User,
 )
 from app.infra.db import get_db
@@ -290,6 +291,7 @@ class OfferOut(BaseModel):
     job_title: str | None
     position: str | None
     salary: dict | None
+    salary_band_check: dict | None = None
     start_date: date | None
     letter: str | None
     status: str
@@ -395,6 +397,41 @@ def _offer(db: Session, oid: str, tenant_id: str, *, for_update: bool = False) -
     return o
 
 
+def _band_check(db: Session, tenant_id: str, o: JobOffer) -> dict | None:
+    """薪酬带宽参考(仅详情返回,不阻塞):position ↔ designation 匹配 + salary.base 区间。
+
+    复用 salary_bands._band_score 的匹配优先级;无 salary/无命中带宽 → None。
+    """
+    from app.api.salary_bands import _band_score
+
+    amount = None
+    if o.salary and isinstance(o.salary.get("base"), (int, float)):
+        amount = int(o.salary["base"])
+    if amount is None:
+        return None
+    rows = db.scalars(
+        select(SalaryBand).where(
+            SalaryBand.tenant_id == tenant_id, SalaryBand.is_active.is_(True)
+        )
+    ).all()
+    scored = [
+        (s, b)
+        for b in rows
+        if (s := _band_score(b, o.position, None)) is not None
+    ]
+    if not scored:
+        return None
+    scored.sort(key=lambda x: x[0])
+    band = scored[0][1]
+    return {
+        "band_name": band.name,
+        "gross_min": band.gross_min,
+        "gross_max": band.gross_max,
+        "currency": band.currency,
+        "within": band.gross_min <= amount <= band.gross_max,
+    }
+
+
 @offer_router.get("/{oid}", response_model=OfferOut)
 def get_offer(
     oid: str,
@@ -403,7 +440,9 @@ def get_offer(
 ):
     o = _offer(db, oid, current.tenant_id)
     cands, jobs = _offer_maps(db, current.tenant_id)
-    return _offer_out(o, cands, jobs)
+    out = _offer_out(o, cands, jobs)
+    out.salary_band_check = _band_check(db, current.tenant_id, o)
+    return out
 
 
 @offer_router.post("/{oid}/send", response_model=OfferOut)

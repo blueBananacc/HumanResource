@@ -36,6 +36,7 @@ _INCLUDED_TASKS = [
     "app.workers.tasks.questions",
     "app.workers.tasks.email",
     "app.workers.tasks.match",
+    "app.workers.tasks.notify",
 ]
 
 celery_app = Celery(

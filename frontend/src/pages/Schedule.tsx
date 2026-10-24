@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   DoorOpen,
+  Download,
   Package,
   Plus,
   Settings2,
@@ -13,7 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { RoomsManager } from "@/components/schedule/RoomsManager";
-import { ApiError, fetchJSON } from "@/lib/api";
+import { ApiError, downloadApiFile, fetchJSON } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { PERM } from "@/lib/roles";
 
@@ -323,16 +324,34 @@ export function Schedule() {
                           >
                             {r.title}
                           </span>
-                          {canWrite && !cancelled && (
+                          <span className="flex items-center gap-0.5 shrink-0">
                             <button
                               type="button"
-                              onClick={() => cancel.mutate(r.id)}
-                              className="opacity-0 group-hover:opacity-100 text-[var(--color-text-tertiary)] hover:text-[var(--color-danger)] shrink-0"
-                              aria-label="取消预约"
+                              onClick={() =>
+                                downloadApiFile(
+                                  `/api/reservations/${r.id}/ics`,
+                                  `reservation-${r.id.slice(0, 8)}.ics`,
+                                ).catch((e) =>
+                                  alert(e instanceof ApiError ? e.message : "下载失败"),
+                                )
+                              }
+                              className="opacity-0 group-hover:opacity-100 text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)]"
+                              aria-label="下载 ICS 日历"
+                              title="下载 .ics 导入 Outlook/日历"
                             >
-                              <X className="w-3 h-3" />
+                              <Download className="w-3 h-3" />
                             </button>
-                          )}
+                            {canWrite && !cancelled && (
+                              <button
+                                type="button"
+                                onClick={() => cancel.mutate(r.id)}
+                                className="opacity-0 group-hover:opacity-100 text-[var(--color-text-tertiary)] hover:text-[var(--color-danger)]"
+                                aria-label="取消预约"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            )}
+                          </span>
                         </div>
                         <div
                           className={`text-[10px] font-body truncate ${

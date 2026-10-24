@@ -84,3 +84,47 @@ export async function fetchJSON<T = unknown>(
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
+
+/**
+ * 触发 API 文件下载(.ics / 简历原文件等)。
+ *
+ * token 在 localStorage(Bearer header),不能像 cookie 那样靠浏览器自动
+ * 带上 — 直接 ``<a href="/api/...">`` 会丢 Authorization 被 401 弹回登录,
+ * 所以统一 fetch + blob + a[download]。
+ */
+export async function downloadApiFile(url: string, filename: string): Promise<void> {
+  const token = getToken();
+  const res = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (res.status === 401) {
+    setToken(null);
+    if (location.pathname !== "/login") location.href = "/login";
+    throw new ApiError(401, "未授权");
+  }
+  if (!res.ok) {
+    let detail: unknown = undefined;
+    try {
+      detail = await res.json();
+    } catch {
+      // 二进制响应失败时通常没有 JSON body
+    }
+    const msg =
+      typeof detail === "object" && detail && "detail" in detail
+        ? String((detail as { detail: unknown }).detail)
+        : `HTTP ${res.status}`;
+    throw new ApiError(res.status, msg, detail);
+  }
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}

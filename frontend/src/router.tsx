@@ -56,6 +56,12 @@ import { AppraisalCycles } from "@/pages/hris/AppraisalCycles";
 import { Expenses } from "@/pages/hris/Expenses";
 import { ExpenseTypes } from "@/pages/hris/ExpenseTypes";
 import { Payroll } from "@/pages/hris/Payroll";
+import { Announcements } from "@/pages/hris/Announcements";
+import { EmployeeRequests } from "@/pages/hris/EmployeeRequests";
+import { HrCases } from "@/pages/hris/HrCases";
+import { Knowledge } from "@/pages/hris/Knowledge";
+import { SalaryBands } from "@/pages/hris/SalaryBands";
+import { Campaigns } from "@/pages/hris/Campaigns";
 // 员工自助(ESS)
 import { MeDashboard } from "@/pages/me/MeDashboard";
 import { MyLeave } from "@/pages/me/MyLeave";
@@ -64,6 +70,8 @@ import { MyPayslips } from "@/pages/me/MyPayslips";
 import { MyExpenses } from "@/pages/me/MyExpenses";
 import { MyGoals } from "@/pages/me/MyGoals";
 import { MyProfile } from "@/pages/me/MyProfile";
+import { MyRequests } from "@/pages/me/MyRequests";
+import { MyCases } from "@/pages/me/MyCases";
 
 /** employee 角色进 / 时去自助工作台;其他角色看招聘 Dashboard */
 function IndexByRole() {
@@ -118,6 +126,13 @@ export const router = createBrowserRouter([
       { path: "expenses", element: <Expenses /> },
       { path: "expenses/types", element: <ExpenseTypes /> },
       { path: "payroll", element: <Payroll /> },
+      { path: "salary-bands", element: <SalaryBands /> },
+      // ── HR 服务台 / 协作 ──
+      { path: "announcements", element: <Announcements /> },
+      { path: "requests", element: <EmployeeRequests /> },
+      { path: "cases", element: <HrCases /> },
+      { path: "knowledge", element: <Knowledge /> },
+      { path: "campaigns", element: <Campaigns /> },
       // ── 员工自助(ESS) ──
       { path: "me", element: <MeGuard><MeDashboard /></MeGuard> },
       { path: "me/leave", element: <MeGuard><MyLeave /></MeGuard> },
@@ -125,6 +140,8 @@ export const router = createBrowserRouter([
       { path: "me/payslips", element: <MeGuard><MyPayslips /></MeGuard> },
       { path: "me/expenses", element: <MeGuard><MyExpenses /></MeGuard> },
       { path: "me/goals", element: <MeGuard><MyGoals /></MeGuard> },
+      { path: "me/requests", element: <MeGuard><MyRequests /></MeGuard> },
+      { path: "me/cases", element: <MeGuard><MyCases /></MeGuard> },
       { path: "me/profile", element: <MeGuard><MyProfile /></MeGuard> },
       // ── 招聘 ──
       { path: "talents", element: <TalentPool /> },

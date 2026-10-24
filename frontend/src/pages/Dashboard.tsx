@@ -1,5 +1,5 @@
 import { Sparkles, FileText } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { BrandShape } from "@/components/brand/BrandShape";
 import { Button } from "@/components/ui/button";
@@ -115,7 +115,7 @@ export function Dashboard() {
 
       <div className="grid grid-cols-[1fr_380px] gap-4">
         <RecentResumes resumes={resumes ?? []} />
-        <TodayTodos />
+        <ActivityCard />
       </div>
       </div>
     </main>
@@ -232,41 +232,130 @@ function RecentResumes({ resumes }: { resumes: Resume[] }) {
   );
 }
 
-const TODOS = [
-  { title: "复审待筛选简历", sub: "M1 阶段开放" },
-  { title: "启动 AI 文本面试", sub: "M1 阶段开放" },
-  { title: "导出本周招聘报告", sub: "M1 阶段开放" },
-  { title: "配置 LLM Provider", sub: "系统设置 · 必需" },
-];
+type Notification = {
+  id: string;
+  title: string;
+  body: string | null;
+  link: string | null;
+  created_at: string;
+};
 
-function TodayTodos() {
+type ActivityItem = {
+  at: string;
+  actor_name: string | null;
+  verb: string;
+  entity_kind: string;
+  entity_label: string | null;
+  link: string | null;
+};
+
+function ActivityCard() {
+  const qc = useQueryClient();
+  const { data: notes } = useQuery<Notification[]>({
+    queryKey: ["me-notifications-unread"],
+    queryFn: () => fetchJSON("/api/me/notifications?unread_only=true"),
+    refetchInterval: 60_000,
+  });
+  const { data: feed } = useQuery<ActivityItem[]>({
+    queryKey: ["activity-feed"],
+    queryFn: () => fetchJSON("/api/activity?days=7&limit=12"),
+  });
+  const markRead = useMutation({
+    mutationFn: (id: string) =>
+      fetchJSON(`/api/me/notifications/${id}/read`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["me-notifications-unread"] }),
+  });
+  const markAll = useMutation({
+    mutationFn: () => fetchJSON("/api/me/notifications/read-all", { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["me-notifications-unread"] }),
+  });
+
+  const unread = notes ?? [];
+  const items = feed ?? [];
+
   return (
     <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] flex flex-col pb-3">
       <CardHeader
-        title="今日待办"
+        title="通知与动态"
         extra={
-          <span className="min-w-6 h-6 px-2 rounded-full bg-[var(--color-orange)] text-white text-xs font-bold font-body grid place-items-center">
-            {TODOS.length}
-          </span>
+          unread.length > 0 ? (
+            <button
+              onClick={() => markAll.mutate()}
+              className="min-w-6 h-6 px-2 rounded-full bg-[var(--color-orange)] text-white text-xs font-bold font-body grid place-items-center hover:opacity-80"
+              title="全部标为已读"
+            >
+              {unread.length}
+            </button>
+          ) : undefined
         }
       />
-      {TODOS.map((t) => (
-        <div key={t.title} className="flex items-center gap-3 px-5 py-2.5 border-t border-[var(--color-border-row)]">
-          <input
-            type="checkbox"
-            disabled
-            className="w-4 h-4 rounded border-[var(--color-border-subtle)]"
-          />
-          <div className="flex flex-col flex-1 min-w-0 gap-0.5">
-            <span className="text-[13px] font-body text-[var(--color-text-tertiary)]">
-              {t.title}
-            </span>
-            <span className="text-[11px] text-[var(--color-text-tertiary)] font-body">
-              {t.sub}
-            </span>
-          </div>
+      {unread.length === 0 && items.length === 0 ? (
+        <div className="px-5 py-8 text-center text-[13px] text-[var(--color-text-tertiary)] font-body">
+          暂无新动态
         </div>
-      ))}
+      ) : (
+        <>
+          {unread.map((n) => {
+            const inner = (
+              <div className="flex flex-col flex-1 min-w-0 gap-0.5">
+                <span className="text-[13px] font-body text-[var(--color-text-primary)]">{n.title}</span>
+                {n.body && (
+                  <span className="text-[11px] text-[var(--color-text-tertiary)] font-body line-clamp-2">{n.body}</span>
+                )}
+              </div>
+            );
+            return (
+              <div key={n.id} className="flex items-start gap-3 px-5 py-2.5 border-t border-[var(--color-border-row)]">
+                <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-[var(--color-orange)] shrink-0" />
+                {n.link ? (
+                  <Link
+                    to={n.link.split("#")[0]}
+                    className="flex-1 min-w-0 hover:bg-[var(--color-bg-muted)] rounded -mx-1 px-1"
+                    onClick={() => markRead.mutate(n.id)}
+                  >
+                    {inner}
+                  </Link>
+                ) : (
+                  inner
+                )}
+                <button
+                  className="text-[11px] text-[var(--color-info)] hover:underline shrink-0"
+                  onClick={() => markRead.mutate(n.id)}
+                >
+                  已读
+                </button>
+              </div>
+            );
+          })}
+          {items.map((it, i) => {
+            const inner = (
+              <>
+                <span className="text-[13px] font-body text-[var(--color-text-secondary)] flex-1 min-w-0 truncate">
+                  {it.actor_name ? `${it.actor_name} ` : ""}
+                  {it.verb}
+                  {it.entity_label ? `「${it.entity_label}」` : ""}
+                </span>
+                <span className="text-[11px] text-[var(--color-text-tertiary)] font-mono shrink-0">
+                  {formatRelative(it.at)}
+                </span>
+              </>
+            );
+            return it.link ? (
+              <Link
+                key={i}
+                to={it.link}
+                className="flex items-center gap-3 px-5 py-2.5 border-t border-[var(--color-border-row)] hover:bg-[var(--color-bg-muted)]"
+              >
+                {inner}
+              </Link>
+            ) : (
+              <div key={i} className="flex items-center gap-3 px-5 py-2.5 border-t border-[var(--color-border-row)]">
+                {inner}
+              </div>
+            );
+          })}
+        </>
+      )}
     </div>
   );
 }

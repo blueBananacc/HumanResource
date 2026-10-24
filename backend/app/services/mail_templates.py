@@ -135,6 +135,17 @@ EMAIL_SPECS: dict[str, EmailSpec] = {
             "</div>"
         ),
     ),
+    "report.digest": EmailSpec(
+        name="定时报表摘要",
+        description="报表订阅的周期邮件;body 由后端按订阅类型生成",
+        subject="{{digest_title}}",
+        variables=[
+            {"name": "digest_title", "desc": "邮件标题"},
+            {"name": "digest_body", "desc": "正文(多行纯文本)"},
+        ],
+        body_text="{{digest_body}}\n\n— HROnfire 定时报表",
+        body_html=None,
+    ),
 }
 
 

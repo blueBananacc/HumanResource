@@ -5,6 +5,7 @@ import {
   Ban,
   CheckCircle2,
   Folder,
+  MailCheck,
   Plus,
   Trash2,
   Upload,
@@ -110,6 +111,12 @@ export function TalentPool() {
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <Link to="/campaigns">
+            <Button variant="secondary">
+              <MailCheck className="w-4 h-4" />
+              人才再激活
+            </Button>
+          </Link>
           <Button onClick={() => uploadRef.current?.open()}>
             <Upload className="w-4 h-4" />
             上传简历

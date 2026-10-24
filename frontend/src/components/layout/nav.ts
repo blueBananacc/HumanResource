@@ -8,6 +8,7 @@ import {
   Home,
   KeyRound,
   LayoutDashboard,
+  LifeBuoy,
   Mail,
   Mic,
   Network,
@@ -108,6 +109,7 @@ export const mainModules: NavModule[] = [
       {
         items: [
           { to: "/talents", label: "人才库", keywords: "候选人 简历 上传 talent resume" },
+          { to: "/campaigns", label: "人才再激活", permission: PERM.VIEW_REPORTS, feature: "hr.suite", keywords: "外联 触达 campaign 批量邮件" },
         ],
       },
       {
@@ -238,6 +240,23 @@ export const mainModules: NavModule[] = [
       {
         items: [
           { to: "/payroll", label: "工资条", permission: PERM.MANAGE_PAYROLL, keywords: "工资 薪资 工资条 salary" },
+          { to: "/salary-bands", label: "薪酬带宽", permission: PERM.MANAGE_PAYROLL, keywords: "定薪 带宽 区间 salary band" },
+        ],
+      },
+    ],
+  },
+  {
+    key: "service",
+    label: "员工服务",
+    icon: LifeBuoy,
+    feature: "hr.suite",
+    groups: [
+      {
+        items: [
+          { to: "/announcements", label: "公告管理", permission: PERM.VIEW_REPORTS, keywords: "公告 通知 announcement news" },
+          { to: "/requests", label: "员工申请", permission: PERM.MANAGE_EMPLOYEES, keywords: "申请 审批 培训 福利 request" },
+          { to: "/cases", label: "HR 工单", permission: PERM.MANAGE_EMPLOYEES, keywords: "工单 诉求 ticket case 服务台" },
+          { to: "/knowledge", label: "知识库", permission: PERM.VIEW_REPORTS, keywords: "知识 制度 faq knowledge" },
         ],
       },
     ],
@@ -311,6 +330,8 @@ export const essModules: NavModule[] = [
   { key: "me-attend", label: "考勤", icon: Clock, to: "/me/attendance", keywords: "打卡 考勤 出勤" },
   { key: "me-payslips", label: "工资条", icon: Wallet, to: "/me/payslips", keywords: "工资 薪资 工资条" },
   { key: "me-expenses", label: "报销", icon: Receipt, to: "/me/expenses", keywords: "报销 费用" },
+  { key: "me-requests", label: "申请", icon: ClipboardList, to: "/me/requests", keywords: "申请 诉求 request" },
+  { key: "me-cases", label: "工单", icon: LifeBuoy, to: "/me/cases", keywords: "工单 服务台 case ticket" },
   { key: "me-goals", label: "目标", icon: Goal, to: "/me/goals", keywords: "目标 绩效 okr" },
   { key: "me-profile", label: "我的资料", icon: Users, to: "/me/profile", keywords: "档案 资料 个人信息" },
 ];
@@ -332,6 +353,8 @@ const boundEssModule: NavModule = {
         { to: "/me/attendance", label: "我的考勤", keywords: "打卡 考勤 出勤" },
         { to: "/me/payslips", label: "我的工资条", keywords: "工资 薪资 工资条" },
         { to: "/me/expenses", label: "我的报销", keywords: "报销 费用" },
+        { to: "/me/requests", label: "我的申请", keywords: "申请 诉求 request" },
+        { to: "/me/cases", label: "我的工单", keywords: "工单 服务台 case" },
         { to: "/me/goals", label: "我的目标", keywords: "目标 绩效 okr" },
         { to: "/me/profile", label: "我的资料", keywords: "档案 资料 个人信息" },
       ],
