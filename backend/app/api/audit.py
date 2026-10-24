@@ -39,6 +39,7 @@ class AuditEventOut(BaseModel):
     result: str
     ip: str | None
     user_agent: str | None
+    via: str | None
     detail: dict[str, Any] | None
     created_at: datetime
 
@@ -54,6 +55,7 @@ def _serialize(row: AuditLog) -> AuditEventOut:
         result=row.result,
         ip=row.ip,
         user_agent=row.user_agent,
+        via=row.via,
         detail=row.detail,
         created_at=row.created_at,
     )
@@ -71,6 +73,11 @@ def list_events(
     ),
     actor_id: str | None = Query(default=None, description="按操作人 id 筛选"),
     entity_id: str | None = Query(default=None, description="精确匹配 entity_id"),
+    via: str | None = Query(
+        default=None,
+        pattern="^(assistant|mcp|human)$",
+        description="按来源筛选:assistant/mcp=AI 代操作,human=人工操作",
+    ),
     start: datetime | None = Query(default=None, description="开始时间(含)"),
     end: datetime | None = Query(default=None, description="结束时间(含)"),
     db: Session = Depends(get_db),
@@ -84,6 +91,10 @@ def list_events(
         stmt = stmt.where(AuditLog.action == action)
     if result:
         stmt = stmt.where(AuditLog.result == result)
+    if via == "human":
+        stmt = stmt.where(AuditLog.via.is_(None))
+    elif via:
+        stmt = stmt.where(AuditLog.via == via)
     if actor_id:
         stmt = stmt.where(AuditLog.actor_id == actor_id)
     if entity_id:
@@ -125,13 +136,14 @@ def get_event(
 class AuditFacetsOut(BaseModel):
     """给前端筛选下拉用的 distinct 值汇总。
 
-    一次 GET 把 ``entity_type`` / ``action`` / ``result`` 的可选值返回,
+    一次 GET 把 ``entity_type`` / ``action`` / ``result`` / ``via`` 的可选值返回,
     避免前端在不知道服务端可能动作的情况下硬编码。
     """
 
     entity_types: list[str]
     actions: list[str]
     results: list[str]
+    vias: list[str] = []
 
 
 @router.get("/facets", response_model=AuditFacetsOut)
@@ -152,8 +164,13 @@ def get_facets(
         v for v in db.scalars(select(distinct(AuditLog.result)).where(base)).all()
         if v is not None
     )
+    vias = sorted(
+        v for v in db.scalars(select(distinct(AuditLog.via)).where(base)).all()
+        if v is not None
+    )
     return AuditFacetsOut(
         entity_types=entity_types,
         actions=actions,
         results=results,
+        vias=vias,
     )

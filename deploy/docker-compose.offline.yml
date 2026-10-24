@@ -97,6 +97,10 @@ services:
   assistant:
     image: free-hire-assistant:${FREEHIRE_VERSION:?需要在 .env 里设置 FREEHIRE_VERSION}
     restart: unless-stopped
+    env_file:
+      # 与 backend 共用同一份部署 .env —— sidecar 只用其中的 JWT_SECRET
+      # (派生 /api/mcp/token-exchange 的内部密钥),其余变量被忽略。
+      - .env
     environment:
       BACKEND_URL: http://backend:8000
       PORT: "3001"

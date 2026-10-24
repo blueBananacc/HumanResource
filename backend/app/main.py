@@ -54,6 +54,7 @@ from app.api import license as license_api
 from app.api import lifecycle as lifecycle_api
 from app.api import llm as llm_api
 from app.api import matches as matches_api
+from app.api import mcp as mcp_api
 from app.api import metrics as metrics_api
 from app.api import notifications as notifications_api
 from app.api import org as org_api
@@ -63,6 +64,7 @@ from app.api import performance as performance_api
 from app.api import prompt_templates as prompt_templates_api
 from app.api import question_library as question_library_api
 from app.api import question_sets as question_sets_api
+from app.api import report_defs as report_defs_api
 from app.api import reports as reports_api
 from app.api import requests as requests_api
 from app.api import resumes as resumes_api
@@ -348,11 +350,14 @@ def create_app() -> FastAPI:
     app.include_router(question_library_api.router, prefix="/api")
     app.include_router(matches_api.router, prefix="/api")
     app.include_router(reports_api.router, prefix="/api")
+    app.include_router(report_defs_api.router, prefix="/api")
     app.include_router(llm_api.router, prefix="/api")
     app.include_router(email_api.router, prefix="/api")
     app.include_router(smtp_api.router, prefix="/api")
     app.include_router(voice_api.router, prefix="/api")
     app.include_router(assistant_api.router, prefix="/api")
+    app.include_router(mcp_api.router, prefix="/api")
+    app.include_router(mcp_api.me_router, prefix="/api")
     # HRIS 员工核心(license feature: hr.suite)
     app.include_router(employees_api.router, prefix="/api")
     app.include_router(hr_me_api.router, prefix="/api")

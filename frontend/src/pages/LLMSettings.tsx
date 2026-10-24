@@ -23,6 +23,7 @@ type Provider = {
   base_url: string | null;
   api_key_masked: string;
   model: string;
+  embedding_model: string | null;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -294,6 +295,7 @@ function ProviderModal({
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
+  const [embeddingModel, setEmbeddingModel] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showModelHelp, setShowModelHelp] = useState(false);
 
@@ -304,11 +306,13 @@ function ProviderModal({
         setBaseUrl(provider.base_url ?? "");
         setApiKey("");
         setModel(provider.model);
+        setEmbeddingModel(provider.embedding_model ?? "");
       } else {
         setName("");
         setBaseUrl("");
         setApiKey("");
         setModel("");
+        setEmbeddingModel("");
       }
       setError(null);
       setShowModelHelp(false);
@@ -327,6 +331,7 @@ function ProviderModal({
         base_url: baseUrl.trim() || null,
         api_key: apiKey.trim() || null,
         model: model.trim(),
+        embedding_model: embeddingModel.trim() || null,
       };
       const url = isEdit
         ? `/api/llm/providers/${provider!.id}`
@@ -438,6 +443,12 @@ function ProviderModal({
           />
           {showModelHelp && <ModelHelp />}
         </div>
+        <Input
+          label="Embedding 模型(可选,知识库语义检索用)"
+          value={embeddingModel}
+          onChange={(e) => setEmbeddingModel(e.target.value)}
+          placeholder="text-embedding-3-small / bge-m3(留空则只用模糊检索;非 OpenAI 需填 Base URL)"
+        />
         <Input
           label={isEdit ? "API key (留空则不变)" : "API key"}
           type="password"

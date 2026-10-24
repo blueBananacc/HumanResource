@@ -17,6 +17,7 @@ import { TeamSettings } from "@/pages/TeamSettings";
 import { AuditCenter } from "@/pages/AuditCenter";
 import { SsoCallback } from "@/pages/SsoCallback";
 import { SsoSettings } from "@/pages/SsoSettings";
+import { McpTokens } from "@/pages/McpTokens";
 import { TalentPool } from "@/pages/TalentPool";
 import { TalentDetail } from "@/pages/TalentDetail";
 import { LegacyQuestionSetRedirect, QuestionSetDetail } from "@/pages/QuestionSetDetail";
@@ -173,6 +174,7 @@ export const router = createBrowserRouter([
       { path: "settings/team", element: <TeamSettings /> },
       { path: "settings/sso", element: <SsoSettings /> },
       { path: "settings/audit", element: <AuditCenter /> },
+      { path: "settings/mcp", element: <McpTokens /> },
     ],
   },
   { path: "*", element: <Navigate to="/" replace /> },

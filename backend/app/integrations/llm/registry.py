@@ -41,6 +41,7 @@ class ResolvedProvider:
     model: str
     source: str  # db / env / mock
     is_mock: bool = False
+    embedding_model: str | None = None
 
 
 def resolve_provider(db: Session, tenant_id: str | None = None) -> ResolvedProvider:
@@ -67,6 +68,7 @@ def resolve_provider(db: Session, tenant_id: str | None = None) -> ResolvedProvi
                 model=row.model,
                 source="db",
                 is_mock=False,
+                embedding_model=row.embedding_model,
             )
 
     # .env 兜底
@@ -77,6 +79,7 @@ def resolve_provider(db: Session, tenant_id: str | None = None) -> ResolvedProvi
             model=settings.llm_default_model,
             source="env",
             is_mock=False,
+            embedding_model=settings.llm_embedding_model,
         )
 
     # mock 兜底
@@ -114,6 +117,7 @@ def seed_from_env(db: Session) -> None:
         base_url=settings.llm_base_url,
         api_key_encrypted=encrypt(settings.llm_api_key),
         model=settings.llm_default_model,
+        embedding_model=settings.llm_embedding_model,
         is_active=True,
         created_by=admin.id if admin else None,
     )

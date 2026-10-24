@@ -19,6 +19,7 @@ from app.api.license import require_feature
 from app.domain.models import KnowledgeArticle, User
 from app.infra.db import get_db
 from app.services.audit import write_audit
+from app.services.embedding import cosine, embed_text, embed_texts
 from app.services.permissions import (
     PERM_MANAGE_EMPLOYEES,
     PERM_VIEW_REPORTS,
@@ -50,6 +51,7 @@ class ArticleIn(BaseModel):
     content: str = Field(min_length=1, max_length=50000)
     tags: list[str] = Field(default_factory=list, max_length=20)
     status: str = "published"
+    is_playbook: bool = False
 
     @field_validator("category")
     @classmethod
@@ -78,6 +80,7 @@ class ArticleOut(BaseModel):
     content: str
     tags: list[str]
     status: str
+    is_playbook: bool
     updated_by: str | None
     created_at: datetime
     updated_at: datetime
@@ -96,6 +99,7 @@ class SearchHit(BaseModel):
     category: str
     tags: list[str]
     snippet: str
+    score: float | None = None
 
 
 # ============ 管理端 ============
@@ -105,6 +109,8 @@ class SearchHit(BaseModel):
 def list_articles(
     status_filter: str | None = None,
     category: str | None = None,
+    is_playbook: bool | None = None,
+    brief: bool = False,
     paging: tuple = Depends(paginate_params),
     db: Session = Depends(get_db),
     current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
@@ -115,12 +121,23 @@ def list_articles(
         stmt = stmt.where(KnowledgeArticle.status == status_filter)
     if category:
         stmt = stmt.where(KnowledgeArticle.category == category)
+    if is_playbook is not None:
+        stmt = stmt.where(KnowledgeArticle.is_playbook == is_playbook)
     stmt = apply_q_ilike(stmt, q, KnowledgeArticle.title, KnowledgeArticle.content)
     total = count_total(db, stmt)
     rows = db.scalars(
         stmt.order_by(KnowledgeArticle.updated_at.desc()).limit(limit).offset(offset)
     ).all()
-    return PageOut(items=list(rows), total=total, limit=limit, offset=offset)
+    if not brief:
+        return PageOut(items=list(rows), total=total, limit=limit, offset=offset)
+    # brief=true:content 只回首部摘要 — 给 list_playbooks 这类"只要 id+title"的
+    # 调用方省整页正文的带宽,避免工具结果被 8000 字截断后丢 id。
+    items = []
+    for a in rows:
+        o = ArticleOut.model_validate(a)
+        o.content = a.content[:300]
+        items.append(o)
+    return PageOut(items=items, total=total, limit=limit, offset=offset)
 
 
 @router.post("/articles", response_model=ArticleOut, status_code=status.HTTP_201_CREATED)
@@ -137,10 +154,12 @@ def create_article(
         content=body.content,
         tags=body.tags,
         status=body.status,
+        is_playbook=body.is_playbook,
         updated_by=current.id,
     )
     db.add(a)
     db.flush()
+    _refresh_embedding(db, a)
     write_audit(db, actor=current, entity_type="knowledge_article", entity_id=a.id, action="create", request=request)
     db.commit()
     return a
@@ -171,10 +190,15 @@ def update_article(
     current: User = Depends(require_permission(PERM_MANAGE_EMPLOYEES)),
 ):
     a = _get(db, aid, current)
+    # 只有检索源(title/content)变了或还没有向量才重算 embedding —
+    # 纯元数据保存(status/is_playbook/tags)不该每次付一次 provider 调用。
+    need_embed = a.embedding is None or a.title != body.title or a.content != body.content
     for k, v in body.model_dump().items():
         setattr(a, k, v)
     a.updated_by = current.id
     a.updated_at = _now()
+    if need_embed:
+        _refresh_embedding(db, a)
     write_audit(db, actor=current, entity_type="knowledge_article", entity_id=a.id, action="update", request=request)
     db.commit()
     return a
@@ -193,35 +217,80 @@ def delete_article(
     db.commit()
 
 
-# ============ 检索(assistant RAG + ESS)============
+# ============ 检索(assistant RAG + ESS):trgm 模糊 + embedding 语义混合 ============
 
 
-def _search_stmt(tenant_id: str, q: str, *, published_only: bool):
+def _lex_score(q: str):
+    """词面分:title/tags 走 pg_trgm 模糊匹配(长短字段对 trgm 不可靠,content 只
+    走 ILIKE 加成),ILIKE 命中给保底分。"""
     pattern = f"%{q}%"
-    stmt = (
-        select(KnowledgeArticle)
-        .where(KnowledgeArticle.tenant_id == tenant_id)
-        .where(
-            or_(
-                KnowledgeArticle.title.ilike(pattern),
-                KnowledgeArticle.content.ilike(pattern),
-                KnowledgeArticle.category.ilike(pattern),
-                func.cast(KnowledgeArticle.tags, String).ilike(pattern),
-            )
-        )
+    tags_txt = func.cast(KnowledgeArticle.tags, String)
+    return (
+        2.0 * func.similarity(KnowledgeArticle.title, q)
+        + 0.6 * func.similarity(tags_txt, q)
+        + case((KnowledgeArticle.title.ilike(pattern), 1.0), else_=0.0)
+        + case((KnowledgeArticle.content.ilike(pattern), 0.4), else_=0.0)
     )
+
+
+def _embed_source(a: KnowledgeArticle) -> str:
+    return f"{a.title}\n{a.content[:2000]}"
+
+
+def _refresh_embedding(db: Session, a: KnowledgeArticle) -> None:
+    """尽力为文章算 embedding;provider 不可用/失败静默跳过,不阻塞写。
+
+    失败时保留旧向量 — 一次 provider 抖动不该把可用的检索索引清掉。
+    """
+    try:
+        emb = embed_text(db, a.tenant_id, _embed_source(a))
+    except Exception:
+        return
+    if emb:
+        a.embedding = emb
+
+
+def _hybrid_search(
+    db: Session, tenant_id: str, q: str, limit: int, *, published_only: bool
+) -> list[tuple[KnowledgeArticle, float]]:
+    """召回 = 词面命中(trgm/ILIKE) ∪ 语义池(embedding 可用时全量带向量文章);
+    排序 = lex_score + 0.8*cosine(embedding)。无 embedding provider 时自动退化为纯词面。"""
+    lex = _lex_score(q).label("lex")
+    base = select(KnowledgeArticle, lex).where(KnowledgeArticle.tenant_id == tenant_id)
     if published_only:
-        stmt = stmt.where(KnowledgeArticle.status == "published")
-    # title 命中排前,category 次之,content 最后
-    rank = case(
-        (KnowledgeArticle.title.ilike(pattern), 0),
-        (KnowledgeArticle.category.ilike(pattern), 1),
-        else_=2,
-    )
-    return stmt.order_by(rank, KnowledgeArticle.updated_at.desc())
+        base = base.where(KnowledgeArticle.status == "published")
+    pattern = f"%{q}%"
+    stmt = base.where(
+        or_(
+            lex > 0.05,
+            KnowledgeArticle.title.ilike(pattern),
+            KnowledgeArticle.content.ilike(pattern),
+            func.cast(KnowledgeArticle.tags, String).ilike(pattern),
+        )
+    ).order_by(lex.desc()).limit(50)
+    rows = db.execute(stmt).all()
+    pool: dict[str, tuple[KnowledgeArticle, float]] = {a.id: (a, float(lx or 0)) for a, lx in rows}
+
+    q_emb = embed_text(db, tenant_id, q)
+    if q_emb:
+        # 语义召回:词面完全没命中但向量近的文章也要进池(否则同义词类查询永远召回不了)
+        emb_stmt = base.where(KnowledgeArticle.embedding.is_not(None))
+        if pool:
+            emb_stmt = emb_stmt.where(KnowledgeArticle.id.notin_(list(pool)))
+        emb_stmt = emb_stmt.order_by(KnowledgeArticle.updated_at.desc()).limit(200)
+        for a in db.scalars(emb_stmt).all():
+            pool[a.id] = (a, 0.0)
+    if not pool:
+        return []
+    scored = [
+        (a, lx + (0.8 * cosine(q_emb, a.embedding) if q_emb else 0.0))
+        for a, lx in pool.values()
+    ]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:limit]
 
 
-def _hit(a: KnowledgeArticle, q: str) -> SearchHit:
+def _hit(a: KnowledgeArticle, q: str, score: float | None = None) -> SearchHit:
     idx = a.content.lower().find(q.lower())
     if idx >= 0:
         start = max(0, idx - 40)
@@ -230,7 +299,7 @@ def _hit(a: KnowledgeArticle, q: str) -> SearchHit:
             snippet = "…" + snippet
     else:
         snippet = a.content[:160].strip()
-    return SearchHit(id=a.id, title=a.title, category=a.category, tags=a.tags, snippet=snippet)
+    return SearchHit(id=a.id, title=a.title, category=a.category, tags=a.tags, snippet=snippet, score=score)
 
 
 @router.post("/search", response_model=list[SearchHit])
@@ -239,8 +308,8 @@ def search(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    rows = db.scalars(_search_stmt(current.tenant_id, body.q, published_only=True).limit(body.limit)).all()
-    return [_hit(a, body.q) for a in rows]
+    rows = _hybrid_search(db, current.tenant_id, body.q, body.limit, published_only=True)
+    return [_hit(a, body.q, round(s, 4)) for a, s in rows]
 
 
 @me_router.get("", response_model=list[SearchHit])
@@ -261,5 +330,35 @@ def me_search(
         ).all()
         return [_hit(a, "") for a in rows]
     q = q.strip()[:128]
-    rows = db.scalars(_search_stmt(current.tenant_id, q, published_only=True).limit(10)).all()
-    return [_hit(a, q) for a in rows]
+    rows = _hybrid_search(db, current.tenant_id, q, 10, published_only=True)
+    return [_hit(a, q, round(s, 4)) for a, s in rows]
+
+
+@router.post("/embeddings/backfill")
+def backfill_embeddings(
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_EMPLOYEES)),
+):
+    """为还没有 embedding 的文章批量补齐(每次最多 50 篇,幂等可重复调)。"""
+    rows = db.scalars(
+        select(KnowledgeArticle)
+        .where(KnowledgeArticle.tenant_id == current.tenant_id, KnowledgeArticle.embedding.is_(None))
+        .limit(50)
+    ).all()
+    if not rows:
+        return {"embedded": 0, "remaining": 0}
+    vectors = embed_texts(db, current.tenant_id, [_embed_source(a) for a in rows])
+    embedded = 0
+    if vectors:
+        # provider 返回行数可能比输入少 — 按较短侧对齐,不炸整个请求
+        for a, v in zip(rows, vectors, strict=False):
+            a.embedding = v
+            embedded += 1
+        db.commit()
+    remaining = db.scalar(
+        select(func.count(KnowledgeArticle.id)).where(
+            KnowledgeArticle.tenant_id == current.tenant_id,
+            KnowledgeArticle.embedding.is_(None),
+        )
+    ) or 0
+    return {"embedded": embedded, "remaining": remaining}

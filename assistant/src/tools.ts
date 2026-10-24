@@ -10,6 +10,10 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 
 const BACKEND = process.env.BACKEND_URL || "http://backend:8000";
 const BODY_LIMIT = 8000;
+// 单文档读取(get_playbook 之类)的专用上限 —— 全文就是工具载荷,
+// 通用 8000 会截掉 SOP 后半段且无法续读;30k 覆盖 article.content 的
+// 实际体量(字段上限 50k,但真实 SOP 远小于此)同时保护模型上下文。
+const DOC_LIMIT = 30000;
 
 async function callApi(
   token: string,
@@ -52,16 +56,21 @@ function hintFor(status: number): string | undefined {
   return undefined;
 }
 
-function toolResult(data: unknown) {
+function toolResult(data: unknown, bodyLimit: number = BODY_LIMIT) {
   const json = JSON.stringify(data, null, 0);
+  // callApi 对 HTTP 失败返回 {error,detail,hint} 结构 — 标 isError:
+  // pi-agent 认它为工具失败(tool_end is_error / 错误呈现给模型),
+  // MCP 侧同步透传给客户端。
+  const isError = typeof data === "object" && data !== null && "error" in data;
   return {
     content: [
       {
         type: "text" as const,
-        text: json.length > BODY_LIMIT ? json.slice(0, BODY_LIMIT) + "…(截断)" : json,
+        text: json.length > bodyLimit ? json.slice(0, bodyLimit) + "…(截断)" : json,
       },
     ],
     details: {},
+    isError,
   };
 }
 
@@ -307,6 +316,126 @@ function makeTools(token: string): ToolDef[] {
           `/api/entities/${encodeURIComponent(p.entity)}/count?q=${encodeURIComponent(p.q ?? "")}`,
         ),
     },
+    {
+      name: "aggregate_records",
+      label: "聚合实体字段",
+      description:
+        "对某实体的数值字段做聚合(sum/avg/min/max/count),回答'总额/平均/最高'类问题;" +
+        "可用实体与字段:expenses.total、payslips.gross/net、matches.score、campaigns.total/sent_count/failed_count",
+      parameters: Type.Object({
+        entity: Type.String({ description: "实体 key" }),
+        agg: Type.String({ description: "sum / avg / min / max / count" }),
+        field: Type.Optional(Type.String({ description: "聚合字段(count 不用)" })),
+        q: Type.Optional(Type.String({ description: "关键词过滤" })),
+      }),
+      execute: async (_id, p: any) => {
+        const qs = new URLSearchParams({ agg: String(p.agg ?? "count") });
+        if (p.field) qs.set("field", p.field);
+        if (p.q) qs.set("q", p.q);
+        return t(`/api/entities/${encodeURIComponent(p.entity)}/aggregate?${qs}`);
+      },
+    },
+    {
+      name: "update_record",
+      label: "更新业务记录",
+      description:
+        "更新某条记录的白名单字段(先用 search_records 拿 id);" +
+        "可写:talents(display_email/display_phone/status/tags)、jobs(level/description/status)、" +
+        "employees(phone/work_email/designation)、cases(priority)、skills(category/description)、" +
+        "rooms(name/location/capacity/equipment/is_active)、interviews(notify_email)",
+      parameters: Type.Object({
+        entity: Type.String({ description: "实体 key" }),
+        id: Type.String({ description: "记录 id" }),
+        fields: Type.Object({}, {
+          additionalProperties: true,
+          description: "要更新的字段与值",
+        }),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/entities/${encodeURIComponent(p.entity)}/${encodeURIComponent(p.id)}`, {
+          method: "PATCH",
+          body: { fields: p.fields ?? {} },
+        }),
+    },
+    {
+      name: "list_relationships",
+      label: "穿透关联记录",
+      description:
+        "查一条记录关联的其它实体(候选人→申请/面试/offer,岗位→申请/面试/高分匹配," +
+        "员工→申请/工单/请假/目标,工单→提交人/留言数等);一次调用穿透多类关联",
+      parameters: Type.Object({
+        entity: Type.String({ description: "实体 key" }),
+        id: Type.String({ description: "记录 id" }),
+      }),
+      execute: async (_id, p: any) =>
+        t(
+          `/api/entities/${encodeURIComponent(p.entity)}/${encodeURIComponent(p.id)}/relations`,
+        ),
+    },
+    {
+      name: "list_report_kinds",
+      label: "查可跑报表",
+      description: "列出当前用户可执行的内置报表类型(pipeline_funnel/weekly_summary/pending_items/headcount)",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/report-defs"),
+    },
+    {
+      name: "run_report",
+      label: "执行内置报表",
+      description:
+        "运行一个内置报表并返回结构化数据(先 list_report_kinds 查可用 kind);" +
+        "回答'招聘漏斗/本周摘要/我的待办/员工编制'类问题后顺带解读",
+      parameters: Type.Object({
+        kind: Type.String({ description: "报表 kind" }),
+        params: Type.Optional(
+          Type.Object({}, { additionalProperties: true }),
+        ),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/report-defs/${encodeURIComponent(p.kind)}/run`, {
+          method: "POST",
+          body: { params: p.params ?? {} },
+        }),
+    },
+    {
+      name: "list_playbooks",
+      label: "查流程剧本",
+      description:
+        "列出知识库里标记为'AI 剧本'的 SOP 文档(租户自定义标准流程);" +
+        "执行多步业务(发 offer/审批/发面试/处理工单等)前先查有无剧本",
+      parameters: Type.Object({}),
+      // brief=true 只取摘要;再投影成 id+title 级字段 —— 全量正文 JSON 会被
+      // BODY_LIMIT 截断,导致靠后的剧本连 id 都到不了模型,发现机制失效。
+      execute: async () => {
+        const data: any = await callApi(
+          token,
+          "/api/knowledge/articles?is_playbook=true&status_filter=published&limit=50&brief=true",
+        );
+        if (data && typeof data === "object" && "error" in data) {
+          return toolResult(data);
+        }
+        const items = (data?.items ?? []).map((a: any) => ({
+          id: a.id,
+          title: a.title,
+          category: a.category,
+          updated_at: a.updated_at,
+        }));
+        return toolResult({ total: data?.total ?? 0, items });
+      },
+    },
+    {
+      name: "get_playbook",
+      label: "读流程剧本",
+      description: "读取一篇 AI 剧本全文(用 list_playbooks 返回的 id),拿到后严格按步骤执行",
+      parameters: Type.Object({
+        id: Type.String({ description: "剧本文章 id" }),
+      }),
+      // 剧本全文是工具载荷本身 —— 用 DOC_LIMIT,避免 SOP 步骤被静默截断
+      execute: async (_id, p: any) =>
+        callApi(token, `/api/knowledge/articles/${encodeURIComponent(p.id)}`).then(
+          (data) => toolResult(data, DOC_LIMIT),
+        ),
+    },
     // ===== T3:员工服务 =====
     {
       name: "list_announcements",
@@ -541,6 +670,7 @@ export const WRITE_TOOLS = new Set([
   "delete_report_subscription",
   "publish_announcement",
   "update_case_status",
+  "update_record",
 ]);
 
 export function hrTools(token: string): AgentTool[] {

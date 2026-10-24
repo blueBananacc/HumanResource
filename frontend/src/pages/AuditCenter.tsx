@@ -28,6 +28,7 @@ type AuditEvent = {
   result: "success" | "failure" | "denied";
   ip: string | null;
   user_agent: string | null;
+  via: string | null;
   detail: Record<string, unknown> | null;
   created_at: string;
 };
@@ -36,6 +37,7 @@ type Facets = {
   entity_types: string[];
   actions: string[];
   results: string[];
+  vias: string[];
 };
 
 const ENTITY_LABEL: Record<string, string> = {
@@ -47,6 +49,17 @@ const ENTITY_LABEL: Record<string, string> = {
   job: "岗位",
   user: "用户",
   org_unit: "组织",
+  hr_case: "工单",
+  skill: "技能",
+  room: "会议室",
+  knowledge_article: "知识库文章",
+  mcp_token: "MCP 令牌",
+};
+
+const VIA_LABEL: Record<string, string> = {
+  assistant: "AI 助手",
+  mcp: "MCP",
+  human: "人工操作",
 };
 
 const ACTION_LABEL: Record<string, string> = {
@@ -88,6 +101,7 @@ export function AuditCenter() {
   const [entityType, setEntityType] = useState("");
   const [action, setAction] = useState("");
   const [result, setResult] = useState("");
+  const [via, setVia] = useState("");
   const [openEvent, setOpenEvent] = useState<AuditEvent | null>(null);
 
   const params = useMemo(
@@ -95,8 +109,9 @@ export function AuditCenter() {
       entity_type: entityType || undefined,
       action: action || undefined,
       result: result || undefined,
+      via: via || undefined,
     }),
-    [entityType, action, result],
+    [entityType, action, result, via],
   );
 
   const { data, isLoading, page, pageCount, total, goto, reset, q, setQ } =
@@ -115,7 +130,7 @@ export function AuditCenter() {
   useEffect(() => {
     reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entityType, action, result]);
+  }, [entityType, action, result, via]);
 
   const { data: facets } = useQuery<Facets>({
     queryKey: ["audit-facets"],
@@ -124,7 +139,7 @@ export function AuditCenter() {
   });
 
   const items = data?.items ?? [];
-  const hasFilter = !!(entityType || action || result || q);
+  const hasFilter = !!(entityType || action || result || via || q);
 
   if (!isAdmin) {
     return (
@@ -207,6 +222,21 @@ export function AuditCenter() {
               })),
             ]}
           />
+          <Select
+            value={via}
+            onChange={setVia}
+            placeholder="操作来源"
+            className="w-[140px]"
+            options={[
+              { value: "", label: "全部来源" },
+              ...(facets?.vias ?? []).map((v) => ({
+                value: v,
+                label: labelOf(VIA_LABEL, v),
+                hint: v,
+              })),
+              { value: "human", label: "人工操作" },
+            ]}
+          />
           {hasFilter && (
             <button
               type="button"
@@ -214,6 +244,7 @@ export function AuditCenter() {
                 setEntityType("");
                 setAction("");
                 setResult("");
+                setVia("");
                 setQ("");
                 setInputQ("");
               }}
@@ -272,7 +303,19 @@ export function AuditCenter() {
                         </div>
                       </td>
                       <td className="px-4 py-3 text-[var(--color-text-primary)] font-medium">
-                        {row.actor_email}
+                        <div className="flex items-center gap-1.5">
+                          <span>{row.actor_email}</span>
+                          {row.via === "assistant" && (
+                            <span className="px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 text-[10px] font-normal">
+                              AI 助手
+                            </span>
+                          )}
+                          {row.via === "mcp" && (
+                            <span className="px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 text-[10px] font-normal">
+                              MCP
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-[var(--color-text-secondary)]">
                         <div className="flex items-center gap-1.5">
@@ -384,6 +427,21 @@ function EventDetailDrawer({
         <DetailRow label="动作">{labelOf(ACTION_LABEL, ev.action)}</DetailRow>
         <DetailRow label="结果">
           <ResultBadge result={ev.result} />
+        </DetailRow>
+        <DetailRow label="操作来源">
+          {ev.via ? (
+            <span
+              className={`px-1.5 py-0.5 rounded text-[11px] font-normal ${
+                ev.via === "assistant"
+                  ? "bg-violet-50 text-violet-700"
+                  : "bg-sky-50 text-sky-700"
+              }`}
+            >
+              {labelOf(VIA_LABEL, ev.via)}
+            </span>
+          ) : (
+            <span className="text-[var(--color-text-secondary)]">人工操作</span>
+          )}
         </DetailRow>
         <DetailRow label="来源 IP">
           <span className="font-mono text-[12px]">{ev.ip ?? "—"}</span>

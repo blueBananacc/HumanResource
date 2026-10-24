@@ -247,6 +247,7 @@ type ActivityItem = {
   entity_kind: string;
   entity_label: string | null;
   link: string | null;
+  via: string | null;
 };
 
 function ActivityCard() {
@@ -332,6 +333,16 @@ function ActivityCard() {
               <>
                 <span className="text-[13px] font-body text-[var(--color-text-secondary)] flex-1 min-w-0 truncate">
                   {it.actor_name ? `${it.actor_name} ` : ""}
+                  {it.via === "assistant" && (
+                    <span className="px-1.5 py-0.5 mr-1 rounded bg-violet-50 text-violet-700 text-[10px] font-normal">
+                      AI 助手
+                    </span>
+                  )}
+                  {it.via === "mcp" && (
+                    <span className="px-1.5 py-0.5 mr-1 rounded bg-sky-50 text-sky-700 text-[10px] font-normal">
+                      MCP
+                    </span>
+                  )}
                   {it.verb}
                   {it.entity_label ? `「${it.entity_label}」` : ""}
                 </span>

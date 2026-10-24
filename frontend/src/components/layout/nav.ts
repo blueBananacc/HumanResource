@@ -292,6 +292,7 @@ export const bottomModules: NavModule[] = [
           { to: "/settings/llm", label: "LLM 配置", icon: Plug, permission: PERM.MANAGE_SETTINGS, keywords: "大模型 模型 key ai" },
           { to: "/settings/voice", label: "语音 STT/TTS", icon: Mic, permission: PERM.MANAGE_SETTINGS, keywords: "语音识别 合成" },
           { to: "/settings/prompts", label: "AI 提示词", icon: Sparkles, permission: PERM.MANAGE_SETTINGS, keywords: "prompt 提示词 模板" },
+          { to: "/settings/mcp", label: "MCP 接入", icon: Plug, feature: "assistant.agent", keywords: "mcp token 令牌 外部 ai" },
         ],
       },
       {

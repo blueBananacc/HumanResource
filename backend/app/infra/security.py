@@ -28,9 +28,17 @@ def verify_password(password: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(*, subject: str, **claims: object) -> str:
-    """``subject`` 走 JWT 标准的 ``sub`` 声明,语义为 user.id。"""
-    expire = datetime.now(UTC) + timedelta(minutes=settings.jwt_expire_minutes)
+def create_access_token(
+    *, subject: str, expires_minutes: int | None = None, **claims: object
+) -> str:
+    """``subject`` 走 JWT 标准的 ``sub`` 声明,语义为 user.id。
+
+    ``expires_minutes`` 缺省用全局 ``jwt_expire_minutes``;MCP token-exchange
+    这类"换发凭证"场景传更短寿命,收窄凭证存活窗口。
+    """
+    expire = datetime.now(UTC) + timedelta(
+        minutes=expires_minutes if expires_minutes is not None else settings.jwt_expire_minutes
+    )
     payload: dict[str, object] = {"sub": subject, "exp": expire, **claims}
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 

@@ -97,6 +97,10 @@ def get_current_user(token: str | None = Depends(oauth2)) -> User:
         # disabled 后,已签发 JWT 也立即失效
         if user.status == "disabled":
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已禁用")
+        # 非列属性:标记调用来源(assistant 会话工具 / MCP 客户端),write_audit 落 via。
+        # 白名单校验:via 只允许签发端写入的两个值,防止未来其它 claim 误落列。
+        via = payload.get("via")
+        user.token_via = via if via in ("assistant", "mcp") else None  # type: ignore[attr-defined]
         db.expunge(user)
     return user
 

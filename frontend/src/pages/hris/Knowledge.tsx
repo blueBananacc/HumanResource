@@ -21,6 +21,7 @@ type Article = {
   content: string;
   tags: string[];
   status: string;
+  is_playbook: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -99,6 +100,9 @@ export function Knowledge() {
                     {CAT_LABEL[a.category] ?? a.category}
                   </span>
                   <span className={`text-[11px] px-1.5 py-0.5 rounded ${st.cls}`}>{st.label}</span>
+                  {a.is_playbook && (
+                    <span className="text-[11px] px-1.5 py-0.5 rounded bg-violet-50 text-violet-700">AI 剧本</span>
+                  )}
                   <div className="flex-1" />
                   {(a.tags ?? []).slice(0, 3).map((t) => (
                     <span key={t} className="text-[11px] text-[var(--color-text-tertiary)]">#{t}</span>
@@ -145,6 +149,7 @@ function ArticleModal({ editing, onClose }: { editing: Article | null; onClose: 
   const qc = useQueryClient();
   const [category, setCategory] = useState(editing?.category ?? "faq");
   const [statusV, setStatusV] = useState(editing?.status ?? "published");
+  const [isPlaybook, setIsPlaybook] = useState(editing?.is_playbook ?? false);
   const [err, setErr] = useState("");
 
   const mut = useMutation({
@@ -174,6 +179,7 @@ function ArticleModal({ editing, onClose }: { editing: Article | null; onClose: 
       content: String(fd.get("content") || "").trim(),
       tags,
       status: statusV,
+      is_playbook: isPlaybook,
     });
   }
 
@@ -219,6 +225,14 @@ function ArticleModal({ editing, onClose }: { editing: Article | null; onClose: 
         <Field label="标签(逗号分隔)">
           <Input name="tags" defaultValue={(editing?.tags ?? []).join(",")} placeholder="年假, 报销, VPN" />
         </Field>
+        <label className="flex items-center gap-2 text-[13px] font-body text-[var(--color-text-primary)] cursor-pointer">
+          <input
+            type="checkbox"
+            checked={isPlaybook}
+            onChange={(e) => setIsPlaybook(e.target.checked)}
+          />
+          标记为 AI 剧本(SOP) —— 助手执行多步流程前会读取并按步骤执行
+        </label>
         <Field label="正文" required>
           <textarea
             name="content"

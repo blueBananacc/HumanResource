@@ -76,6 +76,8 @@ class ActivityItem(BaseModel):
     entity_kind: str
     entity_label: str | None
     link: str | None
+    # AI 留痕:audit.via 透传("assistant"/"mcp"),None = 人工操作
+    via: str | None = None
 
 
 _VERBS = {
@@ -84,6 +86,7 @@ _VERBS = {
     "delete": "删除了",
     "publish": "发布了",
     "close": "关闭了",
+    "revoke": "吊销了",
 }
 
 
@@ -160,6 +163,7 @@ _ENTITY_KIND_LABEL = {
     "skill": "技能",
     "ai_watcher": "提醒",
     "report_subscription": "报表订阅",
+    "mcp_token": "MCP 令牌",
 }
 
 
@@ -361,6 +365,7 @@ def activity_feed(
                 entity_kind=a.entity_type,
                 entity_label=_audit_label(a),
                 link=link_tpl.format(id=a.entity_id) if link_tpl else None,
+                via=a.via,
             )
         )
 

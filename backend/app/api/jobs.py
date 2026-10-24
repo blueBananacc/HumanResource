@@ -36,8 +36,8 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 logger = logging.getLogger(__name__)
 
 
-_LEVELS = {"entry", "intermediate", "advanced"}
-_STATUSES = {"open", "paused", "closed"}
+_LEVELS = set(Job.LEVELS)
+_STATUSES = set(Job.STATUSES)
 
 
 class JobIn(BaseModel):

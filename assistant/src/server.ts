@@ -22,6 +22,7 @@ import {
   listConversations,
   loadConversation,
 } from "./store.js";
+import { mcpHandler } from "./mcp.js";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -30,6 +31,13 @@ const PORT = Number(process.env.PORT || 3001);
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
+});
+
+// MCP(JSON-RPC):外部 AI 客户端协议端点,经 backend /api/mcp 代理进来。
+// Streamable HTTP 约定:不支持 GET(SSE 流)时回 405 而不是 404。
+app.post("/mcp", mcpHandler);
+app.get("/mcp", (_req, res) => {
+  res.status(405).json({ error: "Method Not Allowed:本服务不提供 SSE 流" });
 });
 
 type ChatBody = {

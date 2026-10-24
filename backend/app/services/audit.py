@@ -74,6 +74,8 @@ def write_audit(
         result=result,
         ip=ip,
         user_agent=user_agent,
+        # tool_token 带 via 声明时落列("assistant"/"mcp"),区分 AI 代操作与人工操作
+        via=getattr(actor, "token_via", None),
         detail=detail,
     )
     db.add(log)

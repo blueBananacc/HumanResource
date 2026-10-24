@@ -46,6 +46,7 @@ class ProviderIn(BaseModel):
     base_url: str | None = None
     api_key: str | None = Field(None, description="留空 / null 表示保留原 key")
     model: str = Field(..., min_length=1, max_length=128)
+    embedding_model: str | None = Field(None, description="可选;知识库语义检索用")
 
 
 class ProviderOut(BaseModel):
@@ -54,6 +55,7 @@ class ProviderOut(BaseModel):
     base_url: str | None
     api_key_masked: str
     model: str
+    embedding_model: str | None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -67,6 +69,7 @@ def _to_out(p: LLMProvider) -> ProviderOut:
         base_url=p.base_url,
         api_key_masked=mask_secret(plain),
         model=p.model,
+        embedding_model=p.embedding_model,
         is_active=p.is_active,
         created_at=p.created_at,
         updated_at=p.updated_at,
@@ -102,6 +105,7 @@ def create_provider(
         base_url=body.base_url or None,
         api_key_encrypted=encrypt(body.api_key),
         model=body.model.strip(),
+        embedding_model=body.embedding_model.strip() if body.embedding_model else None,
         is_active=False,
         created_by=current.id,
     )
@@ -125,6 +129,7 @@ def update_provider(
     p.name = body.name.strip()
     p.base_url = body.base_url or None
     p.model = body.model.strip()
+    p.embedding_model = body.embedding_model.strip() if body.embedding_model else None
     if body.api_key:  # 非空才覆盖,空字符串保留旧 key
         p.api_key_encrypted = encrypt(body.api_key)
     p.updated_at = datetime.now(UTC).replace(tzinfo=None)

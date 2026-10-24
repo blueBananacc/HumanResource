@@ -152,6 +152,9 @@ class Job(Base):
 
     __tablename__ = "jobs"
 
+    LEVELS = ("entry", "intermediate", "advanced")
+    STATUSES = ("open", "paused", "closed")
+
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
     tenant_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
@@ -210,6 +213,8 @@ class Candidate(Base):
     """
 
     __tablename__ = "candidates"
+
+    STATUSES = ("active", "archived")
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
     tenant_id: Mapped[str] = mapped_column(
@@ -467,6 +472,7 @@ class LLMProvider(Base):
     base_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     api_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(String(128), nullable=False)
+    embedding_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -1708,6 +1714,7 @@ class AuditLog(Base):
     )
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    via: Mapped[str | None] = mapped_column(String(32), nullable=True)
     detail: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), index=True
@@ -2547,6 +2554,8 @@ class KnowledgeArticle(Base):
         JSONB, nullable=False, server_default="[]"
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="draft")
+    is_playbook: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    embedding: Mapped[list[float] | None] = mapped_column(JSONB, nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
@@ -2644,3 +2653,28 @@ class TalentCampaignSend(Base):
     __table_args__ = (
         UniqueConstraint("campaign_id", "candidate_id", name="uq_campaign_sends_one"),
     )
+
+
+class McpToken(Base):
+    """MCP 个人访问令牌(外部 AI 客户端用)。
+
+    只存 ``sha256(token)`` —— 明文仅签发时返回一次,与 survey_links/invite_tokens
+    同一惯例。``revoked_at`` 置位即失效;``last_used_at`` 记录最近兑换时间。
+    """
+
+    __tablename__ = "mcp_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -88,7 +88,7 @@ async def chat(
         "conversation_id": body.conversation_id,
         "message": message,
         "llm": llm,
-        "tool_token": create_access_token(subject=current.id),
+        "tool_token": create_access_token(subject=current.id, via="assistant"),
         "user": _user_payload(current),
     }
 

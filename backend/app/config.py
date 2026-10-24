@@ -79,9 +79,11 @@ class Settings(BaseSettings):
     # ---- LLM Provider 默认配置(.env 兜底,DB 中已配则忽略) ----
     # 留空 LLM_API_KEY 走 mock 模式,demo 不依赖外部 API。
     # ``llm_default_model`` 直接写 LiteLLM 标识符(如 ``openai/gpt-4o-mini``)。
+    # ``llm_embedding_model`` 可选 — 留空则知识库检索退化为纯词面(trgm/ILIKE)。
     llm_base_url: str | None = None
     llm_api_key: str | None = None
     llm_default_model: str = "openai/gpt-4o-mini"
+    llm_embedding_model: str | None = None
 
     # ---- AI 助手 sidecar(pi-agent-core,Node)----
     # docker 网内地址,不对外发布;frontend → backend /api/assistant → 这里。
