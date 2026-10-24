@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
 from app.api import activity as activity_api
+from app.api import ai as ai_api
 from app.api import announcements as announcements_api
 from app.api import applications as applications_api
 from app.api import assistant as assistant_api
@@ -42,6 +43,7 @@ from app.api import employees as employees_api
 from app.api import entities as entities_api
 from app.api import expenses as expenses_api
 from app.api import dictionaries as dictionaries_api
+from app.api import doc_templates as doc_templates_api
 from app.api import favorites as favorites_api
 from app.api import healthz
 from app.api import hiring as hiring_api
@@ -439,6 +441,8 @@ def create_app() -> FastAPI:
     app.include_router(favorites_api.router, prefix="/api")
     app.include_router(dictionaries_api.router, prefix="/api")
     app.include_router(scheduler_api.router, prefix="/api")
+    app.include_router(ai_api.router, prefix="/api")
+    app.include_router(doc_templates_api.router, prefix="/api")
 
     return app
 

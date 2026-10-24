@@ -6,6 +6,7 @@ import {
   History,
   KeyRound,
   Pencil,
+  Sparkles,
   Trash2,
   UserRound,
 } from "lucide-react";
@@ -23,6 +24,8 @@ import {
 import { Field, PageError, useEmployeeOptions, useOrgOptions } from "./Employees";
 import { FavoriteStar } from "@/components/records/FavoriteStar";
 import { HistoryDrawer } from "@/components/records/HistoryDrawer";
+import { SummaryCard } from "@/components/assistant/SummaryCard";
+import { DocDraftDrawer } from "@/components/assistant/DocDraftDrawer";
 
 const EMPLOYMENT_OPTIONS = Object.entries(EMPLOYMENT_TYPE_LABEL).map(
   ([value, label]) => ({ value, label }),
@@ -40,6 +43,7 @@ export function EmployeeDetail() {
   const [editOpen, setEditOpen] = useState(false);
   const [bindOpen, setBindOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [docOpen, setDocOpen] = useState(false);
   const { data: e, isLoading, isError, error } = useQuery<Employee>({
     queryKey: ["employee", id],
     queryFn: () => fetchJSON(`/api/employees/${id}`),
@@ -100,6 +104,10 @@ export function EmployeeDetail() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="secondary" onClick={() => setDocOpen(true)}>
+            <Sparkles className="w-3.5 h-3.5" />
+            AI 起草
+          </Button>
           <Button variant="secondary" onClick={() => setHistoryOpen(true)}>
             <History className="w-3.5 h-3.5" />
             变更记录
@@ -111,6 +119,14 @@ export function EmployeeDetail() {
         </div>
       </div>
       <HistoryDrawer entityId={e.id} open={historyOpen} onClose={() => setHistoryOpen(false)} />
+      <DocDraftDrawer
+        open={docOpen}
+        onClose={() => setDocOpen(false)}
+        entity="employees"
+        recordId={e.id}
+      />
+
+      <SummaryCard entity="employees" id={e.id} title="AI 员工摘要" />
 
       <div className="grid grid-cols-2 gap-4">
         <section className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-4">

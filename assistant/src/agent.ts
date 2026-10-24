@@ -104,6 +104,8 @@ const SYSTEM_PROMPT = `你是 HROnfire 招聘平台的 AI 助手,服务对象是
 - create_interview:发起远程面试生成邀请链接(需用户确认才执行)
 - generate_questions:AI 生成题目存题库(需用户确认才执行)
 - search_knowledge:知识库全文检索(制度/FAQ/福利,回答政策问题先查这里)
+- search_product_help:产品使用手册检索(用户问"系统怎么用/功能在哪"时先查这里,引用章节名)
+- save_filter:把自然语言筛选条件存成列表页筛选器(需用户确认;page 用 talents/cases/employees 等页标识)
 - list_entities / search_records / count_records:通用实体检索与计数
   (不确定查什么实体时先 list_entities)
 - aggregate_records:数值字段聚合(sum/avg/min/max/count,回答"总额/平均"类问题)
@@ -130,6 +132,29 @@ const SYSTEM_PROMPT = `你是 HROnfire 招聘平台的 AI 助手,服务对象是
 6. 执行多步业务流程(发 offer/批量发面试/处理工单/发公告/订阅报表等)前,
    先调 list_playbooks 查租户有无对应 SOP 剧本;命中则 get_playbook 读后
    严格按剧本步骤执行,剧本缺失或不适配再按通用流程走`;
+
+/** 工具结果 SSE 载荷裁剪:text 分块上限 12k,深拷贝避免改到 agent 内部状态。 */
+function boundToolResult(result: unknown): unknown {
+  if (result === null || result === undefined) return null;
+  try {
+    const MAX = 12_000;
+    const clone = JSON.parse(JSON.stringify(result)) as {
+      content?: Array<{ type?: string; text?: string }>;
+      details?: unknown;
+      isError?: boolean;
+    };
+    if (Array.isArray(clone.content)) {
+      for (const c of clone.content) {
+        if (typeof c?.text === "string" && c.text.length > MAX) {
+          c.text = c.text.slice(0, MAX) + "…(已截断)";
+        }
+      }
+    }
+    return clone;
+  } catch {
+    return { isError: true, content: [{ type: "text", text: "结果不可序列化" }] };
+  }
+}
 
 function waitForConfirm(
   callId: string,
@@ -273,6 +298,16 @@ export function getOrCreateSession(opts: {
           call_id: e.toolCallId,
           name: e.toolName,
           is_error: Boolean(e.isError),
+        });
+        // T6:工具结果透传给前端按工具名渲染富卡片(MintHCM ext-apps 思路,
+        // 但落在自家面板)。tools.ts 的 toolResult() 已截断到 8k/30k,
+        // 这里再兜底裁剪每个 text 分块,保证 SSE 帧体积可控。
+        sess.emit("tool_result", {
+          call_id: e.toolCallId,
+          name: e.toolName,
+          is_error: Boolean(e.isError),
+          duration_ms: e.durationMs ?? null,
+          result: boundToolResult(e.result),
         });
         break;
       }

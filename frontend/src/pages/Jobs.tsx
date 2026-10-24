@@ -9,6 +9,7 @@ import { Empty } from "@/components/ui/empty";
 import { SearchInput } from "@/components/ui/search-input";
 import { Pagination } from "@/components/ui/pagination";
 import { fetchJSON, ApiError } from "@/lib/api";
+import { AiFieldButton } from "@/components/assistant/AiFieldButton";
 import { usePagedQuery, PAGE_SIZE } from "@/lib/usePagedQuery";
 import { formatRelative, levelLabel } from "@/lib/format";
 
@@ -385,12 +386,20 @@ export function JobFormModal({
           placeholder="逗号分隔,例:Python, FastAPI, PostgreSQL"
         />
         <div className="flex flex-col gap-1.5">
-          <label
-            htmlFor="job-desc"
-            className="text-[13px] font-medium text-[#374151] font-body"
-          >
-            岗位描述
-          </label>
+          <div className="flex items-center justify-between">
+            <label
+              htmlFor="job-desc"
+              className="text-[13px] font-medium text-[#374151] font-body"
+            >
+              岗位描述
+            </label>
+            <AiFieldButton
+              target="jobs.description"
+              fields={{ title, level, skills: skillsRaw }}
+              currentText={description}
+              onApply={setDescription}
+            />
+          </div>
           <textarea
             id="job-desc"
             value={description}

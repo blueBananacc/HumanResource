@@ -7,6 +7,7 @@ import { Modal } from "@/components/ui/modal";
 import { Empty } from "@/components/ui/empty";
 import { Pagination } from "@/components/ui/pagination";
 import { fetchJSON, ApiError } from "@/lib/api";
+import { AiFieldButton } from "@/components/assistant/AiFieldButton";
 import { useAuth } from "@/lib/auth";
 import { PERM } from "@/lib/roles";
 import { usePagedQuery, PAGE_SIZE } from "@/lib/usePagedQuery";
@@ -203,6 +204,9 @@ function CampaignModal({ onClose }: { onClose: () => void }) {
   });
   const [groupId, setGroupId] = useState("");
   const [skillIds, setSkillIds] = useState<string[]>([]);
+  const [name, setName] = useState("");
+  const [subject, setSubject] = useState("");
+  const [bodyText, setBodyText] = useState("");
 
   const mut = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
@@ -219,9 +223,9 @@ function CampaignModal({ onClose }: { onClose: () => void }) {
     setErr("");
     const fd = new FormData(ev.currentTarget);
     mut.mutate({
-      name: String(fd.get("name") || "").trim(),
-      subject: String(fd.get("subject") || "").trim(),
-      body_text: String(fd.get("body") || "").trim(),
+      name: name.trim(),
+      subject: subject.trim(),
+      body_text: bodyText.trim(),
       filter: {
         group_id: groupId || null,
         skill_ids: skillIds,
@@ -248,7 +252,7 @@ function CampaignModal({ onClose }: { onClose: () => void }) {
     >
       <form id="camp-form" onSubmit={submit} className="flex flex-col gap-4">
         <Field label="活动名" required>
-          <Input name="name" maxLength={128} required placeholder="如 Q4 后端候选人激活" />
+          <Input name="name" value={name} onChange={(e) => setName(e.target.value)} maxLength={128} required placeholder="如 Q4 后端候选人激活" />
         </Field>
         <div className="grid grid-cols-2 gap-4">
           <Field label="人才分组(可选)">
@@ -288,16 +292,35 @@ function CampaignModal({ onClose }: { onClose: () => void }) {
           </Field>
         )}
         <Field label="邮件主题" required>
-          <Input name="subject" maxLength={128} required placeholder="好久不见 {{candidate_name}}" />
+          <div className="relative">
+            <Input name="subject" value={subject} onChange={(e) => setSubject(e.target.value)} maxLength={128} required placeholder="好久不见 {{candidate_name}}" />
+            <AiFieldButton
+              target="campaigns.subject"
+              fields={{ name }}
+              onApply={setSubject}
+              className="absolute top-1 right-1"
+            />
+          </div>
         </Field>
         <Field label="邮件正文" required>
-          <textarea
-            name="body"
-            required
-            rows={7}
-            placeholder={"Hi {{candidate_name}},\n我们有一个新机会想跟你聊聊…"}
-            className="w-full rounded-lg border border-[var(--color-border-default)] px-3 py-2 text-sm font-body outline-none focus:border-[var(--color-accent)]"
-          />
+          <div className="relative">
+            <textarea
+              name="body"
+              value={bodyText}
+              onChange={(e) => setBodyText(e.target.value)}
+              required
+              rows={7}
+              placeholder={"Hi {{candidate_name}},\n我们有一个新机会想跟你聊聊…"}
+              className="w-full rounded-lg border border-[var(--color-border-default)] px-3 py-2 pr-11 text-sm font-body outline-none focus:border-[var(--color-accent)]"
+            />
+            <AiFieldButton
+              target="campaigns.body"
+              fields={{ name }}
+              currentText={bodyText}
+              onApply={setBodyText}
+              className="absolute top-1.5 right-1.5"
+            />
+          </div>
         </Field>
         {err && <div className="text-[13px] text-[var(--color-danger)] font-body">{err}</div>}
       </form>

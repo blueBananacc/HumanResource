@@ -279,6 +279,21 @@ function makeTools(token: string): ToolDef[] {
           body: { q: p.q, limit: p.limit ?? 5 },
         }),
     },
+    {
+      name: "search_product_help",
+      label: "检索产品帮助",
+      description:
+        "在 HROnfire 产品使用手册里检索(系统怎么用/功能在哪/操作步骤);用户问的是'这个系统怎么用'时先查这里,回答时引用章节名",
+      parameters: Type.Object({
+        q: Type.String({ description: "检索关键词,如'批量导入员工'" }),
+        limit: Type.Optional(Type.Number({ description: "默认 5" })),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/knowledge/search", {
+          method: "POST",
+          body: { q: p.q, limit: p.limit ?? 5, category: "product_help" },
+        }),
+    },
     // ===== T3:通用实体元工具(MintHCM AI Tools search_records 思路)=====
     {
       name: "list_entities",
@@ -650,6 +665,25 @@ function makeTools(token: string): ToolDef[] {
         }),
     },
     {
+      name: "save_filter",
+      label: "保存筛选条件",
+      description:
+        "把自然语言描述的列表筛选条件保存为可复用筛选器;page 是列表页标识(如 talents/cases/employees),params 是该页筛选字段的键值(如 {q:'张', status:'active'})",
+      parameters: Type.Object({
+        page: Type.String({ description: "列表页标识:talents/cases/employees/jobs" }),
+        name: Type.String({ description: "筛选器名称,如'华东在面候选人'" }),
+        params: Type.Object({}, {
+          additionalProperties: true,
+          description: "筛选字段键值,先想清楚该页有哪些筛选参数",
+        }),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/saved-filters", {
+          method: "POST",
+          body: { page: p.page, name: p.name, params: p.params ?? {} },
+        }),
+    },
+    {
       name: "create_report_subscription",
       label: "订阅定时报表",
       description:
@@ -760,6 +794,7 @@ export const WRITE_TOOLS = new Set([
   "create_request",
   "create_case",
   "create_watcher",
+  "save_filter",
   "create_report_subscription",
   "delete_watcher",
   "delete_report_subscription",

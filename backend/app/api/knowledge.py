@@ -91,6 +91,8 @@ class ArticleOut(BaseModel):
 class SearchIn(BaseModel):
     q: str = Field(min_length=1, max_length=128)
     limit: int = Field(default=5, ge=1, le=20)
+    # T6:按分类限定召回 — assistant 的 search_product_help 只查产品文档
+    category: str | None = Field(default=None, max_length=32)
 
 
 class SearchHit(BaseModel):
@@ -190,6 +192,11 @@ def update_article(
     current: User = Depends(require_permission(PERM_MANAGE_EMPLOYEES)),
 ):
     a = _get(db, aid, current)
+    if a.category == "product_help":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "产品文档由系统随版本维护,不支持编辑",
+        )
     # 只有检索源(title/content)变了或还没有向量才重算 embedding —
     # 纯元数据保存(status/is_playbook/tags)不该每次付一次 provider 调用。
     need_embed = a.embedding is None or a.title != body.title or a.content != body.content
@@ -212,6 +219,11 @@ def delete_article(
     current: User = Depends(require_permission(PERM_MANAGE_EMPLOYEES)),
 ):
     a = _get(db, aid, current)
+    if a.category == "product_help":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "产品文档由系统随版本维护,不支持删除",
+        )
     write_audit(db, actor=current, entity_type="knowledge_article", entity_id=a.id, action="delete", request=request)
     db.delete(a)
     db.commit()
@@ -251,14 +263,18 @@ def _refresh_embedding(db: Session, a: KnowledgeArticle) -> None:
 
 
 def _hybrid_search(
-    db: Session, tenant_id: str, q: str, limit: int, *, published_only: bool
+    db: Session, tenant_id: str, q: str, limit: int, *, published_only: bool,
+    category: str | None = None,
 ) -> list[tuple[KnowledgeArticle, float]]:
     """召回 = 词面命中(trgm/ILIKE) ∪ 语义池(embedding 可用时全量带向量文章);
-    排序 = lex_score + 0.8*cosine(embedding)。无 embedding provider 时自动退化为纯词面。"""
+    排序 = lex_score + 0.8*cosine(embedding)。无 embedding provider 时自动退化为纯词面。
+    ``category`` 非空时限定分类(product_help 只查产品文档,不与租户知识混排)。"""
     lex = _lex_score(q).label("lex")
     base = select(KnowledgeArticle, lex).where(KnowledgeArticle.tenant_id == tenant_id)
     if published_only:
         base = base.where(KnowledgeArticle.status == "published")
+    if category:
+        base = base.where(KnowledgeArticle.category == category)
     pattern = f"%{q}%"
     stmt = base.where(
         or_(
@@ -308,7 +324,10 @@ def search(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    rows = _hybrid_search(db, current.tenant_id, body.q, body.limit, published_only=True)
+    rows = _hybrid_search(
+        db, current.tenant_id, body.q, body.limit,
+        published_only=True, category=body.category,
+    )
     return [_hit(a, body.q, round(s, 4)) for a, s in rows]
 
 

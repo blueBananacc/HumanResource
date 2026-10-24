@@ -27,6 +27,8 @@ import { CandidateSkillsCard } from "@/components/skills/SkillWidgets";
 import { FavoriteStar } from "@/components/records/FavoriteStar";
 import { HistoryDrawer } from "@/components/records/HistoryDrawer";
 import { MergeTalentModal } from "@/components/records/MergeTalentModal";
+import { SummaryCard } from "@/components/assistant/SummaryCard";
+import { DocDraftDrawer } from "@/components/assistant/DocDraftDrawer";
 import { useConfirm } from "@/components/ui/confirm";
 import { ApiError, fetchJSON } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -143,6 +145,7 @@ export function TalentDetail() {
   const { deleteResume, deletingId } = useDeleteResume();
   const [mergeOpen, setMergeOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [docOpen, setDocOpen] = useState(false);
 
   const { data, isLoading, error } = useQuery<TalentDetail>({
     queryKey: ["talent", id],
@@ -231,6 +234,10 @@ export function TalentDetail() {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <Button variant="secondary" onClick={() => setDocOpen(true)}>
+            <Sparkles className="w-4 h-4" />
+            AI 起草
+          </Button>
           {canWrite && (
             <Button variant="secondary" onClick={() => setMergeOpen(true)}>
               <GitMerge className="w-4 h-4" />
@@ -243,6 +250,12 @@ export function TalentDetail() {
           </Button>
         </div>
       </div>
+      <DocDraftDrawer
+        open={docOpen}
+        onClose={() => setDocOpen(false)}
+        entity="candidates"
+        recordId={c.id}
+      />
       <MergeTalentModal
         keepId={c.id}
         keepName={c.name}
@@ -254,6 +267,7 @@ export function TalentDetail() {
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
         <div className="flex flex-col gap-6 min-w-0">
+          <SummaryCard entity="candidates" id={c.id} title="AI 候选人摘要" />
           <TagsCard
             tags={c.tags}
             candidateId={c.id}

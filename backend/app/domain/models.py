@@ -1886,6 +1886,11 @@ class PromptTemplate(Base):
         String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     key: Mapped[str] = mapped_column(String(48), nullable=False)
+    # scope_module:按模块隔离的覆盖(MintHCM AIPromptTemplates.root_module)。
+    # "" = 全局覆盖;非空(如 "jobs") = 只在该模块语境生效,render_prompt 两级回落。
+    scope_module: Mapped[str] = mapped_column(
+        String(48), nullable=False, server_default=""
+    )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=sql_true()
@@ -1900,7 +1905,9 @@ class PromptTemplate(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("tenant_id", "key", name="uq_prompt_templates_tenant_key"),
+        UniqueConstraint(
+            "tenant_id", "key", "scope_module", name="uq_prompt_templates_tenant_key"
+        ),
     )
 
 
@@ -2243,6 +2250,40 @@ class EmailTemplate(Base):
     )
 
 
+class DocTemplate(Base):
+    """文档模板(MintHCM MailMerge 的智能替代)—— AI 起草 offer 信/证明等。
+
+    ``key`` 对应 ``app.services.doc_templates.DOC_SPECS`` 内置注册项;自定义
+    模板用 ``custom.<uuid>`` key 直接落行(注册表外)。``{{var}}`` 占位由
+    ``build_doc_vars`` 预填,剩余空位由 LLM 补写。
+    """
+
+    __tablename__ = "doc_templates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    key: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    entity: Mapped[str] = mapped_column(String(32), nullable=False, server_default="any")
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_true()
+    )
+    updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "key", name="uq_doc_templates_tenant_key"),
+    )
+
+
 class PromptTemplateVersion(Base):
     """提示词模板历史版本(每次保存追加一行,可回滚)。"""
 
@@ -2541,6 +2582,8 @@ class KnowledgeArticle(Base):
 
     __tablename__ = "knowledge_articles"
 
+    # product_help 不在列:系统产品文档由 scripts/seed_product_help.py 直写库,
+    # API 校验器拒绝创建/编辑/删除,与租户知识天然隔离且只读
     CATEGORIES = ("policy", "benefit", "it", "faq", "onboarding", "other")
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)

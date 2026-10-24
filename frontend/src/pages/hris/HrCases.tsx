@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { History, LifeBuoy, Lock, MessageSquare, UserCheck } from "lucide-react";
 import { FavoriteStar } from "@/components/records/FavoriteStar";
 import { HistoryDrawer } from "@/components/records/HistoryDrawer";
+import { AiFieldButton } from "@/components/assistant/AiFieldButton";
+import { SummaryCard } from "@/components/assistant/SummaryCard";
 import { SavedFilters } from "@/components/records/SavedFilters";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -220,6 +222,7 @@ function CaseDetail({ cid, onClose }: { cid: string; onClose: () => void }) {
             </Button>
           )}
         </div>
+        <SummaryCard entity="cases" id={c.id} title="AI 工单摘要" />
         {c.description && <p className="text-[var(--color-text-primary)] whitespace-pre-wrap">{c.description}</p>}
         {c.resolution && (
           <div className="rounded-lg bg-green-50 px-3 py-2 text-green-800">解决方案:{c.resolution}</div>
@@ -266,12 +269,24 @@ function CaseDetail({ cid, onClose }: { cid: string; onClose: () => void }) {
             </form>
             {c.status !== "resolved" && (
               <div className="flex items-center gap-2">
-                <Input
-                  value={resolution}
-                  onChange={(e) => setResolution(e.target.value)}
-                  placeholder="解决方案(解决工单时必填)"
-                  maxLength={3000}
-                />
+                <div className="relative flex-1">
+                  <Input
+                    value={resolution}
+                    onChange={(e) => setResolution(e.target.value)}
+                    placeholder="解决方案(解决工单时必填)"
+                    maxLength={3000}
+                  />
+                  <AiFieldButton
+                    target="cases.resolution"
+                    fields={{
+                      subject: c.subject,
+                      kind: KIND_LABEL[c.kind] ?? c.kind,
+                      description: c.description ?? "",
+                    }}
+                    onApply={setResolution}
+                    className="absolute top-1 right-1"
+                  />
+                </div>
                 <Button
                   size="sm"
                   disabled={act.isPending || !resolution.trim()}

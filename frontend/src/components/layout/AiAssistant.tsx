@@ -26,6 +26,7 @@ import {
 import { cn } from "@/lib/utils";
 import { fetchJSON, getToken } from "@/lib/api";
 import { MarkdownContent } from "@/components/ui/markdown";
+import { ToolResultCard } from "@/components/assistant/ToolResultCard";
 
 /** HiBubble 气泡形品牌头像(规范 §6:小尺寸用气泡标识)。 */
 export function AiAvatar({ size = 32 }: { size?: number }) {
@@ -59,7 +60,13 @@ const DEFAULT_PROMPTS = [
   "总结最近一场面试的结论",
 ];
 
-type ToolStep = { callId: string; label: string; status: "running" | "done" | "error" };
+type ToolStep = {
+  callId: string;
+  name: string;
+  label: string;
+  args: Record<string, unknown>;
+  status: "running" | "done" | "error";
+};
 type ConfirmReq = {
   callId: string;
   label: string;
@@ -67,10 +74,18 @@ type ConfirmReq = {
   args: Record<string, unknown>;
   decided?: "approved" | "rejected" | "timeout";
 };
+type ToolResult = {
+  callId: string;
+  name: string;
+  isError: boolean;
+  durationMs: number | null;
+  result: unknown;
+};
 type Msg = {
   role: "user" | "assistant";
   text: string;
   tools?: ToolStep[];
+  results?: ToolResult[];
   confirms?: ConfirmReq[];
 };
 type ConvMeta = { id: string; title: string; updated_at: string; message_count?: number };
@@ -474,7 +489,9 @@ function ChatPanel({
                 ...(m.tools ?? []),
                 {
                   callId: String(payload.call_id ?? ""),
+                  name: String(payload.name ?? ""),
                   label: String(payload.label ?? payload.name ?? "工具调用"),
+                  args: (payload.args ?? {}) as Record<string, unknown>,
                   status: "running" as const,
                 },
               ],
@@ -488,6 +505,21 @@ function ChatPanel({
                   ? { ...s, status: payload.is_error ? ("error" as const) : ("done" as const) }
                   : s,
               ),
+            }));
+            break;
+          case "tool_result":
+            patchLastAssistant((m) => ({
+              ...m,
+              results: [
+                ...(m.results ?? []),
+                {
+                  callId: String(payload.call_id ?? ""),
+                  name: String(payload.name ?? ""),
+                  isError: Boolean(payload.is_error),
+                  durationMs: (payload.duration_ms ?? null) as number | null,
+                  result: payload.result,
+                },
+              ],
             }));
             break;
           case "confirm_required":
@@ -831,6 +863,17 @@ function ChatPanel({
                           <MarkdownContent text={m.text} />
                         </div>
                       )}
+                      {/* 工具结果富卡片(T6):按工具名渲染,可点击跳详情 */}
+                      {m.results?.map((r, j) => (
+                        <ToolResultCard
+                          key={`${r.callId}-${j}`}
+                          name={r.name}
+                          result={r.result}
+                          args={m.tools?.find((s) => s.callId === r.callId)?.args}
+                          isError={r.isError}
+                          durationMs={r.durationMs}
+                        />
+                      ))}
                       {/* 写操作确认卡 */}
                       {m.confirms?.map((c) => (
                         <div

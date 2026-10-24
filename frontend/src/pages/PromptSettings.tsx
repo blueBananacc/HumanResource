@@ -28,13 +28,29 @@ type Template = {
   key: string;
   name: string;
   description: string;
+  module: string;
   variables: VarSpec[];
   content: string;
   is_custom: boolean;
+  scoped_count: number;
   version: number | null;
   updated_at: string | null;
   updated_by: string | null;
 };
+
+const MODULE_LABEL: Record<string, string> = {
+  global: "通用",
+  talents: "人才库",
+  jobs: "岗位",
+  interviews: "面试",
+  hris: "员工",
+  cases: "工单",
+  announcements: "公告",
+  campaigns: "外联",
+};
+const MODULE_ORDER = [
+  "global", "talents", "jobs", "interviews", "hris", "cases", "announcements", "campaigns",
+];
 
 type Version = { id: string; version: number; content: string; created_at: string };
 
@@ -48,6 +64,14 @@ export function PromptSettings() {
     queryFn: () => fetchJSON<Template[]>("/api/prompt-templates"),
   });
   const items = listQuery.data ?? [];
+  const groups = MODULE_ORDER.map((m) => ({
+    module: m,
+    items: items.filter((t) => (t.module || "global") === m),
+  })).filter((g) => g.items.length > 0);
+  const extra = items.filter(
+    (t) => !MODULE_ORDER.includes(t.module || "global"),
+  );
+  if (extra.length) groups.push({ module: "other", items: extra });
 
   return (
     <main className="p-8 flex flex-col gap-6 max-w-[1000px] mx-auto w-full">
@@ -56,7 +80,7 @@ export function PromptSettings() {
           AI 提示词
         </h2>
         <p className="text-sm text-[var(--color-text-secondary)] font-body">
-          按用途管理各 AI 能力的系统提示词 · 支持 {"{{变量}}"} 占位与版本回滚
+          按用途管理各 AI 能力的系统提示词 · 支持 {"{{变量}}"} 占位、版本回滚与按模块覆盖
         </p>
       </div>
 
@@ -74,50 +98,64 @@ export function PromptSettings() {
         ) : items.length === 0 ? (
           <Empty icon={Sparkles} title="没有可管理的提示词" />
         ) : (
-          items.map((t, i) => (
-            <div
-              key={t.key}
-              className={`flex items-center gap-4 px-6 py-4 ${
-                i < items.length - 1
-                  ? "border-b border-[var(--color-border-row)]"
-                  : ""
-              }`}
-            >
-              <div className="flex flex-col gap-1 flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium text-sm text-[var(--color-text-primary)] font-body">
-                    {t.name}
-                  </span>
-                  <span
-                    className={`px-2 py-0.5 rounded-md text-[11px] font-body ${
-                      t.is_custom
-                        ? "bg-[var(--color-accent-soft,rgba(238,22,79,0.08))] text-[var(--color-accent)]"
-                        : "bg-[var(--color-bg-subtle)] text-[var(--color-text-tertiary)]"
-                    }`}
-                  >
-                    {t.is_custom ? `自定义 v${t.version}` : "默认"}
-                  </span>
-                </div>
-                <p className="text-[12px] text-[var(--color-text-secondary)] font-body truncate">
-                  {t.description}
-                </p>
-                {t.is_custom && t.updated_at && (
-                  <span className="text-[11px] text-[var(--color-text-tertiary)] font-body">
-                    更新于 {formatRelative(t.updated_at)}
-                  </span>
-                )}
+          groups.map((g) => (
+            <div key={g.module}>
+              <div className="px-6 py-2.5 bg-[var(--color-bg-canvas)] border-b border-t border-[var(--color-border-row)] first:border-t-0">
+                <span className="text-[12px] font-bold text-[var(--color-text-tertiary)] tracking-[0.06em]">
+                  {MODULE_LABEL[g.module] ?? g.module}
+                </span>
               </div>
-              <code className="text-[11px] text-[var(--color-text-tertiary)] font-mono bg-[var(--color-bg-subtle)] px-2 py-1 rounded hidden md:block">
-                {t.key}
-              </code>
-              <Button
-                variant="secondary"
-                className="!px-3 !py-1.5 !text-[12px] shrink-0"
-                onClick={() => setEditing(t)}
-              >
-                <Pencil className="w-3.5 h-3.5" />
-                编辑
-              </Button>
+              {g.items.map((t, i) => (
+                <div
+                  key={t.key}
+                  className={`flex items-center gap-4 px-6 py-4 ${
+                    i < g.items.length - 1
+                      ? "border-b border-[var(--color-border-row)]"
+                      : ""
+                  }`}
+                >
+                  <div className="flex flex-col gap-1 flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-sm text-[var(--color-text-primary)] font-body">
+                        {t.name}
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded-md text-[11px] font-body ${
+                          t.is_custom
+                            ? "bg-[var(--color-accent-soft,rgba(238,22,79,0.08))] text-[var(--color-accent)]"
+                            : "bg-[var(--color-bg-subtle)] text-[var(--color-text-tertiary)]"
+                        }`}
+                      >
+                        {t.is_custom ? `自定义 v${t.version}` : "默认"}
+                      </span>
+                      {t.scoped_count > 0 && (
+                        <span className="px-2 py-0.5 rounded-md text-[11px] font-body bg-[var(--color-info-soft)] text-[var(--color-info)]">
+                          {t.scoped_count} 个模块覆盖
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[12px] text-[var(--color-text-secondary)] font-body truncate">
+                      {t.description}
+                    </p>
+                    {t.is_custom && t.updated_at && (
+                      <span className="text-[11px] text-[var(--color-text-tertiary)] font-body">
+                        更新于 {formatRelative(t.updated_at)}
+                      </span>
+                    )}
+                  </div>
+                  <code className="text-[11px] text-[var(--color-text-tertiary)] font-mono bg-[var(--color-bg-subtle)] px-2 py-1 rounded hidden md:block">
+                    {t.key}
+                  </code>
+                  <Button
+                    variant="secondary"
+                    className="!px-3 !py-1.5 !text-[12px] shrink-0"
+                    onClick={() => setEditing(t)}
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                    编辑
+                  </Button>
+                </div>
+              ))}
             </div>
           ))
         )}
@@ -148,15 +186,19 @@ function TemplateDrawer({
   onSaved: (msg: string) => void;
 }) {
   const [content, setContent] = useState(tpl.content);
+  // 空 = 全局覆盖;非空 = 只在该模块语境生效(两级回落)
+  const [scope, setScope] = useState("");
   const [preview, setPreview] = useState<string | null>(null);
   const [showVersions, setShowVersions] = useState(false);
   const [previewVersion, setPreviewVersion] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const scopeQ = scope.trim() ? `?scope_module=${encodeURIComponent(scope.trim())}` : "";
+
   const versionsQuery = useQuery({
-    queryKey: ["prompt-versions", tpl.key],
+    queryKey: ["prompt-versions", tpl.key, scope],
     queryFn: () =>
-      fetchJSON<Version[]>(`/api/prompt-templates/${tpl.key}/versions`),
+      fetchJSON<Version[]>(`/api/prompt-templates/${tpl.key}/versions${scopeQ}`),
     enabled: showVersions,
   });
 
@@ -164,9 +206,10 @@ function TemplateDrawer({
     mutationFn: () =>
       fetchJSON<Template>(`/api/prompt-templates/${tpl.key}`, {
         method: "PUT",
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, scope_module: scope.trim() }),
       }),
-    onSuccess: (t) => onSaved(`已保存为 v${t.version}`),
+    onSuccess: (t) =>
+      onSaved(scope.trim() ? `已保存 ${scope.trim()} 模块覆盖 v${t.version}` : `已保存为 v${t.version}`),
     onError: (e) =>
       setError(e instanceof ApiError ? e.message : "保存失败"),
   });
@@ -175,17 +218,20 @@ function TemplateDrawer({
     mutationFn: () =>
       fetchJSON<{ rendered: string }>(
         `/api/prompt-templates/${tpl.key}/preview`,
-        { method: "POST", body: JSON.stringify({ content, vars: {} }) },
+        {
+          method: "POST",
+          body: JSON.stringify({ content, vars: {}, scope_module: scope.trim() }),
+        },
       ),
     onSuccess: (r) => setPreview(r.rendered),
   });
 
   const reset = useMutation({
     mutationFn: () =>
-      fetchJSON<Template>(`/api/prompt-templates/${tpl.key}/reset`, {
+      fetchJSON<Template>(`/api/prompt-templates/${tpl.key}/reset${scopeQ}`, {
         method: "POST",
       }),
-    onSuccess: () => onSaved("已恢复默认提示词"),
+    onSuccess: () => onSaved(scope.trim() ? "已删除该模块覆盖" : "已恢复默认提示词"),
     onError: (e) =>
       setError(e instanceof ApiError ? e.message : "恢复失败"),
   });
@@ -194,7 +240,7 @@ function TemplateDrawer({
     mutationFn: (version: number) =>
       fetchJSON<Template>(`/api/prompt-templates/${tpl.key}/rollback`, {
         method: "POST",
-        body: JSON.stringify({ version }),
+        body: JSON.stringify({ version, scope_module: scope.trim() }),
       }),
     onSuccess: (t) => onSaved(`已回滚,当前 v${t.version}`),
     onError: (e) =>
@@ -227,6 +273,29 @@ function TemplateDrawer({
               ))}
             </div>
           </div>
+        )}
+
+        <div className="flex items-center gap-2">
+          <span className="text-[12px] text-[var(--color-text-secondary)] font-body shrink-0">
+            生效范围
+          </span>
+          <input
+            value={scope}
+            onChange={(e) => setScope(e.target.value)}
+            placeholder="留空 = 全局;填模块名仅该模块生效"
+            list="prompt-scope-modules"
+            className="h-8 flex-1 rounded-lg border border-[var(--color-border-subtle)] px-2.5 text-[12px] font-body focus:outline-none focus:border-[var(--color-accent)]"
+          />
+          <datalist id="prompt-scope-modules">
+            {MODULE_ORDER.filter((m) => m !== "global").map((m) => (
+              <option key={m} value={m}>{MODULE_LABEL[m]}</option>
+            ))}
+          </datalist>
+        </div>
+        {scope.trim() && (
+          <p className="text-[11px] text-[var(--color-info)] font-body">
+            当前编辑的是「{MODULE_LABEL[scope.trim()] ?? scope.trim()}」模块覆盖 —— 该模块语境下优先生效,其余场景回落全局版本
+          </p>
         )}
 
         <textarea

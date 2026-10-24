@@ -35,9 +35,12 @@ class TemplateOut(BaseModel):
     key: str
     name: str
     description: str
+    module: str
     variables: list[dict]
     content: str
     is_custom: bool
+    # 该 key 的模块级覆盖数量(scope_module 非空的自定义行数)
+    scoped_count: int
     version: int | None
     updated_at: datetime | None
     updated_by: str | None
@@ -45,12 +48,15 @@ class TemplateOut(BaseModel):
 
 class TemplateSaveIn(BaseModel):
     content: str = Field(..., min_length=10, max_length=20000)
+    # 模块级覆盖:"" = 全局(默认);非空 = 仅该模块语境生效(两级回落)
+    scope_module: str = Field(default="", max_length=48)
 
 
 class PreviewIn(BaseModel):
     # 传 content 时预览编辑中的草稿;不传则预览库中已存(或默认)内容
     content: str | None = Field(None, max_length=20000)
     vars: dict[str, str] = Field(default_factory=dict)
+    scope_module: str = Field(default="", max_length=48)
 
 
 class PreviewOut(BaseModel):
@@ -67,6 +73,7 @@ class VersionOut(BaseModel):
 
 class RollbackIn(BaseModel):
     version: int
+    scope_module: str = Field(default="", max_length=48)
 
 
 def _spec_or_404(key: str):
@@ -77,11 +84,13 @@ def _spec_or_404(key: str):
 
 
 def _custom(
-    db: Session, tenant_id: str, key: str, *, for_update: bool = False
+    db: Session, tenant_id: str, key: str, scope_module: str = "", *,
+    for_update: bool = False,
 ) -> PromptTemplate | None:
     stmt = select(PromptTemplate).where(
         PromptTemplate.tenant_id == tenant_id,
         PromptTemplate.key == key,
+        PromptTemplate.scope_module == scope_module,
     )
     # 保存/回滚时锁行,序列化并发写入 — 否则 version += 1 是丢失更新,
     # 版本表会出现两个相同版本号
@@ -90,34 +99,40 @@ def _custom(
     return db.scalars(stmt).first()
 
 
+def _out(key: str, spec, c: PromptTemplate | None, scoped_count: int) -> TemplateOut:
+    return TemplateOut(
+        key=key,
+        name=spec.name,
+        description=spec.description,
+        module=spec.module,
+        variables=spec.variables,
+        content=c.content if c else spec.content,
+        is_custom=c is not None,
+        scoped_count=scoped_count,
+        version=c.version if c else None,
+        updated_at=c.updated_at if c else None,
+        updated_by=c.updated_by if c else None,
+    )
+
+
 @router.get("", response_model=list[TemplateOut])
 def list_templates(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
-    customs = {
-        t.key: t
-        for t in db.scalars(
-            select(PromptTemplate).where(PromptTemplate.tenant_id == current.tenant_id)
-        )
-    }
+    rows = db.scalars(
+        select(PromptTemplate).where(PromptTemplate.tenant_id == current.tenant_id)
+    ).all()
+    customs = {(t.key, t.scope_module): t for t in rows}
+    scoped_counts: dict[str, int] = {}
+    for t in rows:
+        if t.scope_module:
+            scoped_counts[t.key] = scoped_counts.get(t.key, 0) + 1
     out = []
     for key, spec in PROMPT_REGISTRY.items():
-        c = customs.get(key)
-        out.append(
-            TemplateOut(
-                key=key,
-                name=spec.name,
-                description=spec.description,
-                variables=spec.variables,
-                content=c.content if c else spec.content,
-                is_custom=c is not None,
-                version=c.version if c else None,
-                updated_at=c.updated_at if c else None,
-                updated_by=c.updated_by if c else None,
-            )
-        )
+        c = customs.get((key, ""))
+        out.append(_out(key, spec, c, scoped_counts.get(key, 0)))
     return out
 
 
@@ -131,12 +146,13 @@ def save_template(
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
     spec = _spec_or_404(key)
-    tpl = _custom(db, current.tenant_id, key, for_update=True)
+    scope = body.scope_module.strip()
+    tpl = _custom(db, current.tenant_id, key, scope, for_update=True)
     try:
         if tpl is None:
             tpl = PromptTemplate(
-                tenant_id=current.tenant_id, key=key, content=body.content,
-                version=1, updated_by=current.id,
+                tenant_id=current.tenant_id, key=key, scope_module=scope,
+                content=body.content, version=1, updated_by=current.id,
             )
             db.add(tpl)
             db.flush()
@@ -157,7 +173,8 @@ def save_template(
         )
         write_audit(
             db, actor=current, entity_type="prompt_template", entity_id=tpl.id,
-            action="save", detail={"key": key, "version": tpl.version},
+            action="save",
+            detail={"key": key, "scope_module": scope, "version": tpl.version},
             request=request,
         )
         db.commit()
@@ -166,11 +183,7 @@ def save_template(
         db.rollback()
         raise HTTPException(409, "并发保存冲突,请重试")
     db.refresh(tpl)
-    return TemplateOut(
-        key=key, name=spec.name, description=spec.description,
-        variables=spec.variables, content=tpl.content, is_custom=True,
-        version=tpl.version, updated_at=tpl.updated_at, updated_by=tpl.updated_by,
-    )
+    return _out(key, spec, tpl, 0)
 
 
 @router.post("/{key}/preview", response_model=PreviewOut)
@@ -182,7 +195,7 @@ def preview_template(
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
     spec = _spec_or_404(key)
-    tpl = _custom(db, current.tenant_id, key)
+    tpl = _custom(db, current.tenant_id, key, body.scope_module.strip())
     content = (
         body.content
         if body.content is not None
@@ -198,35 +211,34 @@ def preview_template(
 def reset_template(
     key: str,
     request: Request,
+    scope_module: str = "",
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
     spec = _spec_or_404(key)
-    tpl = _custom(db, current.tenant_id, key)
+    tpl = _custom(db, current.tenant_id, key, scope_module)
     if tpl:
         write_audit(
             db, actor=current, entity_type="prompt_template", entity_id=tpl.id,
-            action="reset", detail={"key": key}, request=request,
+            action="reset", detail={"key": key, "scope_module": scope_module},
+            request=request,
         )
         db.delete(tpl)
         db.commit()
-    return TemplateOut(
-        key=key, name=spec.name, description=spec.description,
-        variables=spec.variables, content=spec.content, is_custom=False,
-        version=None, updated_at=None, updated_by=None,
-    )
+    return _out(key, spec, None, 0)
 
 
 @router.get("/{key}/versions", response_model=list[VersionOut])
 def list_versions(
     key: str,
+    scope_module: str = "",
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
     _spec_or_404(key)
-    tpl = _custom(db, current.tenant_id, key)
+    tpl = _custom(db, current.tenant_id, key, scope_module)
     if tpl is None:
         return []
     return [
@@ -252,7 +264,8 @@ def rollback_template(
     _p=Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
     spec = _spec_or_404(key)
-    tpl = _custom(db, current.tenant_id, key, for_update=True)
+    scope = body.scope_module.strip()
+    tpl = _custom(db, current.tenant_id, key, scope, for_update=True)
     if tpl is None:
         raise HTTPException(404, "没有自定义版本可回滚")
     ver = db.scalars(
@@ -280,8 +293,4 @@ def rollback_template(
     )
     db.commit()
     db.refresh(tpl)
-    return TemplateOut(
-        key=key, name=spec.name, description=spec.description,
-        variables=spec.variables, content=tpl.content, is_custom=True,
-        version=tpl.version, updated_at=tpl.updated_at, updated_by=tpl.updated_by,
-    )
+    return _out(key, spec, tpl, 0)
