@@ -4,7 +4,7 @@ Revision ID: 0033
 Revises: 0032
 Create Date: 2026-10-23
 
-参考 MintHCM AIPromptTemplates:按用途 key 管理模板,``{{var}}`` 占位。
+按用途 key 管理模板,``{{var}}`` 占位。
 没有自定义行时服务用代码内置默认;每次保存写版本表可回滚。
 """
 from __future__ import annotations

@@ -8,7 +8,7 @@ import { ApiError, fetchJSON } from "@/lib/api";
 import { formatRelative } from "@/lib/format";
 
 /**
- * 设置 → 邮件模板(T1-3,SuiteCRM EmailTemplates 移植)。
+ * 设置 → 邮件模板(T1-3)。
  *
  * 每个用途一行,抽屉编辑 subject / body_text / body_html,
  * {{var}} 占位;预览同时给出渲染后的主题、纯文本与 HTML。

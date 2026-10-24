@@ -1,4 +1,4 @@
-"""文档模板注册表 + 变量构建(T6-4,MintHCM MailMerge 的智能替代)。
+"""文档模板注册表 + 变量构建(T6-4 AI 文档起草)。
 
 ``DOC_SPECS`` 是内置模板(录用通知/在职证明/转正通知);租户可在
 ``doc_templates`` 表写同 key 覆盖内容,或建 ``custom.<uuid>`` key 的自定义模板。

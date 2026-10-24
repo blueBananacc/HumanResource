@@ -1,4 +1,4 @@
-"""薪酬带宽 API(MintHCM SalaryRanges 移植)。
+"""薪酬带宽 API。
 
 - CRUD ``/salary-bands``:读写均 ``manage_payroll`` —— 带宽属薪酬敏感数据,
   不对只读/view_reports 的全量非员工角色(viewer/interviewer/hiring_manager)

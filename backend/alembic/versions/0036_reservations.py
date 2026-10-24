@@ -4,7 +4,7 @@ Revision ID: 0036
 Revises: 0035
 Create Date: 2026-10-23
 
-参考 MintHCM Rooms/Resources/Reservations。冲突校验在 API 层
+冲突校验在 API 层
 (同对象 + status=active + 时间重叠 → 409)。
 """
 from __future__ import annotations

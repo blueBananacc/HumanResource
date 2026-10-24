@@ -1,4 +1,4 @@
-"""产品使用文档灌知识库(T6,MintHCM BrowseDocumentationTool 对应物)。
+"""产品使用文档灌知识库(T6 product_help 类目)。
 
 把 ``product_help/`` 下的 markdown 手册按 ``##``/``###`` 标题切片,
 以 ``category="product_help"`` 写入每个租户的 ``knowledge_articles``:

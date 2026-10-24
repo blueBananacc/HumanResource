@@ -1,4 +1,4 @@
-"""知识库 API(SuiteCRM AOK_KnowledgeBase 移植)—— assistant RAG 语料。
+"""知识库 API —— 制度文档 + assistant RAG 语料。
 
 - 管理 ``GET/POST/PUT/DELETE /knowledge/articles``(manage_employees 写 / view_reports 读)
 - ``POST /knowledge/search {q,limit}`` → title+snippet,assistant search_knowledge 走这里

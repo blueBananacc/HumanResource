@@ -18,7 +18,7 @@ import { useAuth } from "@/lib/auth";
 import { PERM } from "@/lib/roles";
 
 /**
- * 招聘管道看板(T1-1,MintHCM Candidatures Kanban 移植)。
+ * 招聘管道看板(T1-1)。
  *
  * - 列 = job_applications.stage;卡片可拖到目标列 → POST transition
  * - 顶部岗位选择器(job 写进 URL query,可深链)

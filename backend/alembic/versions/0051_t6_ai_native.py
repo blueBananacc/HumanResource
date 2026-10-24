@@ -4,7 +4,7 @@ Revision ID: 0051
 Revises: 0050
 Create Date: 2026-10-24
 
-MintHCM 借鉴 T6 AI 产品化:
+T6 AI 产品化:
 - prompt_templates.scope_module — AIPromptTemplates.root_module,按模块隔离的提示词覆盖
 - doc_templates — MailMerge 智能替代,AI 起草文档模板(内置注册表 + 租户覆盖/自定义)
 """

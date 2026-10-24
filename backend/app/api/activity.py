@@ -1,4 +1,4 @@
-"""活动流(MintHCM SugarFeed 移植):聚合 audit + 业务事件 → 统一时间线。
+"""活动流:聚合 audit + 业务事件 → 统一时间线。
 
 ``GET /api/activity?days=7&limit=50`` → Dashboard「近期动态」卡。
 数据源:

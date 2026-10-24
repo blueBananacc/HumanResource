@@ -22,7 +22,7 @@ const FIELDS = [
   { key: "status", label: "状态" },
 ] as const;
 
-/** 候选人合并向导(MintHCM MergeRecords 三步的紧凑版):查重→取舍→合并。 */
+/** 候选人合并向导:查重→取舍→合并。 */
 export function MergeTalentModal({
   keepId,
   keepName,

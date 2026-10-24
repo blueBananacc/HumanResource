@@ -294,7 +294,7 @@ function makeTools(token: string): ToolDef[] {
           body: { q: p.q, limit: p.limit ?? 5, category: "product_help" },
         }),
     },
-    // ===== T3:通用实体元工具(MintHCM AI Tools search_records 思路)=====
+    // ===== T3:通用实体元工具 =====
     {
       name: "list_entities",
       label: "列出可检索实体",

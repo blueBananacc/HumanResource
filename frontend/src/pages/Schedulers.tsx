@@ -12,7 +12,7 @@ type Job = {
   last_message: string | null;
 };
 
-/** 后台任务运维页(MintHCM Schedulers):loop/celery 任务最近一次运行状态。 */
+/** 后台任务运维页:loop/celery 任务最近一次运行状态。 */
 export function Schedulers() {
   const { data: jobs, isLoading } = useQuery({
     queryKey: ["scheduler-jobs"],

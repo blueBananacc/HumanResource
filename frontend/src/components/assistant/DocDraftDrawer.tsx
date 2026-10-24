@@ -10,7 +10,7 @@ import { Select } from "@/components/ui/select";
 type TemplateOpt = { key: string; name: string; entity: string };
 
 /**
- * AI 文档起草抽屉(T6-4,MintHCM MailMerge 智能替代):
+ * AI 文档起草抽屉(T6-4):
  * 选模板 → 后端按记录预填 {{var}} → LLM 补全 → 可编辑预览 → 复制/下载。
  * 只产草稿,不自动发送。
  */

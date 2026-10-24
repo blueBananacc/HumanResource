@@ -1,4 +1,4 @@
-"""触发式任务(watchers)—— MintHCM AOW_WorkFlow 的 AI-native 轻量等价物。
+"""触发式任务(watchers)—— AI-native 轻量工作流。
 
 每个 ``AiWatcher`` 属于一个用户;``kind`` 注册在 :data:`EVALUATORS`,评估器签名::
 

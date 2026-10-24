@@ -1,4 +1,4 @@
-"""T3 第二批移植全链路测试。
+"""T3 第二批全链路测试。
 
 覆盖:notifications+watchers / announcements / employee_requests /
 salary_bands(+offer 钩子)/ hr_cases / knowledge / report_subscriptions /

@@ -422,7 +422,7 @@ def create_app() -> FastAPI:
     app.include_router(rooms_api.interviewers_router, prefix="/api")
     app.include_router(surveys_api.router, prefix="/api")
     app.include_router(surveys_api.public_router, prefix="/api")
-    # T3 第二批移植:通知/公告/申请/带宽/工单/知识库/订阅/触达/ICS/活动流/实体检索
+    # T3 第二批:通知/公告/申请/带宽/工单/知识库/订阅/触达/ICS/活动流/实体检索
     app.include_router(notifications_api.router, prefix="/api")
     app.include_router(announcements_api.router, prefix="/api")
     app.include_router(announcements_api.me_router, prefix="/api")

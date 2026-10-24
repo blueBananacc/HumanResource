@@ -1,4 +1,4 @@
-"""后台任务运维页(MintHCM Schedulers 移植,只读版)。
+"""后台任务运维 API(只读)。
 
 ``GET /scheduler/jobs`` — 注册任务 + 最近一次运行;
 ``GET /scheduler/jobs/{name}/runs`` — 运行历史。

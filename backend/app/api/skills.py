@@ -1,4 +1,4 @@
-"""技能库 API(参考 MintHCM Competencies 收敛)。
+"""技能库 API。
 
 - ``GET/POST/PUT/DELETE /skills``                  技能字典(manage_settings)
 - ``GET/PUT /jobs/{id}/skills``                    岗位技能要求(must/nice)

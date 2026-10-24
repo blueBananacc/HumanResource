@@ -7,7 +7,7 @@ import { fetchJSON } from "@/lib/api";
 type SavedFilter = { id: string; page: string; name: string; params: Record<string, unknown> };
 
 /**
- * 列表页"保存筛选"下拉(MintHCM SavedSearch)。
+ * 列表页"保存筛选"下拉。
  * `currentParams` 返回当前筛选状态快照;`onApply` 负责把快照写回页面 state。
  */
 export function SavedFilters({

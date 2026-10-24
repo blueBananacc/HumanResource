@@ -1,4 +1,4 @@
-"""通用实体检索与操作(MintHCM AI Tools 移植 + T4 扩展)。
+"""通用实体检索与操作(注册表白名单驱动)。
 
 白名单注册表驱动,**不暴露通用 ORM**——每个 entity 有独立 query builder,
 tenant 过滤 + 按实体 org scope + 权限映射,统一返回 {id,label,secondary}。
@@ -504,7 +504,7 @@ def aggregate_entities(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    """对过滤后的实体集做聚合 — 等价 MintHCM SumRecordsTool。"""
+    """对过滤后的实体集做聚合(sum/avg/min/max/count)。"""
     spec = _spec(entity, current)
     if spec["feature"]:
         require_feature(spec["feature"])()
@@ -542,7 +542,7 @@ def aggregate_entities(
 
 class UpdateIn(BaseModel):
     fields: dict[str, Any] = Field(default_factory=dict)
-    # optimistic lock:前端带读取时的 updated_at,失配 → 409(MintHCM date_modified 校验)
+    # optimistic lock:前端带读取时的 updated_at,失配 → 409
     base_updated_at: datetime | None = None
 
 
@@ -770,7 +770,7 @@ def update_entity(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    """白名单字段更新 — 等价 MintHCM UpdateRecordTool(收窄到安全字段)。"""
+    """白名单字段更新(收窄到注册表安全字段)。"""
     spec = _spec(entity, current)
     if spec["feature"]:
         require_feature(spec["feature"])()
@@ -1028,7 +1028,7 @@ def entity_relations(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    """实体关联穿透 — 等价 MintHCM ListRelationshipsTool。"""
+    """实体关联穿透(注册表声明的关系项)。"""
     spec = _spec(entity, current)
     if spec["feature"]:
         require_feature(spec["feature"])()
@@ -1295,7 +1295,7 @@ def entity_schema(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    """字段/关系 schema 发现 — 等价 MintHCM GetModuleFieldsTool。
+    """字段/关系 schema 发现。
 
     LLM 在 create/update/link 之前先查这个端点,避免靠 400 试错。
     """
@@ -1335,7 +1335,7 @@ def create_entity(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    """白名单字段创建 — 等价 MintHCM CreateRecordTool(收窄到安全实体)。"""
+    """白名单字段创建(收窄到安全实体)。"""
     _entity_gate(entity, current)
     c = CREATABLE.get(entity)
     if c is None:
@@ -1380,7 +1380,7 @@ def delete_entity(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    """白名单实体删除 — 等价 MintHCM DeleteRecordTool(收窄到安全实体)。"""
+    """白名单实体删除(收窄到安全实体)。"""
     _entity_gate(entity, current)
     d = DELETABLE.get(entity)
     if d is None:
@@ -1441,7 +1441,7 @@ def link_records(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    """建关系 — 等价 MintHCM CreateRelationshipTool(收窄到注册关系)。"""
+    """建关系(收窄到注册关系)。"""
     lspec = _link_spec(entity, body.rel_name, current)
     scope = get_org_scope(db, current)
     from_row, _to = _resolve_link(lspec, db, current, scope, rid, body.related_id)
@@ -1498,7 +1498,7 @@ def unlink_records(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    """拆关系 — 等价 MintHCM DeleteRelationshipTool。"""
+    """拆关系。"""
     lspec = _link_spec(entity, rel_name, current)
     scope = get_org_scope(db, current)
     from_row, _to = _resolve_link(lspec, db, current, scope, rid, related_id)

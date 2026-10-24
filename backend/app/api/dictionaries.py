@@ -1,4 +1,4 @@
-"""可配置下拉枚举(MintHCM Dictionaries 移植)。
+"""可配置下拉枚举。
 
 - 读 ``GET /dictionaries/{key}`` — 任何登录用户(表单下拉用),只回激活项。
 - 写 ``/dictionaries`` CRUD — ``manage_settings``。

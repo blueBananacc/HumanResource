@@ -4,7 +4,6 @@ Revision ID: 0037
 Revises: 0036
 Create Date: 2026-10-23
 
-参考 MintHCM Surveys/SurveyQuestions/SurveyResponses。
 答卷防重复:UNIQUE(survey_id, respondent_key)。
 """
 from __future__ import annotations

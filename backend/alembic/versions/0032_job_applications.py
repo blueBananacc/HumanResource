@@ -4,7 +4,7 @@ Revision ID: 0032
 Revises: 0031
 Create Date: 2026-10-23
 
-参考 MintHCM Candidatures(状态机 + Kanban),收敛为
+状态机 + Kanban,收敛为
 applied/screening/interview/offer/hired/rejected/withdrawn 七态。
 """
 from __future__ import annotations

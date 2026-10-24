@@ -4,7 +4,7 @@ Revision ID: 0030
 Revises: 0029
 Create Date: 2026-10-26
 
-参照 Frappe HRMS 领域模型(docs/design/hrms-suite-design.md)。一次建全部表:
+HRIS 领域模型(docs/design/hrms-suite-design.md)。一次建全部表:
 - employees                  员工主数据(核心,挂 user/org/candidate)
 - leave_types / leave_allocations / leave_applications / leave_ledger_entries
 - employee_checkins / attendances

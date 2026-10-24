@@ -11,7 +11,7 @@
  * 令牌缓存 10s(exchange 只是轻量查库;短缓存把吊销失效延迟压到 10s 内)。
  *
  * 与页内聊天的差异:没有 beforeToolCall 确认门 —— 持有令牌 = 用户授权
- * 该客户端以自己身份操作(与 MintHCM MCP 同一模型)。写操作照常写审计
+ * 该客户端以自己身份操作。写操作照常写审计
  * (audit.via="mcp"),可追责。
  */
 import { createHmac } from "node:crypto";

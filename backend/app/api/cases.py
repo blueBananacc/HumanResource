@@ -1,4 +1,4 @@
-"""HR 工单 API(SuiteCRM Cases 移植)。
+"""HR 工单 API。
 
 - ESS ``/me/cases``:提交/列表/公开留言(行级=本人员工档案)
 - HR ``/cases``:队列/指派/状态/留言(manage_employees)

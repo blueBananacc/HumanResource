@@ -4,7 +4,7 @@ Revision ID: 0035
 Revises: 0034
 Create Date: 2026-10-23
 
-参考 MintHCM Competencies/CompetencyRatings,收敛为统一技能字典 +
+统一技能字典 +
 岗位技能要求(must/nice)+ 候选人技能(level 1-5)。
 """
 from __future__ import annotations

@@ -4,8 +4,8 @@ Revision ID: 0031
 Revises: 0030
 Create Date: 2026-10-26
 
-对应 Frappe HRMS 的 Holiday List / Attendance Request / Overtime→Comp Leave /
-Leave Policy 四个域:
+覆盖 节假日历 / 补卡申请 / 加班→调休 /
+假期政策 四个域:
 
 - work_calendars      租户工作日历(每周工作日 + 日标准工时)
 - holidays            节假日 / 调休补班日

@@ -19,7 +19,7 @@ import { useAuth } from "@/lib/auth";
 import { PERM } from "@/lib/roles";
 
 /**
- * 面试安排 · 排期页(T2-2,MintHCM Reservations/ReservationsCalendar 移植)。
+ * 面试安排 · 排期页(T2-2)。
  *
  * 一周日历:每天一列,09:00-19:00 时间轴;预约为定位块,
  * 已取消灰色虚线。顶部可筛会议室,+ 新建预约弹窗

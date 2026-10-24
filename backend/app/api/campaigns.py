@@ -1,4 +1,4 @@
-"""人才再激活外联 API(MintHCM Campaigns/EmailMarketing 收敛版)。
+"""人才再激活外联 API。
 
 - ``GET/POST /campaigns``:创建时把 filter 快照成 sends 行(无邮箱→skipped)
 - ``GET /campaigns/{id}``:详情 + sends

@@ -1,4 +1,4 @@
-"""ICS 日历导出(MintHCM iCals/vCals 移植)。
+"""ICS 日历导出。
 
 - ``GET /interviews/{id}/ics`` → 面试 VEVENT 下载(auth + scope)
 - ``GET /reservations/{id}/ics`` → 预约 VEVENT 下载

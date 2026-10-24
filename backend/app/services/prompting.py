@@ -28,7 +28,7 @@ class PromptSpec:
 
     ``module`` 是展示分组 + ``render_prompt(module=...)`` 两级回落的依据:
     租户可在 ``prompt_templates.scope_module`` 里按模块覆盖同 key 的措辞
-    (MintHCM AIPromptTemplates.root_module 对应物)。
+    (模块覆盖 → 全局两级回落)。
     """
 
     def __init__(
@@ -453,7 +453,7 @@ def render_prompt(
     """查租户的自定义模板并渲染;无模板 / 已停用 / key 未注册 → None。
 
     ``module`` 非空时先查模块级覆盖 ``(key, scope_module=module)``,
-    无则回落全局 ``(key, "")`` —— MintHCM root_module 的两级语义。
+    无则回落全局 ``(key, "")``。
     调用方对 ``None`` 一律回落到代码内置默认 prompt。
     """
     if key not in PROMPT_REGISTRY:

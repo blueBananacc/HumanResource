@@ -4,7 +4,7 @@ Revision ID: 0034
 Revises: 0033
 Create Date: 2026-10-23
 
-参考 SuiteCRM EmailTemplates。无自定义行时 worker 回落内置文案;
+无自定义行时 worker 回落内置文案;
 ``app.services.mail_templates`` 提供注册表与渲染。
 """
 from __future__ import annotations

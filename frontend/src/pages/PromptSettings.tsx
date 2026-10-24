@@ -15,7 +15,7 @@ import { ApiError, fetchJSON } from "@/lib/api";
 import { formatRelative } from "@/lib/format";
 
 /**
- * 设置 → AI 提示词(T1-2,MintHCM AIPromptTemplates 移植)。
+ * 设置 → AI 提示词(T1-2)。
  *
  * 列表 = 注册表里所有用途,每条显示「默认 / 自定义 vN」;
  * 抽屉里编辑 content(支持 {{var}} 占位)+ 变量文档 + 渲染预览 +

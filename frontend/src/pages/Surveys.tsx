@@ -19,7 +19,7 @@ import { useAuth } from "@/lib/auth";
 import { PERM } from "@/lib/roles";
 
 /**
- * 问卷管理(T2-3,MintHCM Surveys 移植)。
+ * 问卷管理(T2-3)。
  *
  * 列表 → 编辑抽屉(题目构建器)→ 发布 → 发一次性填写链接(/s/:token,
  * 可绑候选人)→ 结果聚合面板。问卷为候选人体验/面试反馈场景。

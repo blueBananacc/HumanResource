@@ -4,7 +4,7 @@ Revision ID: 0050
 Revises: 0049
 Create Date: 2026-10-24
 
-MintHCM 移植 T5 平台甜点:
+T5 平台能力:
 - saved_filters    — SavedSearch,per-user 列表页命名筛选
 - favorites        — 记录星标(多态 entity+entity_id)
 - dictionary_items — Dictionaries,可配置下拉枚举

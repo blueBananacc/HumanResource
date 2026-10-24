@@ -940,7 +940,7 @@ class JobComment(Base):
 
 
 # =====================================================================
-# HRIS 员工核心(参照 Frappe HRMS 领域模型,见 docs/design/hrms-suite-design.md)
+# HRIS 员工核心(领域模型见 docs/design/hrms-suite-design.md)
 # =====================================================================
 
 
@@ -950,7 +950,7 @@ class Employee(Base):
     - ``reports_to_id`` 直属上级(自引用),既是组织架构图的边,
       也是"上级审批下属请假/报销"的行级数据范围依据
     - ``user_id`` 员工账号绑定(role='employee' 的 User,唯一);
-      员工登录后 /api/me/* 全部按它行级过滤 — 对应 Frappe ESS
+      员工登录后 /api/me/* 全部按它行级过滤(ESS)
     - ``source_candidate_id`` 录用转化来源(offer accepted → 建档)
     - ``status``: active / leave / suspended / terminated
     - ``personal`` JSON 存低频字段(地址/紧急联系人/证件),避免表膨胀
@@ -1384,7 +1384,7 @@ class LifecycleTask(Base):
 
 
 class JobRequisition(Base):
-    """招聘需求(编制)审批 — 对应 Frappe Job Requisition。
+    """招聘需求(编制)审批。
 
     hiring_manager 提交 → admin/hr 审批 → approved 后可一键转 Job。
     status: pending / approved / rejected / cancelled
@@ -1797,7 +1797,7 @@ class VoiceProvider(Base):
 
 
 class JobApplication(Base):
-    """候选人 × 岗位的申请管道卡(参考 MintHCM Candidatures 收敛)。
+    """候选人 × 岗位的申请管道卡(7 态收敛状态机)。
 
     stage 状态机(全部允许双向流转,只记历史不锁死):
         applied → screening → interview → offer → hired
@@ -1872,7 +1872,7 @@ class JobApplicationEvent(Base):
 
 
 class PromptTemplate(Base):
-    """租户级 AI 提示词模板(参考 MintHCM AIPromptTemplates,按用途 key 管理)。
+    """租户级 AI 提示词模板(按用途 key 管理)。
 
     ``key`` 对应 ``app.services.prompting.PROMPT_REGISTRY`` 的注册项;
     没有自定义行时各服务用代码内置默认值。``{{var}}`` 占位符由调用方
@@ -1886,7 +1886,7 @@ class PromptTemplate(Base):
         String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     key: Mapped[str] = mapped_column(String(48), nullable=False)
-    # scope_module:按模块隔离的覆盖(MintHCM AIPromptTemplates.root_module)。
+    # scope_module:按模块隔离的覆盖("" = 全局,非空 = 模块名)。
     # "" = 全局覆盖;非空(如 "jobs") = 只在该模块语境生效,render_prompt 两级回落。
     scope_module: Mapped[str] = mapped_column(
         String(48), nullable=False, server_default=""
@@ -1912,7 +1912,7 @@ class PromptTemplate(Base):
 
 
 class Skill(Base):
-    """技能/胜任力字典(参考 MintHCM Competencies,收敛为统一技能库)。
+    """技能/胜任力字典(统一技能库 + 岗位/候选人侧评分)。
 
     category: tech / language / soft / cert / other
     """
@@ -1995,7 +1995,7 @@ class CandidateSkill(Base):
 
 
 class Room(Base):
-    """会议室(参考 MintHCM Rooms)。"""
+    """会议室。"""
 
     __tablename__ = "rooms"
 
@@ -2019,7 +2019,7 @@ class Room(Base):
 
 
 class Resource(Base):
-    """可预约资源:设备 / 电话亭等(参考 MintHCM Resources)。"""
+    """可预约资源:设备 / 电话亭等。"""
 
     __tablename__ = "resources"
 
@@ -2042,7 +2042,7 @@ class Resource(Base):
 
 
 class Reservation(Base):
-    """预约:占会议室或资源一段时间(参考 MintHCM Reservations)。
+    """预约:占会议室或资源一段时间。
 
     status: active / cancelled。冲突校验在 API 层
     (重叠 + 同对象 + status=active → 409)。
@@ -2084,7 +2084,7 @@ class Reservation(Base):
 
 
 class Survey(Base):
-    """问卷/调查(参考 MintHCM Surveys)。
+    """问卷/调查。
 
     status: draft(编辑中)/ published(可填写)/ closed(停止收集)。
     公开填写走 /api/public/surveys/{token}(仅 published,token 对应
@@ -2216,7 +2216,7 @@ class SurveyResponseAnswer(Base):
 
 
 class EmailTemplate(Base):
-    """租户级邮件模板(参考 SuiteCRM EmailTemplates)。
+    """租户级邮件模板。
 
     ``key`` 对应 ``app.services.mail_templates.EMAIL_SPECS`` 注册项;
     subject / body_text / body_html 里写 ``{{var}}`` 占位,发送时按
@@ -2251,7 +2251,7 @@ class EmailTemplate(Base):
 
 
 class DocTemplate(Base):
-    """文档模板(MintHCM MailMerge 的智能替代)—— AI 起草 offer 信/证明等。
+    """文档模板 —— AI 起草 offer 信/证明等。
 
     ``key`` 对应 ``app.services.doc_templates.DOC_SPECS`` 内置注册项;自定义
     模板用 ``custom.<uuid>`` key 直接落行(注册表外)。``{{var}}`` 占位由
@@ -2336,7 +2336,7 @@ class Notification(Base):
 
 
 class AiWatcher(Base):
-    """触发式任务(AI-native 工作流,MintHCM AOW_WorkFlow 的轻量等价物)。
+    """触发式任务(AI-native 轻量工作流)。
 
     ``kind`` 注册于 ``app.services.watchers.EVALUATORS``,每个评估器读 params
     检查条件,满足即写 Notification。每 tick 由 lifespan 的 _watch_loop 驱动。
@@ -2366,7 +2366,7 @@ class AiWatcher(Base):
 
 
 class Announcement(Base):
-    """公司公告(MintHCM News)。audience 为空 = 全公司。"""
+    """公司公告。audience 为空 = 全公司。"""
 
     __tablename__ = "announcements"
 
@@ -2419,7 +2419,7 @@ class AnnouncementRead(Base):
 
 
 class EmployeeRequest(Base):
-    """员工申请枢纽(MintHCM Requests):培训/福利/设备等诉求的统一入口。
+    """员工申请枢纽:培训/福利/设备等诉求的统一入口。
 
     ESS 提交 -> HR 队列审批;留言流双方可见。
     """
@@ -2473,7 +2473,7 @@ class RequestComment(Base):
 
 
 class SalaryBand(Base):
-    """薪酬带宽(MintHCM SalaryRanges):岗位/职级 -> 薪资区间参考。
+    """薪酬带宽:岗位/职级 -> 薪资区间参考。
 
     ``designation`` 为空表示通用带宽;``org_unit_id`` 为空表示全公司。
     gross 单位为元(整数);employer_cost 可选记录雇主成本侧。
@@ -2513,7 +2513,7 @@ class SalaryBand(Base):
 
 
 class HrCase(Base):
-    """HR 工单(SuiteCRM Cases):员工诉求通道。
+    """HR 工单:员工诉求通道。
 
     ``case_no`` 是租户内递增序列(insert 时锁 tenant 行取 max+1)。
     """
@@ -2578,7 +2578,7 @@ class HrCaseUpdate(Base):
 
 
 class KnowledgeArticle(Base):
-    """知识库文章(SuiteCRM AOK_KnowledgeBase)—— 制度文档 + assistant RAG 语料。"""
+    """知识库文章 —— 制度文档 + assistant RAG 语料。"""
 
     __tablename__ = "knowledge_articles"
 
@@ -2637,7 +2637,7 @@ class ReportSubscription(Base):
 
 
 class TalentCampaign(Base):
-    """人才再激活外联(MintHCM Campaigns/EmailMarketing 的收敛版)。
+    """人才再激活外联。
 
     ``filter`` 快照存筛选条件:{group_id?, skill_ids?, query?};
     创建时 resolve 成 ``talent_campaign_sends`` 行,无邮箱的记 skipped。
@@ -2724,7 +2724,7 @@ class McpToken(Base):
 
 
 class SavedFilter(Base):
-    """列表页保存筛选(MintHCM SavedSearch):per-user per-page 命名筛选。"""
+    """列表页保存筛选:per-user per-page 命名筛选。"""
 
     __tablename__ = "saved_filters"
     __table_args__ = (
@@ -2747,7 +2747,7 @@ class SavedFilter(Base):
 
 
 class Favorite(Base):
-    """记录星标收藏(MintHCM Favorites):多态 entity+entity_id。"""
+    """记录星标收藏:多态 entity+entity_id。"""
 
     __tablename__ = "favorites"
     __table_args__ = (
@@ -2769,7 +2769,7 @@ class Favorite(Base):
 
 
 class DictionaryItem(Base):
-    """可配置下拉枚举(MintHCM Dictionaries):dict_key 命名空间 + value/label。"""
+    """可配置下拉枚举:dict_key 命名空间 + value/label。"""
 
     __tablename__ = "dictionary_items"
     __table_args__ = (
@@ -2793,7 +2793,7 @@ class DictionaryItem(Base):
 
 
 class JobRun(Base):
-    """后台任务运行打点(MintHCM SchedulersJobs):loop/celery 任务运行历史。"""
+    """后台任务运行打点:loop/celery 任务运行历史。"""
 
     __tablename__ = "job_runs"
 

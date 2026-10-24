@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { ApiError, fetchJSON } from "@/lib/api";
 
 /**
- * 技能/胜任力 UI(T2-1,MintHCM Competencies 移植)。
+ * 技能/胜任力 UI(T2-1)。
  *
  * - ``SkillSearch``:字典搜索;``canCreate`` 时无命中项才可回车新建
  *   (字典归 manage_settings 管 — 后端对无该权限的用户拒绝按 name 造新词条)

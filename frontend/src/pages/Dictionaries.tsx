@@ -21,7 +21,7 @@ const KEY_LABEL: Record<string, string> = {
   skill_category: "技能分类",
 };
 
-/** 数据字典管理(MintHCM Dictionaries):租户可配置下拉枚举。 */
+/** 数据字典管理:租户可配置下拉枚举。 */
 export function Dictionaries() {
   const qc = useQueryClient();
   const [key, setKey] = useState("request_kind");

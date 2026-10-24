@@ -1,4 +1,4 @@
-"""问卷 API(参考 MintHCM Surveys)。
+"""问卷 API。
 
 管理端(登录 + 权限):
 - ``GET/POST /surveys``;``PUT /surveys/{id}``(title/desc/题目整组替换)

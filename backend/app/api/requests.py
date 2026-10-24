@@ -1,4 +1,4 @@
-"""员工申请枢纽 API(MintHCM Requests 移植)。
+"""员工申请枢纽 API。
 
 - ESS ``/me/requests``:提交/列表/取消/留言(行级=本人员工档案)
 - HR ``/requests``:队列/审批/留言(manage_employees + employee scope)

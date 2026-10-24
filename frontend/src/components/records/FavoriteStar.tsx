@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 
 type Fav = { id: string; entity: string; entity_id: string };
 
-/** 记录星标(MintHCM Favorites)。entity 白名单:talents/jobs/employees/cases。 */
+/** 记录星标。entity 白名单:talents/jobs/employees/cases。 */
 export function FavoriteStar({ entity, entityId }: { entity: string; entityId: string }) {
   const qc = useQueryClient();
   const { data } = useQuery({

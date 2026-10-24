@@ -299,8 +299,7 @@ export function getOrCreateSession(opts: {
           name: e.toolName,
           is_error: Boolean(e.isError),
         });
-        // T6:工具结果透传给前端按工具名渲染富卡片(MintHCM ext-apps 思路,
-        // 但落在自家面板)。tools.ts 的 toolResult() 已截断到 8k/30k,
+        // T6:工具结果透传给前端按工具名渲染富卡片。tools.ts 的 toolResult() 已截断到 8k/30k,
         // 这里再兜底裁剪每个 text 分块,保证 SSE 帧体积可控。
         sess.emit("tool_result", {
           call_id: e.toolCallId,

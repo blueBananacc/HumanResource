@@ -273,7 +273,7 @@ def ensure_can_see(scope: list[str] | None, target_org_id: str | None) -> None:
         )
 
 
-# ---- HRIS 员工行级 scope(对应 Frappe HRMS 的 ESS/User Permissions)----
+# ---- HRIS 员工行级 scope(ESS / 行级权限)----
 
 
 def get_linked_employee_id(db: Session, user: User) -> str | None:

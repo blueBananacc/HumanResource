@@ -1,4 +1,4 @@
-"""公司公告 API(MintHCM News 移植)。
+"""公司公告 API。
 
 - ``GET/POST /announcements`` 列表/创建(写 manage_employees,读 view_reports)
 - ``GET/PUT/DELETE /announcements/{id}`` 详情/更新/删除

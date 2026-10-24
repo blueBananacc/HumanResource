@@ -1,4 +1,4 @@
-"""会议室 / 资源 / 预约 API(参考 MintHCM Rooms/Resources/Reservations)。
+"""会议室 / 资源 / 预约 API。
 
 - ``GET/POST/PUT/DELETE /rooms``        会议室(manage_settings)
 - ``GET/POST/PUT/DELETE /resources``    资源(manage_settings)

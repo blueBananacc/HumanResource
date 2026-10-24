@@ -1,4 +1,4 @@
-"""员工自助(ESS)API — 对应 Frappe HRMS 的 "Employee Self Service"。
+"""员工自助(ESS)API。
 
 所有端点以 ``/me`` 开头,行级过滤到当前登录用户绑定的员工档案
 (``require_linked_employee``)。员工账号(role=employee)没有任何业务权限项,

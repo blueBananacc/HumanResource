@@ -1,4 +1,4 @@
-"""AI 报表执行(MintHCM ExecuteKReportTool 的轻量等价物)。
+"""AI 报表执行(注册表 kind → 结构化 dict)。
 
 白名单 kind → 结构化 dict 数据。与 ``workers/tasks/notify.py`` 的订阅 digest
 口径同源但更结构化:订阅发邮件文本,这里返回机器可读数据供 assistant 解读。
