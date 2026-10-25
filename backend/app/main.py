@@ -59,6 +59,7 @@ from app.api import ics as ics_api
 from app.api import interview_invite as interview_invite_api
 from app.api import interviews as interviews_api
 from app.api import job_governance as job_governance_api
+from app.api import job_knowledge as job_knowledge_api
 from app.api import jobs as jobs_api
 from app.api import knowledge as knowledge_api
 from app.api import leave as leave_api
@@ -68,6 +69,7 @@ from app.api import llm as llm_api
 from app.api import matches as matches_api
 from app.api import mcp as mcp_api
 from app.api import metrics as metrics_api
+from app.api import model_calls as model_calls_api
 from app.api import notifications as notifications_api
 from app.api import org as org_api
 from app.api import overtime as overtime_api
@@ -473,6 +475,8 @@ def create_app() -> FastAPI:
     app.include_router(scorecards_api.router, prefix="/api")
     app.include_router(search_api.router, prefix="/api")
     app.include_router(idempotency_api.router, prefix="/api")
+    app.include_router(job_knowledge_api.router, prefix="/api")
+    app.include_router(model_calls_api.router, prefix="/api")
     app.include_router(ai_api.router, prefix="/api")
     app.include_router(doc_templates_api.router, prefix="/api")
 

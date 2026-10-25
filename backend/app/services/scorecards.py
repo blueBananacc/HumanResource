@@ -236,7 +236,7 @@ def suggest_criteria(
 ) -> list[dict[str, Any]]:
     """按岗位技能+JD 建议考察维度。**只回草稿不落库**;LLM 失败返回 []。"""
     from app.infra.license.state import is_feature_enabled
-    from app.integrations.llm.provider import LLMError, chat, parse_json
+    from app.integrations.llm.provider import LLMError, call_llm_json
 
     if not is_feature_enabled(db, "assistant.agent"):
         return []
@@ -268,13 +268,14 @@ def suggest_criteria(
         }
     vars_ = {"context": json.dumps(ctx, ensure_ascii=False, default=str)[:6000]}
     try:
-        text = chat(
+        data = call_llm_json(
+            "scorecard.suggest",
             [{"role": "system", "content": _render(
                 "scorecard.criteria", db, tenant_id, "interviews", **vars_
             )}],
-            db=db, tenant_id=tenant_id, response_json=True,
+            db=db, tenant_id=tenant_id,
+            prompt_key="scorecard.criteria",
         )
-        data = parse_json(text)
         raw = data.get("criteria") or []
         out = []
         for item in raw[:12]:
@@ -299,7 +300,7 @@ def synthesize(
     db: Session, scorecard: InterviewScorecard, feedbacks: list[InterviewFeedback]
 ) -> dict[str, Any]:
     """LLM 聚合全部反馈 → ai_summary dict。LLM 不可用时回落机械聚合文本。"""
-    from app.integrations.llm.provider import LLMError, chat, parse_json
+    from app.integrations.llm.provider import LLMError, call_llm_json
 
     names = user_display_names(
         db, scorecard.tenant_id, [f.interviewer_user_id for f in feedbacks]
@@ -350,15 +351,16 @@ def synthesize(
         "generated_at": _utcnow().isoformat(),
     }
     try:
-        text = chat(
+        data = call_llm_json(
+            "scorecard.synthesize",
             [{"role": "system", "content": _render(
                 "scorecard.synthesize",
                 db, scorecard.tenant_id, "interviews",
                 context=json.dumps(ctx, ensure_ascii=False, default=str)[:10000],
             )}],
-            db=db, tenant_id=scorecard.tenant_id, response_json=True,
+            db=db, tenant_id=scorecard.tenant_id,
+            prompt_key="scorecard.synthesize",
         )
-        data = parse_json(text)
         if data.get("summary"):
             summary["summary"] = str(data["summary"])[:2000]
         summary["themes"] = [str(t)[:120] for t in (data.get("themes") or [])][:8]

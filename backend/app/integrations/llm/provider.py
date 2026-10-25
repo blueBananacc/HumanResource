@@ -129,6 +129,201 @@ def parse_json(text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# T11 结构化调用网关:call_llm / call_llm_json
+#
+# 对齐 recruit ai-gateway 的 callOpenAiCompatible 管线:
+#   chat -> parse_json -> normalize -> required 校验 -> 严格重试 -> 留痕
+# 每次调用(无论成败)经 services.model_calls.write_model_call 落
+# model_call_logs 一行,业务事务回滚不丢。
+# ---------------------------------------------------------------------------
+
+
+class LLMCallError(LLMError):
+    """结构化调用失败的统一异常,带 error_kind 供留痕与排障。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_kind: str,
+        raw_output: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_kind = error_kind
+        self.raw_output = raw_output
+
+
+def _input_digest(messages: list[Message]) -> str:
+    import hashlib
+
+    blob = json.dumps(messages, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def _prompt_version(messages: list[Message]) -> str:
+    """system prompt 内容指纹 —— 租户 prompt 模板改版后版本自动变化。"""
+    import hashlib
+
+    sys_prompt = next((m["content"] for m in messages if m["role"] == "system"), "")
+    return hashlib.sha256(sys_prompt.encode()).hexdigest()[:12]
+
+
+_STRICT_RETRY_MSG: Message = {
+    "role": "system",
+    "content": "上次输出无法解析为合法 JSON。仅输出一个 JSON 对象,不要任何其他文字、解释或代码块标记。",
+}
+
+
+def _resolve(db: Session | None, tenant_id: str | None, provider: ResolvedProvider | None):
+    if provider is not None:
+        return provider
+    if db is None:
+        raise LLMError("call_llm*() 需要传入 db 会话或显式 ResolvedProvider")
+    return resolve_provider(db, tenant_id)
+
+
+def call_llm(
+    call_type: str,
+    messages: list[Message],
+    *,
+    db: Session | None = None,
+    tenant_id: str | None = None,
+    provider: ResolvedProvider | None = None,
+    temperature: float = 0.7,
+    prompt_key: str | None = None,
+    user_id: str | None = None,
+) -> str:
+    """纯文本结构化调用:调 chat + 留痕,返回模型文本。"""
+    from app.services.model_calls import write_model_call  # 延迟 import 防环
+
+    p = _resolve(db, tenant_id, provider)
+    digest = _input_digest(messages)
+    pver = _prompt_version(messages)
+    import time
+
+    t0 = time.monotonic()
+    raw = ""
+    err_kind = ""
+    err_msg: str | None = None
+    try:
+        raw = chat(messages, provider=p, temperature=temperature)
+        return raw
+    except LLMError as e:
+        err_kind, err_msg = "llm_error", str(e)
+        raise
+    finally:
+        write_model_call(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            call_type=call_type,
+            provider=p.source,
+            model=p.model,
+            prompt_key=prompt_key,
+            prompt_version=pver,
+            input_digest=digest,
+            output={"text": raw[:4000]} if raw else None,
+            raw_output=raw or None,
+            error_kind=err_kind,
+            error_message=err_msg,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+        )
+
+
+def call_llm_json(
+    call_type: str,
+    messages: list[Message],
+    *,
+    db: Session | None = None,
+    tenant_id: str | None = None,
+    provider: ResolvedProvider | None = None,
+    normalize=None,
+    required: tuple[str, ...] = (),
+    temperature: float = 0.2,
+    prompt_key: str | None = None,
+    user_id: str | None = None,
+    retry_strict: bool = True,
+) -> dict:
+    """JSON 结构化调用网关。
+
+    ``normalize``: (parsed:dict)->dict 业务侧归一化(钳分/补默认值/剥内部字段)。
+    ``required``: 归一化后必须存在的顶层键,缺失记 schema_error。
+    任一环节失败且 retry_strict:追加严格 system 提示 + temperature=0 重试一次。
+    仍败抛 LLMCallError;成功返回归一化 dict。每次调用都留痕。
+    """
+    from app.services.model_calls import write_model_call  # 延迟 import 防环
+
+    p = _resolve(db, tenant_id, provider)
+    digest = _input_digest(messages)
+    pver = _prompt_version(messages)
+    import time
+
+    t0 = time.monotonic()
+    last_raw = ""
+    last_err: LLMCallError | None = None
+
+    for attempt in range(2 if retry_strict else 1):
+        temp = temperature if attempt == 0 else 0.0
+        msgs = messages if attempt == 0 else [*messages, _STRICT_RETRY_MSG]
+        try:
+            raw = chat(msgs, provider=p, temperature=temp, response_json=True)
+        except LLMError as e:
+            last_err = LLMCallError(str(e), error_kind="llm_error")
+            continue
+        last_raw = raw
+        try:
+            parsed = parse_json(raw)
+        except LLMError as e:
+            last_err = LLMCallError(str(e), error_kind="parse_error", raw_output=raw)
+            continue
+        try:
+            normalized = normalize(parsed) if normalize else parsed
+        except Exception as e:  # noqa: BLE001 — normalize 是业务代码,统一归类
+            last_err = LLMCallError(
+                f"输出归一化失败: {e}", error_kind="schema_error", raw_output=raw
+            )
+            continue
+        missing = [k for k in required if k not in normalized]
+        if missing:
+            last_err = LLMCallError(
+                f"输出缺少必需字段: {', '.join(missing)}",
+                error_kind="schema_error",
+                raw_output=raw,
+            )
+            continue
+        write_model_call(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            call_type=call_type,
+            provider=p.source,
+            model=p.model,
+            prompt_key=prompt_key,
+            prompt_version=pver,
+            input_digest=digest,
+            output=normalized if isinstance(normalized, dict) else {"result": normalized},
+            raw_output=raw,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+        )
+        return normalized
+
+    assert last_err is not None
+    write_model_call(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        call_type=call_type,
+        provider=p.source,
+        model=p.model,
+        prompt_key=prompt_key,
+        prompt_version=pver,
+        input_digest=digest,
+        raw_output=last_raw or last_err.raw_output,
+        error_kind=last_err.error_kind,
+        error_message=str(last_err),
+        latency_ms=int((time.monotonic() - t0) * 1000),
+    )
+    raise last_err
+
+
+# ---------------------------------------------------------------------------
 # Mock provider:让 demo 无 API key 也能跑完整链路
 # ---------------------------------------------------------------------------
 

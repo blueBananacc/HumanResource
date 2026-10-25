@@ -28,7 +28,7 @@ from app.api._pagination import PageOut, apply_q_ilike, count_total, paginate_pa
 from app.api.auth import get_current_user
 from app.domain.models import Candidate, Job, QuestionLibraryItem, QuestionSet, Resume, User
 from app.infra.db import get_db
-from app.integrations.llm.provider import LLMError, Message, chat, parse_json
+from app.integrations.llm.provider import LLMError, Message, call_llm_json
 from app.services.question_bank import (
     CATEGORY_SET_MIN,
     DIFFICULTY_LABELS,
@@ -257,8 +257,14 @@ def _generate_for_library(
         {"role": "user", "content": f"请生成 {count} 道题。"},
     ]
     try:
-        raw = chat(messages, db=db, tenant_id=tenant_id, response_json=True, temperature=0.6)
-        parsed = parse_json(raw)
+        parsed = call_llm_json(
+            "question_library.generate",
+            messages,
+            db=db,
+            tenant_id=tenant_id,
+            required=("questions",),
+            temperature=0.6,
+        )
         qs = parsed.get("questions") or []
         if not isinstance(qs, list) or not qs:
             raise ValueError("questions 为空")

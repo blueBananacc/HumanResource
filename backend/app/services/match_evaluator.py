@@ -24,7 +24,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.domain.models import Job, Resume
-from app.integrations.llm.provider import LLMError, Message, chat, parse_json
+from app.integrations.llm.provider import LLMError, Message, call_llm_json
 from app.services.prompting import render_prompt
 
 logger = logging.getLogger(__name__)
@@ -64,14 +64,15 @@ def _system_prompt() -> str:
     )
 
 
-def _user_message(resume: Resume, job: Job) -> str:
+def _user_message(resume: Resume, job: Job, knowledge: str = "") -> str:
     skills_label = "、".join(job.skills) if job.skills else "(未填)"
     return (
         f"岗位: {job.title}\n"
         f"等级: {job.level}\n"
         f"关键技能: {skills_label}\n"
         f"JD: {(job.description or '')[:800]}\n"
-        f"\n"
+        + (f"{knowledge}\n" if knowledge else "")
+        + f"\n"
         f"候选人简历摘录:\n"
         f"{_resume_excerpt(resume)}\n"
         f"\n"
@@ -113,23 +114,30 @@ def evaluate_match(
     LLM 调用走 :func:`app.integrations.llm.provider.chat` 的 ``response_json``
     模式;失败给基于 skills 重叠度的兜底,**不抛**到调用方。
     """
+    # T11:岗位知识源(ready 状态)注入评估上下文;无源时为空串,零回归
+    from app.services.job_knowledge import knowledge_context_text
+
+    knowledge = knowledge_context_text(
+        db, job, query=f"{job.title} {' '.join(job.skills or [])}", limit=4
+    )
     messages: list[Message] = [
         {
             "role": "system",
             "content": render_prompt(db, job.tenant_id, "match.evaluate")
             or _system_prompt(),
         },
-        {"role": "user", "content": _user_message(resume, job)},
+        {"role": "user", "content": _user_message(resume, job, knowledge)},
     ]
     try:
-        raw = chat(
+        parsed = call_llm_json(
+            "match.evaluate",
             messages,
             db=db,
             tenant_id=job.tenant_id,
-            response_json=True,
+            required=("score",),
             temperature=0.2,
+            prompt_key="match.evaluate",
         )
-        parsed = parse_json(raw)
     except LLMError as e:
         logger.warning("LLM 匹配评估失败,使用兜底: %s", e)
         return _fallback_match(resume, job)

@@ -21,6 +21,7 @@ import { McpTokens } from "@/pages/McpTokens";
 import { Dictionaries } from "@/pages/Dictionaries";
 import { Schedulers } from "@/pages/Schedulers";
 import { IdempotencyKeys } from "@/pages/IdempotencyKeys";
+import { ModelCalls } from "@/pages/ModelCalls";
 import { Automations } from "@/pages/Automations";
 import { ImportWizard } from "@/pages/ImportWizard";
 import { TalentPool } from "@/pages/TalentPool";
@@ -185,6 +186,7 @@ export const router = createBrowserRouter([
       { path: "settings/dictionaries", element: <Dictionaries /> },
       { path: "settings/schedulers", element: <Schedulers /> },
       { path: "settings/idempotency", element: <IdempotencyKeys /> },
+      { path: "settings/model-calls", element: <ModelCalls /> },
       { path: "settings/automations", element: <Automations /> },
       { path: "settings/imports", element: <ImportWizard /> },
     ],

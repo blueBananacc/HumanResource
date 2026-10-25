@@ -24,7 +24,7 @@ from app.api.auth import get_current_user
 from app.api.license import require_feature
 from app.domain.models import DocTemplate, User
 from app.infra.db import get_db
-from app.integrations.llm.provider import LLMError, chat
+from app.integrations.llm.provider import LLMError, call_llm
 from app.services.ai_summary import build_summary_context
 from app.services.audit import write_audit
 from app.services.doc_templates import DOC_SPECS, build_doc_vars
@@ -107,9 +107,15 @@ class DocDraftOut(BaseModel):
     vars: dict[str, str]
 
 
-def _chat_or_503(messages, db: Session, tenant_id: str) -> str:
+def _chat_or_503(
+    messages, db: Session, tenant_id: str, *, call_type: str, prompt_key: str | None = None,
+    user_id: str | None = None,
+) -> str:
     try:
-        return chat(messages, db=db, tenant_id=tenant_id)
+        return call_llm(
+            call_type, messages, db=db, tenant_id=tenant_id,
+            prompt_key=prompt_key, user_id=user_id,
+        )
     except LLMError as e:
         raise HTTPException(503, str(e)) from e
 
@@ -143,7 +149,8 @@ def field_assist(
         prompt = render_vars(spec.content, variables)
 
     text = _chat_or_503(
-        [{"role": "system", "content": prompt}], db, current.tenant_id
+        [{"role": "system", "content": prompt}], db, current.tenant_id,
+        call_type="ai.field_assist", prompt_key=key, user_id=current.id,
     ).strip()[:_MAX_TEXT]
     write_audit(
         db, actor=current, entity_type="ai_call", entity_id=key,
@@ -180,7 +187,8 @@ def summarize(
         prompt = render_vars(spec.content, {"context": ctx_json})
 
     text = _chat_or_503(
-        [{"role": "system", "content": prompt}], db, current.tenant_id
+        [{"role": "system", "content": prompt}], db, current.tenant_id,
+        call_type="ai.summarize", prompt_key=key, user_id=current.id,
     ).strip()[:_MAX_TEXT]
     write_audit(
         db, actor=current, entity_type="ai_call", entity_id=rid,
@@ -268,7 +276,8 @@ def doc_draft(
              "instruction": body.instruction or "(无)"},
         )
     draft = _chat_or_503(
-        [{"role": "system", "content": prompt}], db, current.tenant_id
+        [{"role": "system", "content": prompt}], db, current.tenant_id,
+        call_type="ai.doc_draft", prompt_key=body.key, user_id=current.id,
     ).strip()[:_MAX_TEXT]
     write_audit(
         db, actor=current, entity_type="ai_call", entity_id=body.record_id,

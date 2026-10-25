@@ -22,6 +22,7 @@ import { PERM } from "@/lib/roles";
 import { formatRelative, levelLabel } from "@/lib/format";
 import { JobFormModal, type Job } from "./Jobs";
 import { JobGovernancePanel } from "./JobGovernancePanel";
+import { JobKnowledgeCard } from "@/components/jobs/JobKnowledgeCard";
 
 type JobStatus = "open" | "paused" | "closed";
 
@@ -326,6 +327,9 @@ export function JobDetail() {
           </span>
         )}
       </div>
+
+      {/* 岗位知识(T11):切块注入 AI prompt */}
+      <JobKnowledgeCard jobId={data.id} canWrite={canWrite} />
 
       <JobGovernancePanel jobId={data.id} />
 

@@ -442,7 +442,7 @@ def ai_suggest(
     ai_map: dict[str, str] = {}
 
     from app.infra.license.state import is_feature_enabled
-    from app.integrations.llm.provider import LLMError, chat, parse_json
+    from app.integrations.llm.provider import LLMError, call_llm_json
 
     if is_feature_enabled(db, "assistant.agent"):
         try:
@@ -468,11 +468,12 @@ def ai_suggest(
             ) or render_vars(
                 PROMPT_REGISTRY["import.column_map"].content, vars_
             )
-            text = chat(
+            data = call_llm_json(
+                "import.column_map",
                 [{"role": "system", "content": prompt}],
-                db=db, tenant_id=tenant_id, response_json=True,
+                db=db, tenant_id=tenant_id,
+                prompt_key="import.column_map",
             )
-            data = parse_json(text)
             raw_map = data.get("mapping") or {}
             conf = data.get("confidence") or {}
             warnings = [str(w)[:200] for w in (data.get("warnings") or [])][:5]
@@ -613,7 +614,7 @@ def ai_check_note(
     if not is_feature_enabled(db, "assistant.agent"):
         return ""
     try:
-        from app.integrations.llm.provider import LLMError, chat, parse_json
+        from app.integrations.llm.provider import LLMError, call_llm
         from app.services.prompting import (
             PROMPT_REGISTRY,
             render_prompt,
@@ -631,9 +632,11 @@ def ai_check_note(
         prompt = render_prompt(
             db, tenant_id, "import.check_note", module="imports", **vars_
         ) or render_vars(PROMPT_REGISTRY["import.check_note"].content, vars_)
-        text = chat(
+        text = call_llm(
+            "import.check_note",
             [{"role": "system", "content": prompt}],
             db=db, tenant_id=tenant_id,
+            prompt_key="import.check_note",
         ).strip()
         return text[:500]
     except Exception as e:  # noqa: BLE001

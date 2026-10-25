@@ -28,7 +28,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.models import Candidate, Interview, InterviewTurn, Job, Resume
-from app.integrations.llm.provider import LLMError, Message, chat, parse_json
+from app.integrations.llm.provider import (
+    LLMError,
+    Message,
+    call_llm,
+    call_llm_json,
+)
 from app.services.prompting import render_prompt
 
 logger = logging.getLogger(__name__)
@@ -110,8 +115,19 @@ def _generate_question(
     prior = "\n".join(
         f"Q{t.idx}: {t.question}\nA{t.idx}: {t.answer or '(未作答)'}" for t in history
     )
+    # T11:岗位知识源注入出题上下文(仅首题取一次,后续轮次沿会话历史已覆盖)
+    knowledge = ""
+    if n == 1:
+        from app.services.job_knowledge import knowledge_context_text
+
+        knowledge = knowledge_context_text(
+            db, job,
+            query=f"{job.title} {' '.join(job.skills or [])}",
+            limit=4,
+        )
     user_msg = (
-        f"候选人简历摘录:\n{resume_excerpt}\n\n"
+        (f"{knowledge}\n\n" if knowledge else "")
+        + f"候选人简历摘录:\n{resume_excerpt}\n\n"
         + (f"已经问过的问答:\n{prior}\n\n" if prior else "")
         + f"现在请提出第 {n}/{question_count} 题。直接返回题目文本,不要前缀编号或解释。"
     )
@@ -132,7 +148,9 @@ def _generate_question(
         {"role": "user", "content": user_msg},
     ]
     try:
-        return chat(messages, db=db, tenant_id=job.tenant_id).strip()
+        return call_llm(
+            "interview.opening", messages, db=db, tenant_id=job.tenant_id
+        ).strip()
     except LLMError as e:
         logger.warning("生成题目失败,使用兜底题: %s", e)
         return "请讲讲你最近做过的一个项目,挑战和你的角色。"
@@ -168,14 +186,15 @@ def _score_answer(
         {"role": "user", "content": user},
     ]
     try:
-        raw = chat(
+        parsed = call_llm_json(
+            "interview.score",
             messages,
             db=db,
             tenant_id=job.tenant_id,
-            response_json=True,
+            required=("scores",),
             temperature=0.2,
+            prompt_key="interview.score",
         )
-        parsed = parse_json(raw)
         scores = parsed.get("scores", {})
         return (
             {
@@ -549,14 +568,15 @@ def _finish(
         f"证据片段:\n- " + "\n- ".join(evidences[:5])
     )
     try:
-        raw = chat(
+        parsed = call_llm_json(
+            "interview.report",
             [{"role": "system", "content": sys}, {"role": "user", "content": user}],
             db=db,
             tenant_id=job.tenant_id,
-            response_json=True,
+            required=("recommendation",),
             temperature=0.3,
+            prompt_key="interview.report",
         )
-        parsed = parse_json(raw)
         recommendation = str(parsed.get("recommendation", "保留"))
         comment = str(parsed.get("comment", ""))
     except LLMError:

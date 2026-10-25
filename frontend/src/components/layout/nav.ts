@@ -1,4 +1,5 @@
 import {
+  Activity,
   Banknote,
   Briefcase,
   CalendarDays,
@@ -320,6 +321,7 @@ export const bottomModules: NavModule[] = [
           { to: "/settings/imports", label: "数据导入", icon: FileSpreadsheet, permission: PERM.MANAGE_EMPLOYEES, keywords: "导入 csv excel 批量 AI import" },
           { to: "/settings/schedulers", label: "后台任务", icon: ListChecks, permission: PERM.MANAGE_SETTINGS, keywords: "任务 调度 scheduler 运维" },
           { to: "/settings/idempotency", label: "幂等键", icon: Fingerprint, permission: PERM.MANAGE_SETTINGS, keywords: "幂等 键 重试 idempotency 回放" },
+          { to: "/settings/model-calls", label: "模型调用", icon: Activity, permission: PERM.MANAGE_SETTINGS, keywords: "LLM 调用 留痕 模型 model call AI 观测" },
         ],
       },
       {

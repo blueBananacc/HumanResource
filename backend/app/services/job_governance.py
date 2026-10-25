@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.models import Job, JobVersion, User
-from app.integrations.llm.provider import LLMError, Message, chat, parse_json
+from app.integrations.llm.provider import LLMError, Message, call_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -159,19 +159,16 @@ def generate_competency_model(
         {"role": "user", "content": user_text},
     ]
     try:
-        text = chat(
+        parsed: Any = call_llm_json(
+            "job_governance.competency",
             messages,
             db=db,
             tenant_id=tenant_id,
-            response_json=True,
             temperature=0.3,
         )
     except LLMError as e:
-        raise JobGovernanceError("llm_failed", f"能力模型生成失败: {e}") from e
-    try:
-        parsed: Any = parse_json(text)
-    except Exception as e:  # noqa: BLE001 — parse_json 可能抛多种异常
-        raise JobGovernanceError("llm_parse_failed", f"LLM 输出无法解析: {e}") from e
+        kind = getattr(e, "error_kind", "llm_failed")
+        raise JobGovernanceError(kind, f"能力模型生成失败: {e}") from e
     # 兼容 mock 输出 — mock 可能返回 dict 而非 list
     if isinstance(parsed, dict):
         for key in ("competency_model", "items", "data"):
@@ -245,19 +242,16 @@ def optimize_jd(
         {"role": "user", "content": user_text},
     ]
     try:
-        text = chat(
+        parsed: Any = call_llm_json(
+            "job_governance.optimize_jd",
             messages,
             db=db,
             tenant_id=tenant_id,
-            response_json=True,
             temperature=0.4,
         )
     except LLMError as e:
-        raise JobGovernanceError("llm_failed", f"JD 优化失败: {e}") from e
-    try:
-        parsed: Any = parse_json(text)
-    except Exception as e:  # noqa: BLE001
-        raise JobGovernanceError("llm_parse_failed", f"LLM 输出无法解析: {e}") from e
+        kind = getattr(e, "error_kind", "llm_failed")
+        raise JobGovernanceError(kind, f"JD 优化失败: {e}") from e
     if not isinstance(parsed, dict):
         return _fallback_optimize(job)
     suggestions = parsed.get("suggestions") or []

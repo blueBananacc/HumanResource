@@ -19,7 +19,7 @@ from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from app.domain.models import Candidate, Job, QuestionLibraryItem, QuestionSet, Resume
-from app.integrations.llm.provider import LLMError, Message, chat, parse_json
+from app.integrations.llm.provider import LLMError, Message, call_llm_json
 from app.services.prompting import render_prompt
 
 logger = logging.getLogger(__name__)
@@ -181,9 +181,15 @@ def regenerate_item(db: Session, item: QuestionLibraryItem, instruction: str = "
         {"role": "system", "content": regen_sys},
         {"role": "user", "content": "\n".join(user_parts)},
     ]
-    raw = chat(messages, db=db, tenant_id=item.tenant_id, response_json=True, temperature=0.7)
     try:
-        parsed = parse_json(raw)
+        parsed = call_llm_json(
+            "question_bank.generate",
+            messages,
+            db=db,
+            tenant_id=item.tenant_id,
+            temperature=0.7,
+            prompt_key="question_bank.regen",
+        )
         q = (parsed.get("questions") or [parsed])[0]
         question = str(q.get("question") or "").strip()[:1000]
     except Exception as e:  # noqa: BLE001

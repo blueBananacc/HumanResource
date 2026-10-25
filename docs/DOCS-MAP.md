@@ -26,6 +26,7 @@
 | [automation-attendance-design.md](design/automation-attendance-design.md) | 事件驱动自动化 + 考勤深化设计（审计漏斗规则引擎/迟到早退/IP 白名单/月度汇总） |
 | [ai-import-wizard-design.md](design/ai-import-wizard-design.md) | AI 导入向导设计（四步向导/LLM 列映射/校验归因/错误文件） |
 | [scorecard-global-search-design.md](design/scorecard-global-search-design.md) | T9 设计：结构化面试评分卡（多面试官逐维评分/AI 聚合）+ 声明式全局搜索（audit 漏斗索引/权限回读） |
+| [model-call-log-job-knowledge-design.md](design/model-call-log-job-knowledge-design.md) | T11 设计:逐次 LLM 调用留痕(model_call_logs+统一网关+严格重试+助手回报)与岗位级知识 chunks(切块/索引/语义召回/喂 prompt) |
 | [idempotency-design.md](design/idempotency-design.md) | T10 设计：生产级幂等键（唯一锁元组/请求指纹/锁接管/回放语义/惰性过期+清扫，AI 写操作防重） |
 
 ## 维护约定

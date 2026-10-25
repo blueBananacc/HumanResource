@@ -30,7 +30,7 @@ from app.api.auth import get_current_user
 from app.domain.models import LLMProvider, User
 from app.infra.crypto import decrypt, encrypt, mask_secret
 from app.infra.db import get_db
-from app.integrations.llm.provider import LLMError, chat
+from app.integrations.llm.provider import LLMError, call_llm
 from app.integrations.llm.registry import ResolvedProvider
 
 router = APIRouter(prefix="/llm", tags=["llm"])
@@ -206,12 +206,15 @@ def test_provider(
         is_mock=False,
     )
     try:
-        sample = chat(
+        sample = call_llm(
+            "llm.test",
             [
                 {"role": "system", "content": "You are a connectivity test bot."},
                 {"role": "user", "content": "请用一句话回复:连接成功。"},
             ],
             provider=resolved,
+            tenant_id=current.tenant_id,
+            user_id=current.id,
             temperature=0.0,
         )
         return TestResult(ok=True, message="连接成功", sample=sample[:200])

@@ -3232,3 +3232,116 @@ class IdempotencyKey(Base):
     __table_args__ = (
         UniqueConstraint("tenant_id", "scope", "key", name="uq_idem_tenant_scope_key"),
     )
+
+class ModelCallLog(Base):
+    """逐次 LLM 调用留痕(T11)。
+
+    与 audit_logs 分工:audit 记"谁做了什么业务动作";本表记"每次模型调用的
+    输入指纹/输出/耗时/错误" —— AI 可观测性层,回答"模型当时看到什么、返回什么、
+    为什么错"。写入走独立 session(services.model_calls),业务回滚不丢日志。
+    """
+
+    __tablename__ = "model_call_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    call_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, server_default="")
+    model: Mapped[str] = mapped_column(String(128), nullable=False, server_default="")
+    prompt_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False, server_default="v1")
+    input_digest: Mapped[str] = mapped_column(String(16), nullable=False, server_default="")
+    output: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    raw_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_kind: Mapped[str] = mapped_column(String(32), nullable=False, server_default="")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), index=True
+    )
+
+    __table_args__ = (
+        Index("ix_model_call_logs_tenant_created", "tenant_id", "created_at"),
+        Index("ix_model_call_logs_tenant_type", "tenant_id", "call_type"),
+    )
+
+
+class JobKnowledgeSource(Base):
+    """岗位级知识源(T11):每个岗位挂载的资料(JD 补充/公司介绍/技术栈说明…)。
+
+    kind=text 时 ``content`` 存内联原文;kind=file 时经 ObjectStore 存原始文件,
+    ``resume_parser._extract_text_by_format`` 抽取文本后切块进 ``job_knowledge_chunks``。
+    状态机 indexing -> ready / failed,由 services.job_knowledge.index_source 驱动。
+    """
+
+    __tablename__ = "job_knowledge_sources"
+
+    KINDS = ("text", "file")
+    STATUSES = ("indexing", "ready", "failed")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    kind: Mapped[str] = mapped_column(String(8), nullable=False, server_default="text")
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mime: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="indexing", index=True
+    )
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    extraction_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="none"
+    )
+    extraction_method: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class JobKnowledgeChunk(Base):
+    """岗位知识切块 —— 可丢弃索引投影(recruit 同语义)。
+
+    ``meta`` 冗余 {source_name, extraction_status, extraction_method},消费侧
+    (match/question/interview prompt)直接拼上下文;``embedding`` best-effort,
+    有则 cosine 召回,无则按序截断。
+    """
+
+    __tablename__ = "job_knowledge_chunks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default="{}")
+    embedding: Mapped[list[float] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_jk_chunks_job_src_idx", "job_id", "source_id", "chunk_index"),
+    )

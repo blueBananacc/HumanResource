@@ -4,7 +4,7 @@
  * - 写工具经 beforeToolCall 停放,等前端 POST /confirm 裁决
  * - subscribe 事件统一翻译成 SSE 帧写给当前 res
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Agent } from "@earendil-works/pi-agent-core";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import type { MutableModels } from "@earendil-works/pi-ai";
@@ -39,6 +39,75 @@ export type Session = {
 
 const sessions = new Map<string, Session>();
 const MAX_SESSIONS = 50;
+
+const BACKEND = process.env.BACKEND_URL || "http://backend:8000";
+
+/** T11:把每条 assistant 消息(=一次模型 completion)回报给 backend
+ * model_call_logs。fire-and-forget — 留痕失败绝不能影响会话。
+ */
+function reportModelCall(
+  sess: Session,
+  msg: {
+    model?: string;
+    provider?: string;
+    durationMs?: number;
+    stopReason?: string;
+    errorMessage?: string;
+    usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+    content?: unknown;
+  },
+): void {
+  try {
+    const lastUser = [...sess.agent.state.messages]
+      .reverse()
+      .find((m) => (m as { role?: string }).role === "user") as
+      | { content?: unknown }
+      | undefined;
+    const userText =
+      typeof lastUser?.content === "string"
+        ? lastUser.content
+        : JSON.stringify(lastUser?.content ?? "");
+    const digest = createHash("sha256")
+      .update(`${sess.id}:${userText}`)
+      .digest("hex")
+      .slice(0, 16);
+    const toolNames = Array.isArray(msg.content)
+      ? (msg.content as { type?: string; name?: string }[])
+          .filter((c) => c.type === "toolCall")
+          .map((c) => c.name ?? "")
+          .filter(Boolean)
+      : [];
+    const replyChars = Array.isArray(msg.content)
+      ? (msg.content as { type?: string; text?: string }[])
+          .filter((c) => c.type === "text")
+          .reduce((n, c) => n + (c.text?.length ?? 0), 0)
+      : 0;
+    void fetch(`${BACKEND}/api/model-call-logs/report`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${sess.toolToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        call_type: "assistant.completion",
+        provider: msg.provider ?? "",
+        model: msg.model ?? sess.llm.model,
+        input_digest: digest,
+        latency_ms: Math.round(msg.durationMs ?? 0),
+        output: {
+          usage: msg.usage ?? {},
+          tools: toolNames,
+          reply_chars: replyChars,
+          stop_reason: msg.stopReason ?? "",
+        },
+        error_kind: msg.stopReason === "error" ? "llm_error" : "",
+        error_message: msg.errorMessage ?? null,
+      }),
+    }).catch(() => {});
+  } catch {
+    /* 留痕失败静默 */
+  }
+}
 
 type PendingConfirm = SessionOwner & {
   resolve: (approved: boolean) => void;
@@ -321,9 +390,19 @@ export function getOrCreateSession(opts: {
         // prompt() 对 LLM 调用失败不 reject(错误被收敛进 stopReason="error"
         // 的 assistant 消息) — 这里翻译成 SSE error,否则用户只看到空回复。
         const msg = event.message as {
+          role?: string;
           stopReason?: string;
           errorMessage?: string;
+          model?: string;
+          provider?: string;
+          durationMs?: number;
+          usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+          content?: unknown;
         };
+        // T11:每条 assistant completion 回报 model_call_logs(失败也报)
+        if (msg?.role === "assistant") {
+          reportModelCall(sess, msg);
+        }
         if (msg?.stopReason === "error" && msg.errorMessage) {
           sess.emit("error", { message: `LLM 调用失败:${msg.errorMessage}` });
         }

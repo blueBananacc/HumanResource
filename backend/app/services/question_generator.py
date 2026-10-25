@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.domain.models import Job, Resume
-from app.integrations.llm.provider import LLMError, Message, chat, parse_json
+from app.integrations.llm.provider import LLMError, Message, call_llm_json
 from app.services.prompting import render_prompt
 
 logger = logging.getLogger(__name__)
@@ -125,21 +125,35 @@ def generate_questions(
             else "无指定岗位,完全按简历技能 / 经历出题。\n"
         ),
     ) or _system_prompt(level=level, count=count, kinds=kinds, job=job)
-    user_msg = f"候选人简历摘录:\n{_resume_excerpt(resume)}\n\n请按要求出 {count} 道题。"
+    # T11:岗位知识源注入出题上下文(job 可空 — 通用出题不注入)
+    knowledge = ""
+    if job is not None:
+        from app.services.job_knowledge import knowledge_context_text
+
+        knowledge = knowledge_context_text(
+            db, job,
+            query=f"{job.title} {' '.join(job.skills or [])}",
+            limit=4,
+        )
+    user_msg = (
+        (f"{knowledge}\n\n" if knowledge else "")
+        + f"候选人简历摘录:\n{_resume_excerpt(resume)}\n\n请按要求出 {count} 道题。"
+    )
 
     messages: list[Message] = [
         {"role": "system", "content": sys_prompt},
         {"role": "user", "content": user_msg},
     ]
     try:
-        raw = chat(
+        parsed = call_llm_json(
+            "question.generate",
             messages,
             db=db,
             tenant_id=resume.tenant_id,
-            response_json=True,
+            required=("questions",),
             temperature=0.5,
+            prompt_key="question.generate",
         )
-        parsed = parse_json(raw)
     except LLMError as e:
         logger.warning("LLM 出题失败,使用兜底题: %s", e)
         return _fallback_questions(level=level, count=count)
