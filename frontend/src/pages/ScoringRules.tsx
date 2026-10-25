@@ -7,7 +7,7 @@ import { Select } from "@/components/ui/select";
 import { ApiError, fetchJSON } from "@/lib/api";
 
 type Evaluator = {
-  method: "keyword" | "duration" | "ai" | "boolean" | "range";
+  method: "keyword" | "duration" | "ai" | "boolean" | "range" | "coverage";
   keywords?: string[];
   matchMode?: "any" | "all";
   minYears?: number;
@@ -46,6 +46,7 @@ type Analysis = {
 
 const METHOD_LABEL: Record<string, string> = {
   keyword: "关键词",
+  coverage: "关键词覆盖",
   duration: "年限",
   ai: "AI 评估",
   boolean: "有无",

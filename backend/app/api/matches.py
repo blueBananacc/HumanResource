@@ -48,6 +48,7 @@ class MatchOut(BaseModel):
     criteria: list[dict] | None
     red_flags: dict | None
     rule_snapshot: dict | None = None
+    coverage: dict | None = None
     error: str | None
     started_at: datetime | None
     finished_at: datetime | None
@@ -98,6 +99,7 @@ def _to_out(
         criteria=m.criteria,
         red_flags=m.red_flags,
         rule_snapshot=m.rule_snapshot,
+        coverage=m.coverage,
         error=m.error,
         started_at=m.started_at,
         finished_at=m.finished_at,

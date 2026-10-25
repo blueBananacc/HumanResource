@@ -75,6 +75,7 @@ type Match = {
   criteria: Criterion[] | null;
   red_flags: { major: string[]; minor: string[] } | null;
   rule_snapshot?: { rule_id: string; name: string; version: number } | null;
+  coverage?: { score: number; hit: string[]; missing: string[]; total: number } | null;
   error: string | null;
   finished_at: string | null;
   resume_file_name: string | null;
@@ -431,6 +432,42 @@ function MatchRow({
             )}
             {open && (
               <div className="mt-1.5 rounded-lg border border-[var(--color-border-subtle)] divide-y divide-[var(--color-border-row)]">
+                {match.coverage && (
+                  <div className="px-3 py-2 bg-[var(--color-bg-canvas)]">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[12px] font-medium text-[var(--color-text-primary)] font-body">
+                        关键词覆盖
+                      </span>
+                      <span
+                        className={`rounded px-1.5 py-px text-[10px] font-mono ${
+                          match.coverage.score >= 80
+                            ? "bg-emerald-50 text-emerald-600"
+                            : match.coverage.score >= 50
+                              ? "bg-amber-50 text-amber-600"
+                              : "bg-red-50 text-red-500"
+                        }`}
+                      >
+                        {match.coverage.score}%
+                      </span>
+                      <span className="text-[10px] text-[var(--color-text-tertiary)] font-mono">
+                        命中 {match.coverage.hit.length}/{match.coverage.total}
+                      </span>
+                    </div>
+                    {match.coverage.missing.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <span className="text-[10px] text-[var(--color-text-tertiary)] font-body">缺失:</span>
+                        {match.coverage.missing.map((k) => (
+                          <span
+                            key={k}
+                            className="rounded bg-[var(--color-bg-subtle)] px-1.5 py-px text-[10px] text-[var(--color-text-secondary)] font-mono"
+                          >
+                            {k}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {match.criteria.map((c) => (
                   <div key={c.key} className="px-3 py-2">
                     <div className="flex items-center gap-2">
@@ -464,7 +501,7 @@ function MatchRow({
                               : "bg-sky-50 text-sky-600"
                           }`}
                         >
-                          {{ keyword: "关键词", duration: "年限", boolean: "有无", range: "区间", ai: "AI" }[
+                          {{ keyword: "关键词", coverage: "覆盖", duration: "年限", boolean: "有无", range: "区间", ai: "AI" }[
                             c.method
                           ] ?? c.method}
                         </span>

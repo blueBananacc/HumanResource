@@ -874,6 +874,9 @@ class ResumeJobMatch(Base):
     # ---- T13:评估时冻结的评分规则快照(规则被改/删后仍可回溯评分依据)----
     # {rule_id, name, version, dimensions: [{id,name,weight,evaluator}]}
     rule_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # ---- T15:确定性关键词覆盖子分(零 LLM)----
+    # {score 0-100, hit: [...], missing: [...], total} — JD 技能在简历的整词覆盖率
+    coverage: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # HR 在面试页"推荐面试"区点"忽略"后写入 — 该匹配不再出现在建议列表
     suggestion_dismissed_at: Mapped[datetime | None] = mapped_column(

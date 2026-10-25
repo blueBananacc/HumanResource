@@ -592,8 +592,10 @@ def _mock_match_json(context: str) -> str:
         }
         return json.dumps(payload, ensure_ascii=False)
 
-    hits = [s for s in skills if s.lower() in resume_text]
-    miss = [s for s in skills if s.lower() not in resume_text]
+    from app.services.text_match import keyword_in_text
+
+    hits = [s for s in skills if keyword_in_text(s, resume_text)]
+    miss = [s for s in skills if not keyword_in_text(s, resume_text)]
     overlap = len(hits) / len(skills)
 
     years = re.search(r"(\d+)\s*年", resume_text)

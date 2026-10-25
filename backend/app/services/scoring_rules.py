@@ -5,7 +5,8 @@
 
 规则 = 维度列表,每维声明一个评估器方法:
 
-- ``keyword``  — 简历文本子串命中(0 token)
+- ``keyword``  — 简历文本整词命中(CJK 感知边界,0 token)
+- ``coverage`` — JD 技能整词覆盖率(0 token,T15)
 - ``duration`` — 文本正则抽取工作年限,线性插值(0 token)
 - ``boolean``  — 特征存在性检查(0 token)
 - ``range``    — 数值区间线性映射(0 token)
@@ -29,11 +30,13 @@ from sqlalchemy.orm import Session
 
 from app.domain.models import Job, Resume, ScoringRule
 from app.integrations.llm.provider import LLMError, Message, call_llm_json
+from app.services.keyword_coverage import compute_coverage
 from app.services.prompting import DATA_LABEL, INJECTION_GUARD
+from app.services.text_match import keyword_in_text
 
 logger = logging.getLogger(__name__)
 
-VALID_METHODS = ("keyword", "duration", "ai", "boolean", "range")
+VALID_METHODS = ("keyword", "duration", "ai", "boolean", "range", "coverage")
 VALID_MATCH_MODES = ("any", "all")
 BOOLEAN_FIELDS = ("education", "experience", "projects", "skills")
 RANGE_FIELDS = ("experience_years",)
@@ -130,6 +133,12 @@ def _normalize_evaluator(method: str, ev: dict) -> dict:
             "minValue": lo,
             "maxValue": max(hi, lo),
         }
+    if method == "coverage":
+        # T15:JD 技能整词覆盖率;keywords 为空时取 job.skills
+        kws = [str(k).strip()[:40] for k in (ev.get("keywords") or []) if str(k).strip()][
+            :MAX_KEYWORDS
+        ]
+        return {"method": "coverage", "keywords": kws}
     # ai
     return {
         "method": "ai",
@@ -242,9 +251,8 @@ def _eval_keyword(text: str, ev: dict) -> dict[str, Any]:
     kws = ev.get("keywords") or []
     if not kws:
         return {"score": 50, "evidence": "未配置关键词"}
-    lower = text.lower()
-    matched = [k for k in kws if str(k).lower() in lower]
-    missing = [k for k in kws if str(k).lower() not in lower]
+    matched = [k for k in kws if keyword_in_text(str(k), text)]
+    missing = [k for k in kws if not keyword_in_text(str(k), text)]
     if ev.get("matchMode") == "all":
         score = round(len(matched) / len(kws) * 100)
     else:
@@ -306,8 +314,7 @@ def _eval_boolean(resume: Resume, text: str, ev: dict) -> dict[str, Any]:
         detail = "结构化项目段"
     else:
         pats = _BOOL_PATTERNS.get(field) or []
-        lower = text.lower()
-        has = any(p.lower() in lower for p in pats)
+        has = any(keyword_in_text(p, text) for p in pats)
         detail = "简历正文特征词"
     return {
         "score": 100 if has else 0,
@@ -329,7 +336,21 @@ def _eval_range(resume: Resume, text: str, ev: dict) -> dict[str, Any]:
     return {"score": int(score), "evidence": f"数值 {value:.1f} ∈ [{lo}, {hi}]"}
 
 
-def _eval_deterministic(resume: Resume, text: str, dim: dict) -> dict[str, Any]:
+def _eval_coverage(resume: Resume, job: Job, ev: dict) -> dict[str, Any]:
+    """T15:JD 技能(或维内自定义 keywords)在简历中的整词覆盖率。"""
+    kws = ev.get("keywords") or (job.skills or [])
+    cov = compute_coverage(resume, kws)
+    if cov is None:
+        return {"score": 50, "evidence": "岗位未配置技能关键词"}
+    parts = [f"覆盖率 {cov['score']}%({len(cov['hit'])}/{cov['total']})"]
+    if cov["missing"]:
+        parts.append("缺失: " + "、".join(cov["missing"][:6]))
+    return {"score": cov["score"], "evidence": "; ".join(parts)}
+
+
+def _eval_deterministic(
+    resume: Resume, text: str, dim: dict, job: Job | None = None
+) -> dict[str, Any]:
     ev = dim.get("evaluator") or {}
     method = ev.get("method")
     if method == "keyword":
@@ -340,6 +361,10 @@ def _eval_deterministic(resume: Resume, text: str, dim: dict) -> dict[str, Any]:
         return _eval_boolean(resume, text, ev)
     if method == "range":
         return _eval_range(resume, text, ev)
+    if method == "coverage":
+        if job is None:
+            return {"score": 50, "evidence": "coverage 评估需要岗位上下文"}
+        return _eval_coverage(resume, job, ev)
     return {"score": 50, "evidence": "未知评估器"}
 
 
@@ -458,7 +483,7 @@ def evaluate_with_rule(
             res = ai_results.get(d["id"]) or {"score": 50, "evidence": "AI评估未返回"}
         else:
             try:
-                res = _eval_deterministic(resume, text, d)
+                res = _eval_deterministic(resume, text, d, job)
             except Exception as e:  # noqa: BLE001 — 单维异常不拖垮整评
                 logger.warning("确定性维评估异常 dim=%s: %s", d.get("id"), e)
                 res = {"score": 50, "evidence": "评估异常"}

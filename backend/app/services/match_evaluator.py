@@ -143,6 +143,15 @@ def evaluate_match(
     )
     excerpt = _resume_excerpt(resume)
 
+    # T15:确定性关键词覆盖子分(零 LLM)—— gated/scored/兜底路径都附
+    from app.services.keyword_coverage import compute_coverage
+
+    coverage = None
+    try:
+        coverage = compute_coverage(resume, job.skills or [])
+    except Exception as e:  # noqa: BLE001
+        logger.warning("coverage 计算失败忽略 job=%s: %s", job.id, e)
+
     # ---- 1) 门槛 Gate:能派生出画像才判;任何异常 fail-open 进评分 ----
     gate_result: dict[str, Any] | None = None
     try:
@@ -171,6 +180,7 @@ def evaluate_match(
             "criteria": None,
             "red_flags": None,
             "rule_snapshot": None,
+            "coverage": coverage,
             "gated": True,
         }
 
@@ -183,7 +193,7 @@ def evaluate_match(
         if rule and rule.tenant_id == job.tenant_id:
             try:
                 result = sr.evaluate_with_rule(db, resume=resume, job=job, rule=rule)
-                result.update({"gate": gate_result, "gated": False})
+                result.update({"gate": gate_result, "coverage": coverage, "gated": False})
                 return result
             except Exception as e:  # noqa: BLE001 — 规则路径整体异常回落 T12 路径
                 logger.warning(
@@ -216,7 +226,8 @@ def evaluate_match(
         logger.warning("LLM 匹配评估失败,使用兜底: %s", e)
         fb = _fallback_match(resume, job)
         fb.update({"gate": gate_result, "criteria": None,
-                   "red_flags": None, "rule_snapshot": None, "gated": False})
+                   "red_flags": None, "rule_snapshot": None,
+                   "coverage": coverage, "gated": False})
         return fb
 
     strengths = _normalize_str_list(parsed.get("strengths"))
@@ -244,6 +255,7 @@ def evaluate_match(
         "criteria": criteria_rows,
         "red_flags": red_flags,
         "rule_snapshot": None,
+        "coverage": coverage,
         "gated": False,
     }
 
@@ -264,7 +276,7 @@ def _fallback_match(resume: Resume, job: Job) -> dict[str, Any]:
     粗粒度:岗位 skills 在简历正文 / parsed_data.skills 里命中比例。
     无新依赖,纯字符串包含。
     """
-    job_skills = [s.strip().lower() for s in (job.skills or []) if s and s.strip()]
+    job_skills = [s.strip() for s in (job.skills or []) if s and s.strip()]
     if not job_skills:
         # 岗位没填技能,无从匹配 — 给中性分
         return {
@@ -274,11 +286,11 @@ def _fallback_match(resume: Resume, job: Job) -> dict[str, Any]:
             "comment": _comment_for_score(60),
         }
 
-    text = ((resume.parsed_text or "") + " " + " ".join(
-        (resume.parsed_data or {}).get("skills") or []
-    )).lower()
-    hits = [s for s in job_skills if s in text]
-    miss = [s for s in job_skills if s not in text]
+    from app.services.keyword_coverage import compute_coverage
+
+    cov = compute_coverage(resume, job_skills)
+    hits = (cov or {}).get("hit") or []
+    miss = (cov or {}).get("missing") or []
     overlap = len(hits) / max(1, len(job_skills))
     # 简单线性映射:0% → 40 分,100% → 90 分
     score = int(round(40 + overlap * 50))

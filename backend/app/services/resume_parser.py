@@ -335,10 +335,12 @@ _KNOWN_SKILLS = [
 
 
 def _extract_skills(text: str) -> list[str]:
+    from app.services.text_match import keyword_in_text
+
     found: set[str] = set()
-    lower = text.lower()
     for s in _KNOWN_SKILLS:
-        if s.lower() in lower:
+        # T15:CJK 整词匹配 — "Go" 不再误中 "Good/Django","CV" 不误中 "CVC"
+        if keyword_in_text(s, text):
             found.add(s)
     return sorted(found)
 
