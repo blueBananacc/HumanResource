@@ -171,6 +171,12 @@ def _r_headcount(db: Session, u: User, p: dict) -> dict:
     }
 
 
+def _r_interview_quality(db: Session, u: User, p: dict) -> dict:
+    from app.services.interview_quality import build_quality_report
+
+    return build_quality_report(db, u, days=p.get("days") or 30)
+
+
 REPORT_DEFS: dict[str, dict] = {
     "pipeline_funnel": {
         "label": "招聘管道漏斗",
@@ -199,6 +205,13 @@ REPORT_DEFS: dict[str, dict] = {
         "perm": PERM_MANAGE_EMPLOYEES,
         "feature": "hr.suite",
         "run": _r_headcount,
+    },
+    "interview_quality": {
+        "label": "面试质量报告",
+        "description": "近 N 天组织面试质量:面试量/维度覆盖率/通过率/时长 + 经常被遗漏的考察项(days 参数,默认 30)",
+        "perm": PERM_VIEW_REPORTS,
+        "feature": None,
+        "run": _r_interview_quality,
     },
 }
 

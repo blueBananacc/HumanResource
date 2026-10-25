@@ -192,16 +192,25 @@ function storedToMsgs(messages: unknown[]): Msg[] {
   return out;
 }
 
+/** 全局唤起助手并预填话术(如洞察页「让 AI 解读」)。 */
+export function askAssistant(text: string) {
+  window.dispatchEvent(
+    new CustomEvent("hr:assistant-ask", { detail: { text } }),
+  );
+}
+
 export function AiAssistant({
   open,
   docked,
   onClose,
   onDockChange,
+  inject,
 }: {
   open: boolean;
   docked: boolean;
   onClose: () => void;
   onDockChange: (docked: boolean) => void;
+  inject?: { text: string; ts: number } | null;
 }) {
   const [pos, setPos] = useState(initialPos);
   const [size, setSize] = useState(initialSize);
@@ -334,6 +343,7 @@ export function AiAssistant({
       onToggleDock={() => onDockChange(!docked)}
       onDragStart={onPointerDown}
       dragging={dragging}
+      inject={inject}
     />
   );
 
@@ -387,6 +397,7 @@ function ChatPanel({
   onToggleDock,
   onDragStart,
   dragging,
+  inject,
 }: {
   docked: boolean;
   wide: boolean;
@@ -394,6 +405,7 @@ function ChatPanel({
   onToggleDock: () => void;
   onDragStart: (e: ReactPointerEvent) => void;
   dragging: boolean;
+  inject?: { text: string; ts: number } | null;
 }) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
@@ -417,6 +429,14 @@ function ChatPanel({
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, pending]);
+
+  // 外部注入话术(洞察页「让 AI 解读」等)—— ts 变化即视为新注入
+  useEffect(() => {
+    if (!inject?.text) return;
+    setInput(inject.text);
+    setView("chat");
+    inputRef.current?.focus();
+  }, [inject]);
 
   useEffect(
     () => () => {

@@ -31,6 +31,7 @@ import { LegacyQuestionSetRedirect, QuestionSetDetail } from "@/pages/QuestionSe
 import { QuestionLibrary } from "@/pages/QuestionLibrary";
 import { CategorySetDetail } from "@/pages/CategorySetDetail";
 import { Analytics } from "@/pages/Analytics";
+import { InterviewQuality } from "@/pages/InterviewQuality";
 import { CandidateInvite } from "@/pages/CandidateInvite";
 import { CandidateSession } from "@/pages/CandidateSession";
 import { CandidateDone } from "@/pages/CandidateDone";
@@ -173,6 +174,7 @@ export const router = createBrowserRouter([
       { path: "question-sets", element: <Navigate to="/question-library?view=sets" replace /> },
       { path: "question-sets/:id", element: <LegacyQuestionSetRedirect /> },
       { path: "reports", element: <Reports /> },
+      { path: "reports/interview-quality", element: <InterviewQuality /> },
       { path: "analytics", element: <Analytics /> },
       { path: "settings/llm", element: <LLMSettings /> },
       { path: "settings/email", element: <EmailSettings /> },

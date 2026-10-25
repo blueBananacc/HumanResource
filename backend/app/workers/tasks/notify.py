@@ -185,6 +185,31 @@ def _digest_for(db, sub: ReportSubscription) -> tuple[str, str] | None:
             "待办事项提醒",
             f"当前待办:\n\n- 未结工单:{cases}\n- 待审批申请:{reqs}\n- 未读通知:{unread}",
         )
+    if sub.kind == "interview_quality":
+        from app.services.interview_quality import build_quality_report
+
+        user = db.get(User, sub.user_id)
+        if user is None:
+            return None
+        r = build_quality_report(db, user, days=30)
+        k = r["kpis"]
+        if not k["assessed_events"]:
+            return None
+        lines = [
+            f"近 30 天组织面试质量报告已生成:",
+            "",
+            f"- 完成面试:{k['interviews_total']} 场"
+            + (f"({k['interviews_delta']})" if k["interviews_delta"] else ""),
+            f"- 维度覆盖率:{k['dimension_coverage']}%",
+            f"- 通过率:{k['pass_rate']}%",
+        ]
+        if k["avg_duration_min"]:
+            lines.append(f"- 平均时长:{k['avg_duration_min']}min")
+        if r["missed"]:
+            names = "、".join(d["name"] for d in r["missed"][:4])
+            lines.append(f"- 经常被遗漏:{names}")
+        lines.append("\n完整报告:/reports/interview-quality")
+        return ("面试质量报告(近 30 天)", "\n".join(lines))
     return None
 
 

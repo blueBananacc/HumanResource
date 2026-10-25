@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
+  BarChart3,
   BookOpen,
   CheckCircle2,
   ChevronDown,
@@ -491,6 +492,67 @@ export function ToolResultCard({
         </CardShell>
       );
     }
+  }
+
+  // ===== T17:面试质量报告 → 专用卡(KPI + 维度条 + 遗漏 + 展开页) =====
+  if (name === "run_report" && (json as Json)?.kind === "interview_quality") {
+    const j = json as Json;
+    const d = (j.data ?? {}) as Json;
+    const kpis = (d.kpis ?? {}) as Json;
+    const dims = (d.dimensions ?? []) as Json[];
+    const missed = (d.missed ?? []) as Json[];
+    const days = str(d.days || 30);
+    return (
+      <CardShell
+        icon={BarChart3}
+        title={`面试质量报告 · 近 ${days} 天`}
+        right={
+          <Link
+            to={`/reports/interview-quality?days=${days}`}
+            className="text-[10px] text-[var(--color-accent)] hover:underline"
+          >
+            展开完整报告
+          </Link>
+        }
+      >
+        <div className="grid grid-cols-4 gap-2 pb-2">
+          {[
+            ["面试量", `${str(kpis.interviews_total ?? 0)}场`],
+            ["维度覆盖", `${str(kpis.dimension_coverage ?? 0)}%`],
+            ["通过率", `${str(kpis.pass_rate ?? 0)}%`],
+            ["时长", kpis.avg_duration_min != null ? `${str(kpis.avg_duration_min)}min` : "—"],
+          ].map(([l, v]) => (
+            <div key={l} className="flex flex-col items-center rounded-lg bg-[var(--color-bg-canvas)] py-1.5">
+              <span className="text-[13px] font-bold text-[var(--color-text-primary)]">{v}</span>
+              <span className="text-[10px] text-[var(--color-text-tertiary)]">{l}</span>
+            </div>
+          ))}
+        </div>
+        {dims.slice(0, 5).map((dim) => {
+          const cov = Number(dim.coverage ?? 0);
+          const color = cov >= 80 ? "var(--color-success,#16a34a)" : cov >= 50 ? "var(--color-warning,#d97706)" : "var(--color-danger,#dc2626)";
+          return (
+            <div key={str(dim.name)} className="flex items-center gap-2 py-0.5">
+              <span className="w-20 shrink-0 truncate text-[11px] text-[var(--color-text-secondary)]">{str(dim.name)}</span>
+              <div className="flex-1 h-3 rounded bg-[var(--color-bg-subtle)] overflow-hidden">
+                <div className="h-full rounded" style={{ width: `${cov}%`, background: color }} />
+              </div>
+              <span className="w-9 text-right text-[10px] font-mono text-[var(--color-text-tertiary)]">{cov}%</span>
+            </div>
+          );
+        })}
+        {missed.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1">
+            <span className="text-[10px] text-[var(--color-text-tertiary)]">经常遗漏:</span>
+            {missed.slice(0, 4).map((m) => (
+              <span key={str(m.name)} className="text-[10px] rounded-full px-1.5 py-0.5 bg-[var(--color-danger-soft,#fef2f2)] text-[var(--color-danger,#dc2626)]">
+                {str(m.name)}
+              </span>
+            ))}
+          </div>
+        )}
+      </CardShell>
+    );
   }
 
   // ===== 聚合/计数/报表 → 指标卡 =====

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
@@ -16,6 +16,7 @@ const TITLE_BY_PATH: Record<string, string> = {
   "/question-library": "题库",
   "/scoring-rules": "评分规则",
   "/reports": "报告",
+  "/reports/interview-quality": "面试质量洞察",
   "/settings/llm": "LLM 配置",
   "/settings/email": "邮箱拉取",
   "/settings/smtp": "SMTP 发件",
@@ -69,7 +70,20 @@ export function AppShell() {
   const { user, loading } = useAuth();
   const loc = useLocation();
   const [aiOpen, setAiOpen] = useState(false);
+  const [aiInject, setAiInject] = useState<{ text: string; ts: number } | null>(null);
   const [aiDocked, setAiDocked] = useState(() => localStorage.getItem(AI_DOCK_KEY) === "1");
+
+  // 「让 AI 解读」等全局唤起:开面板 + 预填话术
+  useEffect(() => {
+    const onAsk = (e: Event) => {
+      const text = (e as CustomEvent).detail?.text;
+      if (!text) return;
+      setAiOpen(true);
+      setAiInject({ text, ts: Date.now() });
+    };
+    window.addEventListener("hr:assistant-ask", onAsk);
+    return () => window.removeEventListener("hr:assistant-ask", onAsk);
+  }, []);
   const changeDock = (v: boolean) => {
     localStorage.setItem(AI_DOCK_KEY, v ? "1" : "0");
     setAiDocked(v);
@@ -129,6 +143,7 @@ export function AppShell() {
           docked={aiDocked}
           onClose={() => setAiOpen(false)}
           onDockChange={changeDock}
+          inject={aiInject}
         />
       </div>
     </div>
