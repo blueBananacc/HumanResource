@@ -1,0 +1,4 @@
+姓名,员工编号,电子邮箱,部门名称,入职日期,雇佣类型
+UI验证张,T8UI01,ui-zhang@acme.co,UI验证部,2024-01-15,全职
+UI验证李,T8UI02,ui-li@acme.co,销售部,2024/02/01,full_time
+UI验证错,,bad-email,研发部,not-a-date,兼职

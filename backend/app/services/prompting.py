@@ -432,6 +432,46 @@ PROMPT_REGISTRY: dict[str, PromptSpec] = {
             "  用合理通用表述(如'公司规定日期'),不要留下 {{}} 占位符\n"
         ),
     ),
+    "import.column_map": PromptSpec(
+        name="导入列智能映射",
+        description="AI 导入向导:把上传文件的列名映射到目标字段",
+        module="imports",
+        variables=[
+            {"name": "dataset", "desc": "目标数据集名(如 员工)"},
+            {"name": "fields", "desc": "目标字段 spec JSON(key/label/aliases/kind/sample)"},
+            {"name": "columns", "desc": "文件列名+样本值 JSON"},
+        ],
+        content=(
+            "你是数据导入映射助手。目标数据集「{{dataset}}」的字段 spec:\n"
+            "{{fields}}\n\n"
+            "上传文件的列与样本值:\n"
+            "{{columns}}\n\n"
+            "为每个目标字段选择最合适的文件列:看列名语义,也看样本值形态\n"
+            "(邮箱样的是邮箱列、日期样的是日期列)。同一文件列最多映射一个\n"
+            "字段;拿不准就留空字符串,不要硬猜。\n\n"
+            "**只输出 JSON**:\n"
+            '{"mapping": {"<field_key>": "<文件列名 或 \\"\\">"},\n'
+            ' "confidence": {"<field_key>": <0-1>},\n'
+            ' "reasons": {"<field_key>": "一句话理由"},\n'
+            ' "warnings": ["表头疑似缺失/数据疑点,<=3 条"]}\n'
+            "禁止输出 JSON 之外的任何文字。"
+        ),
+    ),
+    "import.check_note": PromptSpec(
+        name="导入错误归因摘要",
+        description="AI 导入向导:对校验错误做一句中文归因与修复建议",
+        module="imports",
+        variables=[
+            {"name": "dataset", "desc": "目标数据集名"},
+            {"name": "errors", "desc": "按字段聚合的错误统计 JSON"},
+        ],
+        content=(
+            "你是数据导入质检助手。「{{dataset}}」导入校验发现如下按字段\n"
+            "聚合的错误:\n{{errors}}\n\n"
+            "用一句中文(<=120 字)概括主要原因 + 一条最优先的修复建议。\n"
+            "直接输出这句话,不要前缀、不要 JSON。"
+        ),
+    ),
 }
 
 

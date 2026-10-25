@@ -7,6 +7,7 @@ import {
   Folder,
   MailCheck,
   Plus,
+  Sparkles,
   Trash2,
   Upload,
   Users,
@@ -180,6 +181,12 @@ export function TalentPool() {
             <Upload className="w-4 h-4" />
             批量导入
           </Button>
+          <Link to="/settings/imports">
+            <Button variant="ghost">
+              <Sparkles className="w-4 h-4" />
+              智能导入
+            </Button>
+          </Link>
           <SavedFilters
             page="talents"
             currentParams={() => ({

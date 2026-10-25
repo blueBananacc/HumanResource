@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Lock, Network, Plus, Upload, Users } from "lucide-react";
+import { Lock, Network, Plus, Sparkles, Upload, Users } from "lucide-react";
 import { ImportDrawer } from "@/components/records/ImportDrawer";
 import { SavedFilters } from "@/components/records/SavedFilters";
 import { Button } from "@/components/ui/button";
@@ -140,6 +140,12 @@ export function Employees() {
           <Upload className="w-3.5 h-3.5" />
           批量导入
         </Button>
+        <Link to="/settings/imports">
+          <Button variant="ghost" size="sm">
+            <Sparkles className="w-3.5 h-3.5" />
+            智能导入
+          </Button>
+        </Link>
         <SavedFilters
           page="employees"
           currentParams={() => ({ q: q || undefined })}

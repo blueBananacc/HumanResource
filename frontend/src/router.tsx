@@ -21,6 +21,7 @@ import { McpTokens } from "@/pages/McpTokens";
 import { Dictionaries } from "@/pages/Dictionaries";
 import { Schedulers } from "@/pages/Schedulers";
 import { Automations } from "@/pages/Automations";
+import { ImportWizard } from "@/pages/ImportWizard";
 import { TalentPool } from "@/pages/TalentPool";
 import { TalentDetail } from "@/pages/TalentDetail";
 import { LegacyQuestionSetRedirect, QuestionSetDetail } from "@/pages/QuestionSetDetail";
@@ -183,6 +184,7 @@ export const router = createBrowserRouter([
       { path: "settings/dictionaries", element: <Dictionaries /> },
       { path: "settings/schedulers", element: <Schedulers /> },
       { path: "settings/automations", element: <Automations /> },
+      { path: "settings/imports", element: <ImportWizard /> },
     ],
   },
   { path: "*", element: <Navigate to="/" replace /> },

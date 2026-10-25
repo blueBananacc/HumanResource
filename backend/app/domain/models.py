@@ -26,6 +26,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     Time,
@@ -2983,3 +2984,37 @@ class JobRun(Base):
     duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     message: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
+
+class ImportJob(Base):
+    """AI 导入向导任务:一次文件导入的全生命周期。
+
+    ``status``: uploaded → mapped → checked → done / failed。
+    ``mapping`` {field_key: 文件列名};``mapping_meta`` 附带置信度与
+    来源(ai/heuristic/user)。``file_bytes`` 存原始文件,check/run
+    时按需重新解析,不另建行表。
+    """
+
+    __tablename__ = "import_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    dataset: Mapped[str] = mapped_column(String(32), nullable=False)
+    file_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    file_bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    columns: Mapped[list] = mapped_column(JSON, nullable=False, server_default="[]")
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    mapping: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    mapping_meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="uploaded")
+    check_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    run_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

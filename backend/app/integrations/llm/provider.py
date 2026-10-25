@@ -144,6 +144,9 @@ def _mock_chat(messages: list[Message], *, response_json: bool) -> str:
     sys_prompt = next((m["content"] for m in messages if m["role"] == "system"), "")
 
     if response_json:
+        # 导入列映射:返回空 mapping,调用方回落启发式建议
+        if "导入映射" in sys_prompt or "数据导入映射" in sys_prompt:
+            return '{"mapping": {}, "confidence": {}, "warnings": ["mock:未配置真实 LLM,已用启发式映射"]}'
         # 匹配评估场景:必须早于"评分"分支判断,因为 prompt 里
         # 有"匹配度评分"会被下面"评分"分支误中
         if "匹配评估" in sys_prompt or "匹配度评分" in sys_prompt:
@@ -162,6 +165,9 @@ def _mock_chat(messages: list[Message], *, response_json: bool) -> str:
     # 出题场景:返回一个合理的开放问题
     if "面试" in sys_prompt or "interviewer" in sys_prompt.lower():
         return _mock_question(last)
+    # 导入质检归因
+    if "导入质检" in sys_prompt or "数据导入质检" in sys_prompt:
+        return "存在若干格式与重复数据问题,建议优先修正列表中的错误行后重新导入。"
     return "mock response"
 
 

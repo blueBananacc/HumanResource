@@ -49,6 +49,7 @@ from app.api import favorites as favorites_api
 from app.api import healthz
 from app.api import hiring as hiring_api
 from app.api import hr_me as hr_me_api
+from app.api import imports as imports_api
 from app.api import saved_filters as saved_filters_api
 from app.api import scheduler as scheduler_api
 from app.api import ics as ics_api
@@ -443,6 +444,7 @@ def create_app() -> FastAPI:
     app.include_router(dictionaries_api.router, prefix="/api")
     app.include_router(scheduler_api.router, prefix="/api")
     app.include_router(automations_api.router, prefix="/api")
+    app.include_router(imports_api.router, prefix="/api")
     app.include_router(ai_api.router, prefix="/api")
     app.include_router(doc_templates_api.router, prefix="/api")
 
