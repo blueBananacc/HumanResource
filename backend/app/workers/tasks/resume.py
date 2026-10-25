@@ -108,6 +108,7 @@ def parse_resume_task(self: Any, resume_id: str) -> dict[str, Any]:
             "phone": parsed.phone,
             "skills": parsed.skills,
             "name_hint": parsed.name_hint,
+            "sections": parsed.sections,
         }
         resume.parse_status = "done"
         resume.parse_finished_at = _utcnow_naive()

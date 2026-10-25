@@ -28,6 +28,9 @@
 | [scorecard-global-search-design.md](design/scorecard-global-search-design.md) | T9 设计：结构化面试评分卡（多面试官逐维评分/AI 聚合）+ 声明式全局搜索（audit 漏斗索引/权限回读） |
 | [model-call-log-job-knowledge-design.md](design/model-call-log-job-knowledge-design.md) | T11 设计:逐次 LLM 调用留痕(model_call_logs+统一网关+严格重试+助手回报)与岗位级知识 chunks(切块/索引/语义召回/喂 prompt) |
 | [idempotency-design.md](design/idempotency-design.md) | T10 设计：生产级幂等键（唯一锁元组/请求指纹/锁接管/回放语义/惰性过期+清扫，AI 写操作防重） |
+| [t12-gate-evidence-injection-design.md](design/t12-gate-evidence-injection-design.md) | T12 设计：硬性门槛 Gate（二值判定+severity 裁决）+ 证据先行评分（锚定 0-4 级）+ Prompt 注入防御 |
+| [t13-scoring-rule-engine-design.md](design/t13-scoring-rule-engine-design.md) | T13 设计：声明式评分规则引擎（维度×评估器/确定性评估器/规则快照/AI 生成与自分析） |
+| [t14-feature-scoring-parser.md](design/t14-feature-scoring-parser.md) | T14 设计：特征评分式简历结构解析器（span→行→section→subsection→字段，LLM 前置确定性预处理） |
 
 ## 维护约定
 

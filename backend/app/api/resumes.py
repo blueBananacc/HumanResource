@@ -82,6 +82,8 @@ class ResumeDetailOut(ResumeOut):
     parsed_text: str | None
     email: str | None
     phone: str | None
+    # T14 结构化解析结果 + 置信度(解析报告 UI)
+    sections: dict | None = None
 
 
 def _serialize(r: Resume, c: Candidate) -> ResumeOut:
@@ -126,6 +128,7 @@ def _serialize_detail(r: Resume, c: Candidate) -> ResumeDetailOut:
         parsed_text=r.parsed_text,
         email=pd.get("email"),
         phone=pd.get("phone"),
+        sections=pd.get("sections"),
     )
 
 
@@ -264,6 +267,7 @@ def _enqueue_or_fallback_sync_parse(
                 "phone": parsed.phone or existing.get("phone"),
                 "skills": parsed.skills,
                 "name_hint": parsed.name_hint or existing.get("name_hint"),
+                "sections": parsed.sections,
             }
         )
         resume.parsed_data = existing

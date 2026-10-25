@@ -32,6 +32,7 @@ import {
   isInflight,
   useDeleteResume,
   type ResumeDetail as ResumeDetailData,
+  type ResumeSections,
 } from "@/components/resume/shared";
 
 type TalentLite = {
@@ -197,6 +198,8 @@ export function ResumeDetail() {
             </pre>
           </Section>
 
+          {data.sections && <ParseReport sections={data.sections} />}
+
           <Section icon={Video} title="面试题集">
             <QuestionSetsForResume resumeId={data.id} />
           </Section>
@@ -284,6 +287,128 @@ export function ResumeDetail() {
         </div>
       </div>
     </main>
+  );
+}
+
+// T14 解析报告:特征评分结构化的分字段结果 + 置信度
+function ParseReport({ sections }: { sections: ResumeSections }) {
+  const conf = sections.confidence ?? {};
+  const works = sections.work_experiences ?? [];
+  const edus = sections.educations ?? [];
+  const projects = sections.projects ?? [];
+
+  const ConfBar = ({ label, value }: { label: string; value?: number }) => {
+    if (value === undefined) return null;
+    const pct = Math.round(value * 100);
+    const color =
+      pct >= 80
+        ? "bg-emerald-500"
+        : pct >= 50
+          ? "bg-amber-500"
+          : "bg-[var(--color-danger)]";
+    return (
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] text-[var(--color-text-tertiary)] w-10 shrink-0">
+          {label}
+        </span>
+        <div className="flex-1 h-1.5 rounded-full bg-[var(--color-bg-subtle)] overflow-hidden">
+          <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+        </div>
+        <span className="text-[11px] font-mono text-[var(--color-text-secondary)] w-8 text-right">
+          {pct}
+        </span>
+      </div>
+    );
+  };
+
+  const Desc = ({ items }: { items?: string[] }) =>
+    items && items.length > 0 ? (
+      <ul className="mt-1 pl-4 list-disc text-[11px] text-[var(--color-text-tertiary)] space-y-0.5">
+        {items.slice(0, 4).map((d, i) => (
+          <li key={i} className="line-clamp-2">{d}</li>
+        ))}
+      </ul>
+    ) : null;
+
+  return (
+    <Section icon={Sparkles} title="解析报告(结构化)">
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-1.5">
+          <ConfBar label="整体" value={conf.overall} />
+          <ConfBar label="信息" value={conf.profile} />
+          <ConfBar label="工作" value={conf.work} />
+          <ConfBar label="教育" value={conf.education} />
+        </div>
+
+        {works.length > 0 && (
+          <div>
+            <div className="text-[12px] font-medium text-[var(--color-text-secondary)] mb-1.5">
+              工作经历({works.length})
+            </div>
+            <div className="flex flex-col gap-2">
+              {works.map((w, i) => (
+                <div
+                  key={i}
+                  className="rounded-lg border border-[var(--color-border-subtle)] p-2.5"
+                >
+                  <div className="text-[12px] text-[var(--color-text-primary)] font-medium">
+                    {w.title || "未知职位"}
+                    {w.company ? ` @ ${w.company}` : ""}
+                  </div>
+                  <div className="text-[11px] text-[var(--color-text-tertiary)] font-mono">
+                    {w.date_range || "时间未知"}
+                    {w.years ? ` · ${w.years}年` : ""}
+                  </div>
+                  <Desc items={w.descriptions} />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {edus.length > 0 && (
+          <div>
+            <div className="text-[12px] font-medium text-[var(--color-text-secondary)] mb-1.5">
+              教育经历({edus.length})
+            </div>
+            {edus.map((e, i) => (
+              <div key={i} className="text-[12px] text-[var(--color-text-primary)]">
+                {e.school || "未知院校"}
+                {e.degree ? ` · ${e.degree}` : ""}
+                <span className="ml-2 text-[11px] text-[var(--color-text-tertiary)] font-mono">
+                  {e.date_range}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {projects.length > 0 && (
+          <div>
+            <div className="text-[12px] font-medium text-[var(--color-text-secondary)] mb-1.5">
+              项目({projects.length})
+            </div>
+            {projects.map((p, i) => (
+              <div key={i} className="text-[12px] text-[var(--color-text-primary)]">
+                {p.name || "未命名项目"}
+                <span className="ml-2 text-[11px] text-[var(--color-text-tertiary)] font-mono">
+                  {p.date_range}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {sections.skills_text && (
+          <div className="text-[11px] text-[var(--color-text-tertiary)]">
+            技能区:{sections.skills_text.slice(0, 120)}
+          </div>
+        )}
+        <div className="text-[10px] text-[var(--color-text-tertiary)] font-mono">
+          {sections.parser} · sections: {(sections.section_names ?? []).join(" / ")}
+        </div>
+      </div>
+    </Section>
   );
 }
 

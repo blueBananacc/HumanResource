@@ -59,6 +59,8 @@ class ParseResult:
     phone: str | None
     name_hint: str | None
     skills: list[str]
+    # T14 特征评分结构化(sections/confidence/debug);解析失败为 None
+    sections: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -394,12 +396,21 @@ def parse_resume(file_name: str, mime: str, data: bytes) -> ParseResult:
     """根据 mime / 扩展名分发,统一返回 :class:`ParseResult`。"""
     text = _extract_text_by_format(file_name, mime, data, pdf_pages=_MAX_PDF_PAGES)
     email, phone = _extract_email_phone(text)
+    from app.services.resume_structurer import structure_resume
+
+    sections = structure_resume(file_name, mime, data, text)
+    # 结构化抽到的 email/phone 更贴近版式上下文,作为补充兜底
+    if sections:
+        prof = sections.get("profile") or {}
+        email = email or prof.get("email") or None
+        phone = phone or prof.get("phone") or None
     return ParseResult(
         raw_text=text,
         email=email,
         phone=phone,
         name_hint=_name_hint_from_filename(file_name),
         skills=_extract_skills(text),
+        sections=sections,
     )
 
 

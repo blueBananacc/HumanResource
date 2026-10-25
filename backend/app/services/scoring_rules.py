@@ -166,7 +166,42 @@ def _resume_text(resume: Resume) -> str:
     skills = pd.get("skills") or []
     if skills:
         parts.append("技能: " + ", ".join(str(s) for s in skills))
+    # T14:结构化工作/教育段摘要,给 AI 维更干净的上下文
+    secs = pd.get("sections") or {}
+    works = secs.get("work_experiences") or []
+    if works:
+        lines = [
+            f"- {w.get('title') or '?'} @ {w.get('company') or '?'}({w.get('date_range') or '?'})"
+            for w in works[:8]
+        ]
+        parts.append("工作经历(结构化):\n" + "\n".join(lines))
+    edus = secs.get("educations") or []
+    if edus:
+        parts.append(
+            "教育经历(结构化): "
+            + "; ".join(
+                f"{e.get('school') or '?'} {e.get('degree') or ''}({e.get('date_range') or '?'})".strip()
+                for e in edus[:4]
+            )
+        )
     return "\n".join(parts)
+
+
+def _sections(resume: Resume) -> dict:
+    return (resume.parsed_data or {}).get("sections") or {}
+
+
+def _structured_work_years(resume: Resume) -> float | None:
+    """T14:优先用结构化工作段求总年限(按段 years 合计,去重为按段已切)。
+
+    返回 None 表示结构化数据不可用,调用方回退全文正则。
+    """
+    works = _sections(resume).get("work_experiences")
+    if not works:
+        return None
+    total = sum(float(w.get("years") or 0) for w in works)
+    # 防御:单段解析误差累加后可能虚高,50 年封顶
+    return min(total, 50.0)
 
 
 def estimate_experience_years(text: str) -> float:
@@ -222,8 +257,14 @@ def _eval_keyword(text: str, ev: dict) -> dict[str, Any]:
     return {"score": score, "evidence": "; ".join(parts) or "无关键词命中"}
 
 
-def _eval_duration(text: str, ev: dict) -> dict[str, Any]:
-    yrs = estimate_experience_years(text)
+def _eval_duration(resume: Resume, text: str, ev: dict) -> dict[str, Any]:
+    yrs_struct = _structured_work_years(resume)
+    if yrs_struct is not None:
+        yrs = yrs_struct
+        src = "结构化工作段"
+    else:
+        yrs = estimate_experience_years(text)
+        src = "文本估计"
     min_y = float(ev.get("minYears") or 0)
     pref_y = float(ev.get("preferredYears") or min_y)
     if pref_y <= min_y:
@@ -236,7 +277,7 @@ def _eval_duration(text: str, ev: dict) -> dict[str, Any]:
         score = round(yrs / min_y * 50) if min_y > 0 else 50
     return {
         "score": int(_clamp(score, 0, 100, 0)),
-        "evidence": f"文本估计经验 {yrs:.1f} 年(要求 {min_y}-{pref_y} 年)",
+        "evidence": f"{src}经验 {yrs:.1f} 年(要求 {min_y}-{pref_y} 年)",
     }
 
 
@@ -250,9 +291,19 @@ _BOOL_PATTERNS = {
 
 def _eval_boolean(resume: Resume, text: str, ev: dict) -> dict[str, Any]:
     field = ev.get("booleanField") or "skills"
+    secs = _sections(resume)
     if field == "skills":
         has = bool((resume.parsed_data or {}).get("skills"))
         detail = "parsed_data.skills"
+    elif field == "education" and secs.get("educations") is not None:
+        has = bool(secs.get("educations"))
+        detail = "结构化教育段"
+    elif field == "experience" and secs.get("work_experiences") is not None:
+        has = bool(secs.get("work_experiences"))
+        detail = "结构化工作段"
+    elif field == "projects" and secs.get("projects") is not None:
+        has = bool(secs.get("projects"))
+        detail = "结构化项目段"
     else:
         pats = _BOOL_PATTERNS.get(field) or []
         lower = text.lower()
@@ -264,9 +315,11 @@ def _eval_boolean(resume: Resume, text: str, ev: dict) -> dict[str, Any]:
     }
 
 
-def _eval_range(text: str, ev: dict) -> dict[str, Any]:
+def _eval_range(resume: Resume, text: str, ev: dict) -> dict[str, Any]:
     # 目前唯一支持的数值字段
-    value = estimate_experience_years(text)
+    value = _structured_work_years(resume)
+    if value is None:
+        value = estimate_experience_years(text)
     lo = float(ev.get("minValue") or 0)
     hi = float(ev.get("maxValue") or 100)
     if hi <= lo:
@@ -282,11 +335,11 @@ def _eval_deterministic(resume: Resume, text: str, dim: dict) -> dict[str, Any]:
     if method == "keyword":
         return _eval_keyword(text, ev)
     if method == "duration":
-        return _eval_duration(text, ev)
+        return _eval_duration(resume, text, ev)
     if method == "boolean":
         return _eval_boolean(resume, text, ev)
     if method == "range":
-        return _eval_range(text, ev)
+        return _eval_range(resume, text, ev)
     return {"score": 50, "evidence": "未知评估器"}
 
 

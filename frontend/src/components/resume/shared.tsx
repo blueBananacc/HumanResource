@@ -26,10 +26,44 @@ export type Resume = {
   parse_error: string | null;
 };
 
+// T14 特征评分结构化解析(feature-scoring-v1)
+export type ResumeSections = {
+  profile?: {
+    name?: string;
+    email?: string;
+    phone?: string;
+    location?: string;
+    summary?: string;
+  };
+  work_experiences?: {
+    company?: string;
+    title?: string;
+    date_range?: string;
+    years?: number;
+    descriptions?: string[];
+  }[];
+  educations?: {
+    school?: string;
+    degree?: string;
+    date_range?: string;
+    descriptions?: string[];
+  }[];
+  projects?: {
+    name?: string;
+    date_range?: string;
+    descriptions?: string[];
+  }[];
+  skills_text?: string;
+  confidence?: { profile?: number; work?: number; education?: number; overall?: number };
+  section_names?: string[];
+  parser?: string;
+};
+
 export type ResumeDetail = Resume & {
   parsed_text: string | null;
   email: string | null;
   phone: string | null;
+  sections?: ResumeSections | null;
 };
 
 // 列表 / 详情中只要存在 pending|parsing 的简历就开 2s 轮询;done|failed 都是终态。
