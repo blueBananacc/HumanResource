@@ -208,6 +208,7 @@ export const mainModules: NavModule[] = [
           { to: "/attendance/flags", label: "考勤异常", permission: PERM.APPROVE_LEAVE, keywords: "迟到 早退 异常 工时 汇总" },
           { to: "/overtime", label: "加班审批", permission: PERM.APPROVE_LEAVE, keywords: "加班 调休 overtime" },
           { to: "/attendance/calendar", label: "节假日历", permission: PERM.MANAGE_ATTENDANCE, keywords: "节假日 工作日历 调休" },
+          { to: "/attendance/shifts", label: "排班", permission: PERM.MANAGE_ATTENDANCE, keywords: "排班 班次 替班 schedule shift" },
         ],
       },
     ],

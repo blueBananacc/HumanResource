@@ -1508,6 +1508,67 @@ class OvertimeRequest(Base):
     )
 
 
+class Shift(Base):
+    """班次定义(H3 排班):如「早班 09:00-17:00 需 2 人」。
+
+    - ``start_min``/``end_min`` 存分钟数(0-1440)而不是 time 类型:
+      跨天班(22:00-06:00)直接 end < start,比较/展示都更直白
+    - ``required`` 每个工作日默认需要的人数,生成器按它填空位
+    """
+
+    __tablename__ = "shifts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    start_min: Mapped[int] = mapped_column(Integer, nullable=False, server_default="540")
+    end_min: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1020")
+    required: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    color: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sql_true())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_shifts_tenant_name"),
+    )
+
+
+class ShiftAssignment(Base):
+    """排班明细:某员工某天某班次。
+
+    - ``source``: manual 手工 / auto 生成器 / cover 替班
+    - 同一员工同一天只允许一条(跨班不叠加);unique 约束兜底
+    """
+
+    __tablename__ = "shift_assignments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    shift_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("shifts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    day: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False, server_default="manual")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "employee_id", "day", name="uq_shiftassign_emp_day"),
+    )
+
+
 class LeavePolicy(Base):
     """假期政策:一组 (leave_type × annual_days) + 结转上限。
 

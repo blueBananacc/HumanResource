@@ -177,6 +177,12 @@ def _r_interview_quality(db: Session, u: User, p: dict) -> dict:
     return build_quality_report(db, u, days=p.get("days") or 30)
 
 
+def _r_hr_movements(db: Session, u: User, p: dict) -> dict:
+    from app.services.hr_movements import build_movements_report
+
+    return build_movements_report(db, u, month=p.get("month"))
+
+
 REPORT_DEFS: dict[str, dict] = {
     "pipeline_funnel": {
         "label": "招聘管道漏斗",
@@ -212,6 +218,13 @@ REPORT_DEFS: dict[str, dict] = {
         "perm": PERM_VIEW_REPORTS,
         "feature": None,
         "run": _r_interview_quality,
+    },
+    "hr_movements": {
+        "label": "人事异动月报",
+        "description": "指定月份入职/离职/调动/晋升:按部门分布、净增减、离职率(month 参数 YYYY-MM,默认上月)",
+        "perm": PERM_VIEW_REPORTS,
+        "feature": "hr.suite",
+        "run": _r_hr_movements,
     },
 }
 

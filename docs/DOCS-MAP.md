@@ -34,6 +34,7 @@
 | [t15-keyword-match-coverage.md](design/t15-keyword-match-coverage.md) | T15 设计：CJK 整词匹配 + 关键词覆盖子分（keyword_in_text/compute_coverage/coverage 评估器） |
 | [t16-conversational-recruiting.md](design/t16-conversational-recruiting.md) | T16 设计：对话式招聘（TalentProfile 画像 + SourcingRun 扫描留痕 + 确定性预筛→LLM topK + 面试纪要聚合 + 助手工具/勾选卡） |
 | [t17-interview-quality-report.md](design/t17-interview-quality-report.md) | T17 设计：组织面试质量报告（services/interview_quality 聚合 + report-defs 注册 + 洞察页 + InterviewQualityCard + 订阅推送） |
+| [h123-hr-assistant.md](design/h123-hr-assistant.md) | H1–H3 设计：人事 AI 助手五场景（假期余额/考勤免计/入离职月报 + 会话式组织调整 + Shift 排班域生成器/替班求解/月历页） |
 
 ## 维护约定
 

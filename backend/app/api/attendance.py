@@ -622,6 +622,7 @@ def _flag_out(f: AttendanceFlag, emps: dict, orgs: dict) -> FlagOut:
 def list_flags(
     pagination: tuple = Depends(paginate_params),
     month: str | None = Query(None, description="YYYY-MM"),
+    day: date | None = Query(None, description="精确到某天,优先级高于 month"),
     employee_id: str | None = None,
     kind: Literal["late_in", "early_out"] | None = None,
     excused: bool | None = None,
@@ -642,6 +643,8 @@ def list_flags(
         except ValueError:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "month 格式应为 YYYY-MM")
         stmt = stmt.where(AttendanceFlag.day >= start, AttendanceFlag.day < end)
+    if day:
+        stmt = stmt.where(AttendanceFlag.day == day)
     if employee_id:
         stmt = stmt.where(AttendanceFlag.employee_id == employee_id)
     if kind:
@@ -709,6 +712,67 @@ def excuse_flag(
     db.commit()
     emps, orgs = _maps(db, current.tenant_id)
     return _flag_out(f, emps, orgs)
+
+
+class BulkExcuseIn(BaseModel):
+    flag_ids: list[str]
+    note: str | None = None
+
+
+class BulkExcuseOut(BaseModel):
+    excused: int
+    skipped: int
+    denied: int
+    items: list[FlagOut]
+
+
+@router.post("/flags/bulk-excuse", response_model=BulkExcuseOut)
+def bulk_excuse_flags(
+    body: BulkExcuseIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(
+        require_permission(PERM_MANAGE_ATTENDANCE, PERM_APPROVE_LEAVE)),
+):
+    """批量免计考勤异常 — 助手「核对今天 N 条异常」的落点。
+
+    已免计的跳过(天然幂等),无权决定的计入 denied 而不是整体 403:
+    批量场景里部分失败不该废掉整批。"""
+    if len(body.flag_ids) > 100:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "单批最多 100 条")
+    rows = db.scalars(
+        select(AttendanceFlag).where(
+            AttendanceFlag.tenant_id == current.tenant_id,
+            AttendanceFlag.id.in_(body.flag_ids),
+        )
+    ).all()
+    emps, orgs = _maps(db, current.tenant_id)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    items: list[FlagOut] = []
+    skipped = denied = 0
+    for f in rows:
+        if f.excused:
+            skipped += 1
+            continue
+        if not can_decide_for_employee(db, current, f.employee_id):
+            denied += 1
+            continue
+        f.excused = True
+        f.excused_by_id = current.id
+        f.excused_note = body.note
+        f.excused_at = now
+        f.updated_at = now
+        items.append(_flag_out(f, emps, orgs))
+        write_audit(
+            db, actor=current, entity_type="attendance_flag", entity_id=f.id,
+            action="excuse",
+            detail={"employee_id": f.employee_id, "day": str(f.day),
+                    "kind": f.kind, "bulk": True},
+            request=request,
+        )
+    db.commit()
+    return BulkExcuseOut(
+        excused=len(items), skipped=skipped, denied=denied, items=items)
 
 
 @router.post("/flags/{flag_id}/unexcuse", response_model=FlagOut)

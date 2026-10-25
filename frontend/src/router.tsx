@@ -59,6 +59,7 @@ import { Checkins } from "@/pages/hris/Checkins";
 import { AttendanceRequests } from "@/pages/hris/AttendanceRequests";
 import { AttendanceFlagsPage } from "@/pages/hris/AttendanceFlags";
 import { WorkCalendarPage } from "@/pages/hris/WorkCalendarPage";
+import { ShiftsPage } from "@/pages/hris/Shifts";
 import { Requisitions } from "@/pages/hris/Requisitions";
 import { Offers } from "@/pages/hris/Offers";
 import { Performance } from "@/pages/hris/Performance";
@@ -127,6 +128,7 @@ export const router = createBrowserRouter([
       { path: "attendance/requests", element: <AttendanceRequests /> },
       { path: "attendance/flags", element: <AttendanceFlagsPage /> },
       { path: "attendance/calendar", element: <WorkCalendarPage /> },
+      { path: "attendance/shifts", element: <ShiftsPage /> },
       { path: "overtime", element: <OvertimeRequests /> },
       // ── HRIS 招聘扩展 ──
       { path: "requisitions", element: <Requisitions /> },

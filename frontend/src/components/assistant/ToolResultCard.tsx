@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   BarChart3,
   BookOpen,
+  CalendarDays,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -550,6 +551,225 @@ export function ToolResultCard({
               </span>
             ))}
           </div>
+        )}
+      </CardShell>
+    );
+  }
+
+  // ===== H1:人事异动月报 → KPI + 部门分布 + 明细 =====
+  if (name === "run_report" && (json as Json)?.kind === "hr_movements") {
+    const d = ((json as Json).data ?? {}) as Json;
+    const byOrg = (d.by_org ?? []) as Json[];
+    const items = (d.items ?? []) as Json[];
+    return (
+      <CardShell icon={BarChart3} title={`人事异动月报 · ${str(d.month)}`}>
+        <div className="grid grid-cols-4 gap-2 pb-2">
+          {[
+            ["入职", `${str(d.hires ?? 0)}人`],
+            ["离职", `${str(d.departures ?? 0)}人`],
+            ["净增减", `${Number(d.net_change ?? 0) >= 0 ? "+" : ""}${str(d.net_change ?? 0)}`],
+            ["离职率", `${str(d.departure_rate ?? 0)}%`],
+          ].map(([l, v]) => (
+            <div key={l} className="flex flex-col items-center rounded-lg bg-[var(--color-bg-canvas)] py-1.5">
+              <span className="text-[13px] font-bold text-[var(--color-text-primary)]">{v}</span>
+              <span className="text-[10px] text-[var(--color-text-tertiary)]">{l}</span>
+            </div>
+          ))}
+        </div>
+        {(Number(d.transfers) > 0 || Number(d.promotions) > 0) && (
+          <div className="pb-1 text-[11px] text-[var(--color-text-secondary)]">
+            调动 {str(d.transfers ?? 0)} 人 · 晋升 {str(d.promotions ?? 0)} 人
+          </div>
+        )}
+        {byOrg.slice(0, 5).map((o) => (
+          <div key={str(o.org)} className="flex items-center gap-2 py-0.5 text-[11px]">
+            <span className="w-24 shrink-0 truncate text-[var(--color-text-secondary)]">{str(o.org)}</span>
+            <span className="text-[var(--color-success,#16a34a)]">+{str(o.join ?? 0)}</span>
+            <span className="text-[var(--color-danger,#dc2626)]">-{str(o.leave ?? 0)}</span>
+            {Number(o.transfer) > 0 && (
+              <span className="text-[var(--color-text-tertiary)]">调{str(o.transfer)}</span>
+            )}
+          </div>
+        ))}
+        {items.slice(0, 6).map((it, i) => (
+          <div key={i} className="flex items-center gap-2 py-0.5 text-[11px] text-[var(--color-text-secondary)]">
+            <span className="w-14 shrink-0 text-[10px] text-[var(--color-text-tertiary)]">{str(it.date)}</span>
+            <span className="truncate">{str(it.name)}</span>
+            <span className="ml-auto shrink-0 text-[10px] text-[var(--color-text-tertiary)]">
+              {str(it.kind_label)} · {str(it.org)}
+            </span>
+          </div>
+        ))}
+      </CardShell>
+    );
+  }
+
+  // ===== H1:考勤异常批量免计结果 =====
+  if (name === "excuse_attendance_flags") {
+    const j = (json ?? {}) as Json;
+    const ok = j.error == null;
+    return (
+      <div className="rounded-xl border border-[var(--color-border-subtle)] bg-white px-3 py-2 flex items-center gap-2 shadow-[var(--shadow-card)]">
+        <CheckCircle2
+          className={cn(
+            "w-4 h-4 shrink-0",
+            ok ? "text-[var(--color-accent)]" : "text-[var(--color-danger,#dc2626)]",
+          )}
+        />
+        <span className="text-[12px] text-[var(--color-text-primary)]">
+          {ok
+            ? `已核对 ${str(j.excused ?? 0)} 条异常` +
+              (Number(j.skipped) ? `,跳过已核 ${str(j.skipped)}` : "") +
+              (Number(j.denied) ? `,无权处理 ${str(j.denied)}` : "")
+            : str(j.detail ?? "操作失败")}
+        </span>
+      </div>
+    );
+  }
+
+  // ===== H1:假期余额 =====
+  if (name === "get_leave_balance") {
+    const rows = asArr(json);
+    return (
+      <CardShell icon={FileText} title="假期余额(本年)">
+        {rows.length === 0 && (
+          <div className="text-[11px] text-[var(--color-text-tertiary)]">暂无额度记录</div>
+        )}
+        {rows.map((r, i) => (
+          <div key={i} className="flex items-center gap-2 py-1 border-b border-[var(--color-border-row)] last:border-0 text-[11px]">
+            <span className="w-16 shrink-0 truncate text-[var(--color-text-secondary)]">
+              {str(r.leave_type_name ?? r.leave_type_id)}
+            </span>
+            <span className="text-[var(--color-text-tertiary)]">
+              额度{str(r.allocated)} · 已用{str(r.used)}
+              {Number(r.pending) ? ` · 在批${str(r.pending)}` : ""}
+            </span>
+            <span className="ml-auto font-bold text-[var(--color-text-primary)]">
+              余 {str(r.balance)} 天
+            </span>
+          </div>
+        ))}
+      </CardShell>
+    );
+  }
+
+  // ===== H2:组织调整预览卡 =====
+  if (name === "preview_org_changes") {
+    const j = (json ?? {}) as Json;
+    const changes = (j.changes ?? []) as Json[];
+    const errors = (j.errors ?? []) as unknown[];
+    const warnings = (j.warnings ?? []) as unknown[];
+    return (
+      <CardShell
+        icon={FileText}
+        title={`组织调整方案 · ${changes.length} 项变更`}
+        right={
+          j.ok ? (
+            <span className="text-[10px] text-[var(--color-success,#16a34a)]">可执行</span>
+          ) : (
+            <span className="text-[10px] text-[var(--color-danger,#dc2626)]">有阻塞项</span>
+          )
+        }
+      >
+        {changes.map((c, i) => (
+          <div key={i} className="flex items-start gap-2 py-0.5 text-[11px]">
+            <span className="mt-0.5 w-4 text-right font-mono text-[10px] text-[var(--color-text-tertiary)]">{i + 1}.</span>
+            <span className="text-[var(--color-text-secondary)]">{str(c.describe)}</span>
+          </div>
+        ))}
+        {warnings.map((w, i) => (
+          <div key={`w${i}`} className="mt-1 text-[10px] text-[var(--color-warning,#d97706)]">
+            ⚠ {str(w)}
+          </div>
+        ))}
+        {errors.map((e, i) => (
+          <div key={`e${i}`} className="mt-1 text-[10px] text-[var(--color-danger,#dc2626)]">
+            ✗ {str(e)}
+          </div>
+        ))}
+      </CardShell>
+    );
+  }
+  if (name === "apply_org_changes") {
+    const j = (json ?? {}) as Json;
+    const ok = j.error == null;
+    const results = (j.results ?? []) as unknown[];
+    return (
+      <CardShell icon={CheckCircle2} title={ok ? `组织调整已执行 ${str(j.applied ?? 0)} 项` : "组织调整失败"}>
+        {ok
+          ? results.map((r, i) => (
+              <div key={i} className="py-0.5 text-[11px] text-[var(--color-text-secondary)]">✓ {str(r)}</div>
+            ))
+          : <div className="text-[11px] text-[var(--color-danger,#dc2626)]">{str(j.detail ?? "执行失败")}</div>}
+      </CardShell>
+    );
+  }
+
+  // ===== H3:排班生成/预览 =====
+  if (name === "preview_shift_plan" || name === "generate_shifts") {
+    const j = (json ?? {}) as Json;
+    const plan = (j.plan ?? []) as Json[];
+    const under = (j.understaffed ?? []) as Json[];
+    const isPreview = name === "preview_shift_plan";
+    return (
+      <CardShell
+        icon={CalendarDays}
+        title={`${isPreview ? "排班预览" : "排班已生成"} · ${str(j.month ?? "")}`}
+        right={
+          <Link to={`/attendance/shifts?month=${str(j.month ?? "")}`}
+            className="text-[10px] text-[var(--color-accent)] hover:underline">
+            查看排班表
+          </Link>
+        }
+      >
+        <div className="pb-1.5 text-[11px] text-[var(--color-text-secondary)]">
+          {isPreview ? "计划" : "新增"} {str(j.planned ?? 0)} 条 · 覆盖 {str(j.workdays ?? 0)} 个工作日
+          {under.length > 0 && (
+            <span className="text-[var(--color-danger,#dc2626)]"> · {under.length} 个槽位人手不足</span>
+          )}
+        </div>
+        {plan.slice(0, 8).map((p, i) => (
+          <div key={i} className="flex items-center gap-2 py-0.5 text-[11px]">
+            <span className="w-16 font-mono text-[10px] text-[var(--color-text-tertiary)]">{str(p.day)}</span>
+            <span className="text-[var(--color-text-secondary)]">{str(p.employee_name)}</span>
+            <span className="ml-auto text-[10px] text-[var(--color-text-tertiary)]">{str(p.shift_name)}</span>
+          </div>
+        ))}
+        {plan.length > 8 && (
+          <div className="text-[10px] text-[var(--color-text-tertiary)]">… 共 {str(j.plan_total ?? plan.length)} 条</div>
+        )}
+        {under.slice(0, 4).map((u, i) => (
+          <div key={`u${i}`} className="text-[10px] text-[var(--color-danger,#dc2626)]">
+            ✗ {str(u.day)} {str(u.shift_name)} 缺 {str(u.missing)} 人({str(u.reason)})
+          </div>
+        ))}
+      </CardShell>
+    );
+  }
+  if (name === "auto_cover_shifts") {
+    const j = (json ?? {}) as Json;
+    const covered = (j.covered ?? []) as Json[];
+    const filled = (j.filled ?? []) as Json[];
+    const remaining = (j.remaining ?? []) as Json[];
+    return (
+      <CardShell icon={CalendarDays} title={`替班补缺 · ${str(j.month ?? "")}${j.dry_run ? "(预览)" : ""}`}>
+        {covered.map((c, i) => (
+          <div key={`c${i}`} className="py-0.5 text-[11px] text-[var(--color-text-secondary)]">
+            {str(c.day)} {str(c.shift_name)}:{str(c.from)} → <b>{str(c.to)}</b>
+          </div>
+        ))}
+        {filled.map((f, i) => (
+          <div key={`f${i}`} className="py-0.5 text-[11px] text-[var(--color-text-secondary)]">
+            {str(f.day)} {str(f.shift_name)}:补 <b>{str(f.employee_name)}</b>
+          </div>
+        ))}
+        {remaining.map((r, i) => (
+          <div key={`r${i}`} className="py-0.5 text-[10px] text-[var(--color-danger,#dc2626)]">
+            ✗ {str(r.day)} {str(r.shift_name)} {str(r.reason)}
+          </div>
+        ))}
+        {covered.length + filled.length + remaining.length === 0 && (
+          <div className="text-[11px] text-[var(--color-text-tertiary)]">当月没有需要替班的缺口</div>
         )}
       </CardShell>
     );

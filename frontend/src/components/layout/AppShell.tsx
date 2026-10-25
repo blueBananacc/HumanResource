@@ -35,6 +35,7 @@ const TITLE_BY_PATH: Record<string, string> = {
   "/attendance/checkins": "打卡流水",
   "/attendance/requests": "补卡审批",
   "/attendance/calendar": "节假日历",
+  "/attendance/shifts": "排班",
   "/overtime": "加班审批",
   "/requisitions": "招聘需求审批",
   "/offers": "Offer 管理",

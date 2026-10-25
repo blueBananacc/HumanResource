@@ -89,6 +89,14 @@ function toolResult(data: unknown, bodyLimit: number = BODY_LIMIT) {
 
 type ToolDef = AgentTool & { label: string };
 
+/** plan 明细常超 BODY_LIMIT:截断会让尾部字段(月/缺口/工作日)丢失、卡片 JSON 解析失败。压成前 15 条+总数。 */
+function compactPlan(data: unknown): unknown {
+  if (typeof data !== "object" || data === null || !("plan" in data)) return data;
+  const d = data as Record<string, unknown>;
+  const plan = Array.isArray(d.plan) ? d.plan : [];
+  return { ...d, plan: plan.slice(0, 15), plan_total: plan.length };
+}
+
 function makeTools(token: string): ToolDef[] {
   const t = (path: string, opts?: { method?: string; body?: unknown }) =>
     callApi(token, path, opts).then(toolResult);
@@ -1033,6 +1041,170 @@ function makeTools(token: string): ToolDef[] {
       execute: async (_id, p: any) =>
         t(`/api/interviews/${encodeURIComponent(p.interview_id)}/summary-view`),
     },
+    // ===== H1:人事自助(假期余额 + 考勤异常核对 + 人事异动报表) =====
+    {
+      name: "get_leave_balance",
+      label: "查假期余额",
+      description:
+        "查当年假期余额(每类型:额度/已用/在批/剩余)。不传 employee_id 查本人;" +
+        "HR 查他人先用人事查询类工具找到员工 id 再传",
+      parameters: Type.Object({
+        employee_id: Type.Optional(
+          Type.String({ description: "员工 id,缺省查本人" }),
+        ),
+      }),
+      execute: async (_id, p: any) =>
+        p.employee_id
+          ? t(`/api/leave/balances?employee_id=${encodeURIComponent(p.employee_id)}`)
+          : t(`/api/me/leave-balances`),
+    },
+    {
+      name: "list_attendance_flags",
+      label: "查考勤异常",
+      description:
+        "查考勤异常(迟到/早退)列表。day=YYYY-MM-DD 查某天,month=YYYY-MM 查整月;" +
+        "excused=false 只看未核对的。返回异常 id/员工/日期/类型/分钟数",
+      parameters: Type.Object({
+        day: Type.Optional(Type.String({ description: "YYYY-MM-DD" })),
+        month: Type.Optional(Type.String({ description: "YYYY-MM" })),
+        excused: Type.Optional(
+          Type.Boolean({ description: "false=只看未核对,缺省全部" }),
+        ),
+        scope: Type.Optional(
+          Type.String({ description: "all/team/mine,默认 all" }),
+        ),
+      }),
+      execute: async (_id, p: any) => {
+        const qs = new URLSearchParams({ limit: "50" });
+        if (p.day) qs.set("day", String(p.day));
+        if (p.month) qs.set("month", String(p.month));
+        if (p.excused !== undefined) qs.set("excused", String(p.excused));
+        if (p.scope) qs.set("scope", String(p.scope));
+        return t(`/api/attendance/flags?${qs}`);
+      },
+    },
+    {
+      name: "excuse_attendance_flags",
+      label: "批量免计考勤异常",
+      description:
+        "批量把考勤异常标记为已核对(免计)。入参为 list_attendance_flags 返回的" +
+        " flag id 数组;已免计的自动跳过,无权决定的计入 denied",
+      parameters: Type.Object({
+        flag_ids: Type.Array(Type.String(), { description: "异常 id 数组" }),
+        note: Type.Optional(Type.String({ description: "免计备注" })),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/attendance/flags/bulk-excuse", {
+          method: "POST",
+          body: { flag_ids: p.flag_ids ?? [], note: p.note },
+        }),
+    },
+    // ===== H2:组织调整(对话即方案:preview 规范化 → 确认 → apply) =====
+    {
+      name: "preview_org_changes",
+      label: "预览组织调整",
+      description:
+        "把组织调整方案规范化+校验(不落库)。changes 数组,每条 type∈" +
+        "{create_org_unit{name,parent?,kind?}, rename_org_unit{org,new_name}," +
+        " move_org_unit{org,new_parent?}, transfer_employee{employee,to_org," +
+        "new_manager?}, set_manager{employee,manager?}};org/employee 用名字或 id",
+      parameters: Type.Object({
+        changes: Type.Array(Type.Record(Type.String(), Type.Unknown()), {
+          description: "变更条目数组",
+        }),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/org/preview-changes", {
+          method: "POST",
+          body: { changes: p.changes ?? [] },
+        }),
+    },
+    {
+      name: "apply_org_changes",
+      label: "执行组织调整",
+      description:
+        "事务执行组织调整(需用户确认;changes 格式同 preview_org_changes。" +
+        "必须先 preview 且 ok=true 再调,任一条非法整批拒绝)",
+      parameters: Type.Object({
+        changes: Type.Array(Type.Record(Type.String(), Type.Unknown()), {
+          description: "与 preview 相同的变更数组",
+        }),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/org/apply-changes", {
+          method: "POST",
+          body: { changes: p.changes ?? [] },
+        }),
+    },
+    // ===== H3:智能排班 =====
+    {
+      name: "list_shifts",
+      label: "查班次定义",
+      description: "查班次列表(名称/时间段/每班需人数),排班前先查有哪些班",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/shifts"),
+    },
+    {
+      name: "preview_shift_plan",
+      label: "预览排班计划",
+      description:
+        "生成某月排班计划但**不落库**,用于先给用户过目。返回 plan 明细" +
+        "(day/shift/employee)+ understaffed 排不满的槽位",
+      parameters: Type.Object({
+        month: Type.Optional(Type.String({ description: "YYYY-MM,默认当月" })),
+        org_unit_id: Type.Optional(Type.String({ description: "只排某部门" })),
+      }),
+      execute: async (_id, p: any) =>
+        callApi(token, "/api/shifts/generate", {
+          method: "POST",
+          body: { month: p.month, org_unit_id: p.org_unit_id, dry_run: true },
+        }).then((d) => toolResult(compactPlan(d))),
+    },
+    {
+      name: "generate_shifts",
+      label: "生成排班",
+      description:
+        "正式生成某月排班并落库(需用户确认)。只填空缺:已有排班不动," +
+        "已批请假的员工自动跳过。返回生成条数+排不满的槽位",
+      parameters: Type.Object({
+        month: Type.Optional(Type.String({ description: "YYYY-MM,默认当月" })),
+        org_unit_id: Type.Optional(Type.String({ description: "只排某部门" })),
+      }),
+      execute: async (_id, p: any) =>
+        callApi(token, "/api/shifts/generate", {
+          method: "POST",
+          body: { month: p.month, org_unit_id: p.org_unit_id, dry_run: false },
+        }).then((d) => toolResult(compactPlan(d))),
+    },
+    {
+      name: "list_shift_gaps",
+      label: "查排班缺口",
+      description:
+        "查某月排班缺口:覆盖不足的槽位 + 「排了班但人在请假」的待替班项",
+      parameters: Type.Object({
+        month: Type.Optional(Type.String({ description: "YYYY-MM,默认当月" })),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/shifts/gaps?month=${encodeURIComponent(p.month ?? "")}`),
+    },
+    {
+      name: "auto_cover_shifts",
+      label: "自动找替班",
+      description:
+        "自动替班补缺(需用户确认):请假员工的班换给候选同事," +
+        "覆盖不足的槽位自动补人。返回 covered/filled/remaining 明细",
+      parameters: Type.Object({
+        month: Type.Optional(Type.String({ description: "YYYY-MM,默认当月" })),
+        dry_run: Type.Optional(
+          Type.Boolean({ description: "true 只预览不落库,默认 false" }),
+        ),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/shifts/auto-cover", {
+          method: "POST",
+          body: { month: p.month, dry_run: p.dry_run ?? false },
+        }),
+    },
   ];
 }
 
@@ -1059,6 +1231,10 @@ export const WRITE_TOOLS = new Set([
   "submit_scorecard_feedback",
   "synthesize_scorecard",
   "create_talent_profile",
+  "excuse_attendance_flags",
+  "apply_org_changes",
+  "generate_shifts",
+  "auto_cover_shifts",
 ]);
 
 export function hrTools(token: string): AgentTool[] {
