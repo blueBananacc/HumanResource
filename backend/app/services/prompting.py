@@ -457,6 +457,46 @@ PROMPT_REGISTRY: dict[str, PromptSpec] = {
             "禁止输出 JSON 之外的任何文字。"
         ),
     ),
+    "scorecard.criteria": PromptSpec(
+        name="面试评分卡维度建议",
+        description="按岗位技能/JD/候选人技能建议结构化面试的考察维度",
+        module="interviews",
+        variables=[
+            {"name": "context", "desc": "岗位(JD/技能要求)与候选人上下文 JSON"},
+        ],
+        content=(
+            "你是资深面试官,为一场结构化面试设计考察维度清单。\n"
+            "上下文(岗位/技能要求/候选人):\n{{context}}\n\n"
+            "给出 4-8 个考察维度,dimension 取值:tech(技术能力)/\n"
+            "soft(软素质)/general(通用)。优先覆盖岗位的 must 技能,\n"
+            "再补 1-2 个软素质维度(沟通/ownership 等)。\n\n"
+            "**只输出 JSON**:\n"
+            '{"criteria": [{"name": "维度名(<=20字)", "dimension": "tech|soft|general"}]}\n'
+            "禁止输出 JSON 之外的任何文字。"
+        ),
+    ),
+    "scorecard.synthesize": PromptSpec(
+        name="面试评分卡聚合分析",
+        description="聚合多位面试官的逐维评分/表态/评语,产出评审摘要",
+        module="interviews",
+        variables=[
+            {"name": "context", "desc": "评分卡+全部反馈+机械聚合 JSON"},
+        ],
+        content=(
+            "你是招聘评审顾问。下面是某场面试的全部面试官反馈与机械聚合:\n"
+            "{{context}}\n\n"
+            "输出 JSON:\n"
+            '{"summary": "评审摘要(<=300字,给招聘委员会的结论)",\n'
+            ' "themes": ["跨面试官反复出现的主题,<=6条,每条<=30字"],\n'
+            ' "disagreements": ["评分/表态存在分歧的维度,<=5条"],\n'
+            ' "recommendation": "录用建议(<=120字,含理由)"}\n'
+            "要求:\n"
+            "- 分数与评语结合看,评语里的证据优先于裸分\n"
+            "- 表态 recommend 多于 reject 时倾向推进;分歧维度点名\n"
+            "- 不评判候选人的性别/年龄/婚育等非能力因素\n"
+            "禁止输出 JSON 之外的任何文字。"
+        ),
+    ),
     "import.check_note": PromptSpec(
         name="导入错误归因摘要",
         description="AI 导入向导:对校验错误做一句中文归因与修复建议",

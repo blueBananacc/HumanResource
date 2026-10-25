@@ -3018,3 +3018,167 @@ class ImportJob(Base):
         DateTime, nullable=False, server_default=func.now()
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class InterviewScorecard(Base):
+    """结构化面试评分卡(T9)—— 一场面试的考察框架。
+
+    与 AI ``Interview`` 的关系:互补不替代。Interview 是机器面试会话;
+    scorecard 是**人类面试官**的结构化评价载体(逐维评分 + 录用表态),
+    可经 ``interview_id`` 挂在某场 AI 轮次旁,也可独立存在。
+
+    ``criteria`` JSONB [{key,name,dimension,weight}] — dimension ∈
+    tech/soft/general;key 创建时生成,反馈里按 key 引用,改名不断链。
+    ``interviewer_ids`` JSONB [users.id] — 被指派的面试官(与
+    ``Reservation.interviewer_ids`` 同口径:面试官=登录用户,
+    展示名经其绑定员工档案解析)。
+    ``status``: open → closed(closed 后维度与反馈冻结)。
+    ``ai_summary`` JSONB:聚合分析产物 {summary,themes,disagreements,
+    recommendation,feedback_count,generated_at}。
+    """
+
+    __tablename__ = "interview_scorecards"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    candidate_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    interview_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("interviews.id", ondelete="SET NULL"), nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    criteria: Mapped[list] = mapped_column(JSON, nullable=False, server_default="[]")
+    interviewer_ids: Mapped[list] = mapped_column(JSON, nullable=False, server_default="[]")
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="open", index=True
+    )
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    location: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class InterviewFeedback(Base):
+    """面试官反馈 — 一个面试官对一张评分卡的一卡。
+
+    ``scores`` JSONB [{criterion,score(1-5),comment}],criterion 命中
+    评分卡 criteria[].key;``verdict`` ∈ recommend/hold/reject。
+    同一 (scorecard, interviewer_user) 唯一 — 重复提交=更新。
+    """
+
+    __tablename__ = "interview_feedbacks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    scorecard_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("interview_scorecards.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    interviewer_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    rating: Mapped[int] = mapped_column(Integer, nullable=False)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    scores: Mapped[list] = mapped_column(JSON, nullable=False, server_default="[]")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "scorecard_id", "interviewer_user_id",
+            name="uq_interview_feedback_card_user"
+        ),
+    )
+
+
+class SearchIndexDefinition(Base):
+    """搜索索引定义 —— 租户级覆盖行(可空即回落代码注册表默认)。
+
+    声明式全局搜索(T9):哪类实体进索引、哪些字段、权重多少、
+    标题/正文怎么渲染,都是**数据**。租户行只存覆盖(与 PromptTemplate
+    同款模式),不存在 = 用 ``services.search_index.SEARCH_SOURCES`` 默认。
+    ``version`` 变更+1,旧版本文档下次 sweep 重建。
+    """
+
+    __tablename__ = "search_index_definitions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    entity: Mapped[str] = mapped_column(String(64), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    fields: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    title_template: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    body_template: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    keyword_fields: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "entity", name="uq_search_def_tenant_entity"),
+    )
+
+
+class SearchDocument(Base):
+    """搜索文档 —— 物化投影,**永远不是权威数据**。
+
+    命中只携带 (entity, entity_id, 展示文本);读路径对每个命中重新走
+    ``entities.py`` 的 build() 校验权限与行级 scope,源行不可见就丢。
+    ``entity_id`` 故意不带外键:投影是重建的不是级联的,源行硬删后
+    文档活到下次索引/清扫。
+    """
+
+    __tablename__ = "search_documents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    entity: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    entity_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False, server_default="")
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    keywords: Mapped[list] = mapped_column(JSON, nullable=False, server_default="[]")
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    definition_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    indexed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "entity", "entity_id", name="uq_search_doc_entity_row"
+        ),
+    )

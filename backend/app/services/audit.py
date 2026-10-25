@@ -88,6 +88,10 @@ def write_audit(
         from app.services import automation
 
         automation.dispatch(db, log=log, actor=actor)
+        # T9 全局搜索:同一漏斗做增量索引(投影重建,失败不影响业务)。
+        from app.services import search_index
+
+        search_index.on_audit(db, log)
     return log
 
 

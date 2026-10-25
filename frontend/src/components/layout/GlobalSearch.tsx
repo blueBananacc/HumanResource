@@ -1,25 +1,41 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, CornerDownLeft, Search, User, type LucideIcon } from "lucide-react";
+import {
+  ArrowRight, BookOpen, BriefcaseBusiness, CalendarCheck, CornerDownLeft,
+  LifeBuoy, Megaphone, Receipt, Search, User, Users, type LucideIcon,
+} from "lucide-react";
 import { fetchJSON } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
-import { PERM } from "@/lib/roles";
 import { cn } from "@/lib/utils";
-import type { Page } from "@/lib/usePagedQuery";
 import { useVisibleNav } from "./nav";
 
-type TalentHit = { id: string; name: string; display_email: string | null; display_phone: string | null };
-type Item = { key: string; icon: LucideIcon; label: string; sub?: string; to: string; group: "功能" | "候选人" };
+type SearchHit = {
+  entity: string; entity_label: string; id: string;
+  title: string; sub: string | null; link: string; score: number;
+};
+type SearchOut = { items: SearchHit[]; facets: { entity: string; label: string; count: number }[]; total: number };
+type Item = { key: string; icon: LucideIcon; label: string; sub?: string; to: string; group: string };
 
-/** 顶栏搜索:快速跳转功能页 / 搜候选人。Ctrl(⌘)+K 聚焦。 */
+/** 实体 key → 图标(T9 全局搜索) */
+const ENTITY_ICON: Record<string, LucideIcon> = {
+  talents: User,
+  jobs: BriefcaseBusiness,
+  employees: Users,
+  interviews: CalendarCheck,
+  cases: LifeBuoy,
+  requests: Users,
+  knowledge: BookOpen,
+  announcements: Megaphone,
+  expenses: Receipt,
+};
+
+/** 顶栏搜索:快速跳转功能页 + 跨实体全局搜索(/api/search)。Ctrl(⌘)+K 聚焦。 */
 export function GlobalSearch() {
   const navigate = useNavigate();
-  const { hasPermission } = useAuth();
-  const canSeeTalents = hasPermission(PERM.VIEW_REPORTS);
   const { pages: navPages } = useVisibleNav();
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
+  const [entity, setEntity] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -42,13 +58,23 @@ export function GlobalSearch() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const { data: talents, isFetching } = useQuery({
-    queryKey: ["global-search-talents", debounced],
+  const { data: result, isFetching } = useQuery({
+    queryKey: ["global-search", debounced, entity],
     queryFn: () =>
-      fetchJSON<Page<TalentHit>>(`/api/talents?limit=6&offset=0&q=${encodeURIComponent(debounced)}`),
-    enabled: open && canSeeTalents && debounced.length > 0,
+      fetchJSON<SearchOut>(
+        `/api/search?q=${encodeURIComponent(debounced)}&limit=14${entity ? `&entity=${entity}` : ""}`,
+      ),
+    enabled: open && debounced.length > 0,
     staleTime: 10_000,
+    retry: false,
   });
+
+  // chip 的 facet 源:记住最近一次未过滤(多实体)结果,否则选中单实体后 chip 行消失无法取消
+  const lastFacets = useRef<{ q: string; list: { entity: string; label: string; count: number }[] }>({ q: "", list: [] });
+  if (!entity && (result?.facets.length ?? 0) > 1) {
+    lastFacets.current = { q: debounced, list: result!.facets };
+  }
+  const facets = entity && lastFacets.current.q === debounced ? lastFacets.current.list : (result?.facets ?? []);
 
   const items = useMemo<Item[]>(() => {
     const kw = q.trim().toLowerCase();
@@ -63,25 +89,27 @@ export function GlobalSearch() {
         to: n.to,
         group: "功能",
       }));
-    const people =
-      kw && canSeeTalents
-        ? (talents?.items ?? []).map<Item>((t) => ({
-            key: `t:${t.id}`,
-            icon: User,
-            label: t.name,
-            sub: t.display_email ?? t.display_phone ?? undefined,
-            to: `/talents/${t.id}`,
-            group: "候选人",
-          }))
-        : [];
-    return [...pages, ...people];
-  }, [q, navPages, talents, canSeeTalents]);
+    const records: Item[] = kw
+      ? (result?.items ?? []).map<Item>((h) => ({
+          key: `r:${h.entity}:${h.id}`,
+          icon: ENTITY_ICON[h.entity] ?? Search,
+          label: h.title,
+          sub: h.sub ?? undefined,
+          to: h.link,
+          group: h.entity_label,
+        }))
+      : [];
+    return [...pages, ...records];
+  }, [q, navPages, result]);
 
   // 列表末尾的"在人才库中搜索"作为额外一项,参与键盘导航
-  const showMore = canSeeTalents && q.trim().length > 0;
+  const showMore = q.trim().length > 0;
   const total = items.length + (showMore ? 1 : 0);
 
-  useEffect(() => setActive(0), [q]);
+  useEffect(() => {
+    setActive(0);
+    if (!q.trim()) setEntity(null);
+  }, [q]);
 
   const go = (to: string) => {
     navigate(to);
@@ -109,7 +137,22 @@ export function GlobalSearch() {
     }
   };
 
-  const groups = (["功能", "候选人"] as const)
+  // 分组顺序:功能优先,实体组按后端 facets 顺序(命中数降序)
+  const facetOrder = useMemo(
+    () => new Map((result?.facets ?? []).map((f, i) => [f.label, i])),
+    [result],
+  );
+  const facetCount = useMemo(
+    () => new Map((result?.facets ?? []).map((f) => [f.label, f.count])),
+    [result],
+  );
+  const groupNames = useMemo(() => {
+    const names = [...new Set(items.map((it) => it.group))];
+    return names.sort((a, b) =>
+      a === "功能" ? -1 : b === "功能" ? 1
+        : (facetOrder.get(a) ?? 99) - (facetOrder.get(b) ?? 99));
+  }, [items, facetOrder]);
+  const groups = groupNames
     .map((g) => ({ g, rows: items.map((it, i) => ({ it, i })).filter(({ it }) => it.group === g) }))
     .filter(({ rows }) => rows.length > 0);
 
@@ -133,7 +176,7 @@ export function GlobalSearch() {
           }}
           onFocus={() => setOpen(true)}
           onKeyDown={onKeyDown}
-          placeholder="搜索候选人或功能…"
+          placeholder="全局搜索:候选人、岗位、员工、工单…"
           aria-label="全局搜索"
           className={cn(
             "flex-1 min-w-0 bg-transparent text-[13px] font-body outline-none focus-visible:outline-none",
@@ -153,11 +196,47 @@ export function GlobalSearch() {
         <>
           <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
           <div className="absolute top-[calc(100%+8px)] left-0 right-0 z-40 bg-white rounded-xl border border-[var(--color-border-subtle)] shadow-[0_8px_24px_rgba(58,58,55,0.14)] overflow-hidden font-body">
+            {facets.length > 1 && (
+              <div className="flex flex-wrap gap-1.5 px-3 pt-2.5 pb-1 border-b border-[var(--color-border-row)]">
+                <button
+                  type="button"
+                  onClick={() => setEntity(null)}
+                  className={cn(
+                    "px-2.5 py-1 rounded-full text-[11px] font-bold transition-colors",
+                    entity === null
+                      ? "bg-[var(--color-accent)] text-white"
+                      : "bg-[var(--color-bg-muted)] text-[var(--color-text-secondary)] hover:bg-[var(--color-border-subtle)]",
+                  )}
+                >
+                  全部
+                </button>
+                {facets.map((f) => (
+                  <button
+                    key={f.entity}
+                    type="button"
+                    onClick={() => setEntity(entity === f.entity ? null : f.entity)}
+                    className={cn(
+                      "px-2.5 py-1 rounded-full text-[11px] font-bold transition-colors",
+                      entity === f.entity
+                        ? "bg-[var(--color-accent)] text-white"
+                        : "bg-[var(--color-bg-muted)] text-[var(--color-text-secondary)] hover:bg-[var(--color-border-subtle)]",
+                    )}
+                  >
+                    {f.label} {f.count}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="max-h-[420px] overflow-y-auto py-1.5">
               {groups.map(({ g, rows }) => (
                 <div key={g} className="py-1">
-                  <div className="px-4 pt-1 pb-1.5 text-[11px] font-bold tracking-[0.12em] text-[var(--color-text-tertiary)]">
+                  <div className="px-4 pt-1 pb-1.5 text-[11px] font-bold tracking-[0.12em] text-[var(--color-text-tertiary)] flex items-center gap-1.5">
                     {g === "功能" && !q.trim() ? "快速跳转" : g}
+                    {facetCount.has(g) && (
+                      <span className="text-[10px] font-normal text-[var(--color-text-tertiary)]/70">
+                        {facetCount.get(g)} 条
+                      </span>
+                    )}
                   </div>
                   {rows.map(({ it, i }) => (
                     <button
@@ -173,9 +252,9 @@ export function GlobalSearch() {
                       <span
                         className={cn(
                           "w-7 h-7 rounded-full grid place-items-center shrink-0",
-                          it.group === "候选人"
-                            ? "bg-[var(--color-orange-tint)] text-[var(--color-text-primary)]"
-                            : "bg-[var(--color-accent-soft)] text-[var(--color-accent)]",
+                          it.group === "功能"
+                            ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+                            : "bg-[var(--color-orange-tint)] text-[var(--color-text-primary)]",
                         )}
                       >
                         <it.icon className="w-3.5 h-3.5" />
@@ -190,12 +269,12 @@ export function GlobalSearch() {
                 </div>
               ))}
 
-              {q.trim() && canSeeTalents && isFetching && !talents && (
-                <div className="px-4 py-2 text-[12px] text-[var(--color-text-tertiary)]">正在搜索候选人…</div>
+              {q.trim() && isFetching && !result && (
+                <div className="px-4 py-2 text-[12px] text-[var(--color-text-tertiary)]">正在全局搜索…</div>
               )}
               {q.trim() && groups.length === 0 && !isFetching && (
                 <div className="px-4 py-6 text-center text-[13px] text-[var(--color-text-tertiary)]">
-                  没找到「{q.trim()}」相关的功能或候选人
+                  没找到「{q.trim()}」相关的功能或记录
                 </div>
               )}
             </div>
@@ -210,7 +289,7 @@ export function GlobalSearch() {
                   active === items.length && "bg-[var(--color-accent-soft)]",
                 )}
               >
-                在人才库中搜索「{q.trim()}」
+                {(result?.total ?? 0) > 0 ? `全部 ${result!.total} 条结果 · ` : ""}在人才库中搜索「{q.trim()}」
                 <ArrowRight className="w-3.5 h-3.5 ml-auto" />
               </button>
             )}

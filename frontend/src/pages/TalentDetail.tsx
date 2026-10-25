@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
 import { Modal } from "@/components/ui/modal";
 import { CandidateSkillsCard } from "@/components/skills/SkillWidgets";
+import { ScorecardSection } from "@/components/scorecards/ScorecardSection";
 import { FavoriteStar } from "@/components/records/FavoriteStar";
 import { HistoryDrawer } from "@/components/records/HistoryDrawer";
 import { MergeTalentModal } from "@/components/records/MergeTalentModal";
@@ -404,6 +405,14 @@ export function TalentDetail() {
                 ))}
               </ul>
             )}
+          </Section>
+
+          <Section icon={ClipboardList} title="面试评分卡">
+            <ScorecardSection
+              candidateId={c.id}
+              jobId={c.matches[0]?.job_id ?? null}
+              jobTitle={c.matches[0]?.job_title ?? null}
+            />
           </Section>
 
           <Section icon={ListChecks} title="岗位匹配">

@@ -783,6 +783,156 @@ function makeTools(token: string): ToolDef[] {
           `/api/activity?days=${Number(p.days ?? 7) || 7}&limit=${Number(p.limit ?? 30) || 30}`,
         ),
     },
+    // ===== T9:全局搜索 + 结构化面试评分卡 =====
+    {
+      name: "global_search",
+      label: "全局搜索",
+      description:
+        "跨实体加权全文搜索(候选人/岗位/员工/面试/工单/申请单/知识文章/公告/报销单一并搜)," +
+        "返回 {entity,title,sub,link}+facets;'找某条记录但不确定是哪类'时用," +
+        "已知实体类型且只要少量结果时用 search_records 更省",
+      parameters: Type.Object({
+        q: Type.String({ description: "关键词" }),
+        entity: Type.Optional(
+          Type.String({ description: "限定实体:talents/jobs/employees/interviews/cases/requests/knowledge/announcements/expenses" }),
+        ),
+        limit: Type.Optional(Type.Number({ description: "默认 20" })),
+      }),
+      execute: async (_id, p: any) => {
+        const qs = new URLSearchParams({ q: String(p.q ?? "") });
+        if (p.entity) qs.set("entity", p.entity);
+        if (p.limit) qs.set("limit", String(Number(p.limit) || 20));
+        return t(`/api/search?${qs}`);
+      },
+    },
+    {
+      name: "list_scorecards",
+      label: "查面试评分卡",
+      description:
+        "列出结构化面试评分卡(候选人详情/某岗位/状态过滤),返回聚合分与反馈数;查单个用 get_scorecard",
+      parameters: Type.Object({
+        candidate_id: Type.Optional(Type.String({ description: "候选人 id" })),
+        job_id: Type.Optional(Type.String({ description: "岗位 id" })),
+        status: Type.Optional(Type.String({ description: "open/closed" })),
+      }),
+      execute: async (_id, p: any) => {
+        const qs = new URLSearchParams({ limit: "20" });
+        if (p.candidate_id) qs.set("candidate_id", p.candidate_id);
+        if (p.job_id) qs.set("job_id", p.job_id);
+        if (p.status) qs.set("status", p.status);
+        return t(`/api/scorecards?${qs}`);
+      },
+    },
+    {
+      name: "get_scorecard",
+      label: "查评分卡详情",
+      description:
+        "取一张评分卡全文:考察维度、指派面试官提交状态、逐维评分明细、聚合均分/分歧、AI 摘要",
+      parameters: Type.Object({
+        id: Type.String({ description: "评分卡 id" }),
+      }),
+      execute: async (_id, p: any) =>
+        callApi(
+          token,
+          `/api/scorecards/${encodeURIComponent(p.id)}`,
+        ).then((d) => toolResult(d, DOC_LIMIT)),
+    },
+    {
+      name: "suggest_scorecard_criteria",
+      label: "AI 建议考察维度",
+      description:
+        "按岗位技能/JD(+候选人技能)为结构化面试建议考察维度清单,只回草稿不落库",
+      parameters: Type.Object({
+        job_id: Type.Optional(Type.String({ description: "岗位 id" })),
+        candidate_id: Type.Optional(Type.String({ description: "候选人 id" })),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/scorecards/ai-criteria", {
+          method: "POST",
+          body: { job_id: p.job_id ?? null, candidate_id: p.candidate_id ?? null },
+        }),
+    },
+    {
+      name: "create_scorecard",
+      label: "创建面试评分卡",
+      description:
+        "为候选人创建结构化面试评分卡(criteria 考察维度 + interviewer_ids 指派的面试官 user.id);" +
+        "可先调 suggest_scorecard_criteria 出草稿再与用户确认",
+      parameters: Type.Object({
+        candidate_id: Type.String({ description: "候选人 id" }),
+        title: Type.String({ description: "评分卡标题,如 '张三 · 二面(技术)'" }),
+        job_id: Type.Optional(Type.String({ description: "岗位 id" })),
+        interview_id: Type.Optional(Type.String({ description: "关联的 AI 面试 id(可选)" })),
+        criteria: Type.Optional(
+          Type.Array(Type.Object({}, { additionalProperties: true }), {
+            description: "[{name, dimension(tech/soft/general), weight(1-10)}]",
+          }),
+        ),
+        interviewer_ids: Type.Optional(
+          Type.Array(Type.String(), { description: "面试官 user.id 列表" }),
+        ),
+        scheduled_at: Type.Optional(Type.String({ description: "ISO 时间" })),
+        location: Type.Optional(Type.String()),
+        note: Type.Optional(Type.String()),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/scorecards", {
+          method: "POST",
+          body: {
+            candidate_id: p.candidate_id,
+            title: p.title,
+            job_id: p.job_id ?? null,
+            interview_id: p.interview_id ?? null,
+            criteria: p.criteria ?? [],
+            interviewer_ids: p.interviewer_ids ?? [],
+            scheduled_at: p.scheduled_at ?? null,
+            location: p.location ?? null,
+            note: p.note ?? null,
+          },
+        }),
+    },
+    {
+      name: "submit_scorecard_feedback",
+      label: "提交面试反馈",
+      description:
+        "代当前用户提交其被指派评分卡的反馈(必须是该卡指派面试官):总评 rating 1-5、" +
+        "verdict(recommend/hold/reject)、逐维评分 scores[{criterion=key,score,comment}]、notes",
+      parameters: Type.Object({
+        scorecard_id: Type.String({ description: "评分卡 id" }),
+        rating: Type.Number({ description: "总评 1-5" }),
+        verdict: Type.String({ description: "recommend / hold / reject" }),
+        scores: Type.Optional(
+          Type.Array(Type.Object({}, { additionalProperties: true }), {
+            description: "[{criterion(维度key), score(1-5), comment?}]",
+          }),
+        ),
+        notes: Type.Optional(Type.String({ description: "自由评语" })),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/scorecards/${encodeURIComponent(p.scorecard_id)}/feedback`, {
+          method: "POST",
+          body: {
+            rating: p.rating,
+            verdict: p.verdict,
+            scores: p.scores ?? [],
+            notes: p.notes ?? null,
+          },
+        }),
+    },
+    {
+      name: "synthesize_scorecard",
+      label: "AI 聚合评审摘要",
+      description:
+        "对一张已有面试官反馈的评分卡生成 AI 评审摘要(共识主题/分歧点/录用建议)," +
+        "结果写入评分卡 ai_summary —— AI 建议仅供参考,录用决策以人工为准",
+      parameters: Type.Object({
+        id: Type.String({ description: "评分卡 id" }),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/scorecards/${encodeURIComponent(p.id)}/synthesize`, {
+          method: "POST",
+        }),
+    },
   ];
 }
 
@@ -805,6 +955,9 @@ export const WRITE_TOOLS = new Set([
   "delete_record",
   "link_records",
   "unlink_records",
+  "create_scorecard",
+  "submit_scorecard_feedback",
+  "synthesize_scorecard",
 ]);
 
 export function hrTools(token: string): AgentTool[] {

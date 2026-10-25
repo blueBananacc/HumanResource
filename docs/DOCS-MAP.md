@@ -25,6 +25,7 @@
 | [ai-native-design.md](design/ai-native-design.md) | AI 原生工作流设计（工具富卡片/模块级提示词/产品帮助/字段级 AI/记录摘要/文档起草） |
 | [automation-attendance-design.md](design/automation-attendance-design.md) | 事件驱动自动化 + 考勤深化设计（审计漏斗规则引擎/迟到早退/IP 白名单/月度汇总） |
 | [ai-import-wizard-design.md](design/ai-import-wizard-design.md) | AI 导入向导设计（四步向导/LLM 列映射/校验归因/错误文件） |
+| [scorecard-global-search-design.md](design/scorecard-global-search-design.md) | T9 设计：结构化面试评分卡（多面试官逐维评分/AI 聚合）+ 声明式全局搜索（audit 漏斗索引/权限回读） |
 
 ## 维护约定
 

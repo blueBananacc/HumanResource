@@ -45,6 +45,7 @@ from app.domain.models import (
     ExpenseClaim,
     HrCase,
     Interview,
+    InterviewScorecard,
     Job,
     JobApplication,
     JobOffer,
@@ -207,6 +208,14 @@ ENTITY_REGISTRY: dict[str, dict[str, Any]] = {
         "owner_attr": None,
         "link": lambda o: "/announcements",
         "label": "公告",
+    },
+    "interview_scorecard": {
+        "model": InterviewScorecard,
+        "fields": ("title", "status", "candidate_id", "job_id"),
+        "employee_attr": None,
+        "owner_attr": "created_by",
+        "link": lambda o: f"/talents/{o.candidate_id}",
+        "label": "面试评分卡",
     },
 }
 

@@ -122,6 +122,13 @@ const SYSTEM_PROMPT = `你是 HROnfire 招聘平台的 AI 助手,服务对象是
 - create_report_subscription / list_report_subscriptions /
   delete_report_subscription:每周定时邮件报表(写需确认)
 - get_activity:租户近期动态流
+- global_search:跨实体加权全局搜索(不确定记录在哪类实体时先用它;facets 显示各实体命中数)
+- list_scorecards / get_scorecard:结构化面试评分卡(考察维度/面试官/逐维评分/聚合)
+- suggest_scorecard_criteria:按岗位技能+JD 建议面试考察维度(草稿)
+- create_scorecard:创建评分卡并指派面试官(需用户确认)
+- submit_scorecard_feedback:代面试官提交逐维评分+录用表态(需用户确认;仅被指派人)
+- synthesize_scorecard:聚合多位面试官反馈生成 AI 评审摘要(需用户确认;
+  摘要含共识主题/分歧点/录用建议,仅供参考)
 
 行为准则:
 1. 涉及"查/有哪些/多少"的问题,先调工具拿数据再回答;数据为空就如实说没有
