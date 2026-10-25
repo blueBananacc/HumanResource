@@ -137,6 +137,7 @@ export const mainModules: NavModule[] = [
         label: "岗位",
         items: [
           { to: "/jobs", label: "岗位列表", keywords: "职位 job 匹配" },
+          { to: "/scoring-rules", label: "评分规则", keywords: "评分规则 scoring 维度 匹配评估" },
           { to: "/pipeline", label: "招聘管道", permission: PERM.VIEW_REPORTS, feature: "hr.suite", keywords: "看板 kanban 阶段 pipeline 申请" },
           { to: "/requisitions", label: "招聘需求审批", permission: PERM.WRITE_REQUISITIONS, feature: "hr.suite", keywords: "编制 headcount 需求 requisition" },
           { to: "/offers", label: "Offer 管理", permission: PERM.MANAGE_OFFERS, feature: "hr.suite", keywords: "offer 录用 通知书" },

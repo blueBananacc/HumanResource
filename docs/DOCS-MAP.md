@@ -36,3 +36,4 @@
 - 新增 md → 在本文件补一行
 
 - `docs/design/t12-gate-evidence-injection-design.md` — T12 硬性门槛 Gate(二值题+severity 阻断)+ 证据先行评分(逐维原文引用+锚定 0-4)+ Prompt 注入防御
+- `docs/design/t13-scoring-rule-engine-design.md` — T13 声明式评分规则引擎(维度×评估器/确定性+AI 混合/规则快照/AI 生成与自分析)

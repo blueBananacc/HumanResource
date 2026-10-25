@@ -348,6 +348,13 @@ def _mock_chat(messages: list[Message], *, response_json: bool) -> str:
         # T12 门槛判定:从 user message 的 JSON 里取 id,全答 PASS
         if "招聘初筛员" in sys_prompt or "门槛问题" in last:
             return _mock_gate_answer_json(last)
+        # T13 评分规则三个调用点(分派词均为独有短语,先于泛化分支)
+        if "设计一套声明式评分规则" in sys_prompt:
+            return _mock_rule_generate_json(last)
+        if "审查一套简历评分规则" in sys_prompt:
+            return _mock_rule_analyze_json()
+        if "按给定维度逐一评估" in sys_prompt:
+            return _mock_rule_dim_eval_json(last)
         # 匹配评估场景:必须早于"评分"分支判断,因为 prompt 里
         # 有"匹配度评分"会被下面"评分"分支误中
         if "匹配评估" in sys_prompt or "匹配度评分" in sys_prompt:
@@ -642,3 +649,69 @@ def _mock_summary_json(context: str) -> str:
     return json.dumps(
         {"recommendation": rec, "comment": comment}, ensure_ascii=False
     )
+
+
+def _mock_rule_generate_json(user_msg: str) -> str:
+    """T13 mock:按岗位生成混合方法维度(关键词提取 JD 技能,外加年限+AI 维)。"""
+    skills_m = re.search(r"关键技能:\s*([^\n]+)", user_msg)
+    skills = [s.strip() for s in re.split(r"[、,,]", skills_m.group(1)) if s.strip()] if skills_m else []
+    payload = {
+        "name": "AI 生成评分规则",
+        "description": "mock:按 JD 生成的混合方法规则",
+        "dimensions": [
+            {"id": "skills", "name": "关键技能", "weight": 50,
+             "evaluator": {"method": "keyword", "keywords": skills or ["Go"], "matchMode": "any"}},
+            {"id": "years", "name": "工作年限", "weight": 30,
+             "evaluator": {"method": "duration", "minYears": 3, "preferredYears": 6}},
+            {"id": "fit", "name": "综合契合", "weight": 20,
+             "evaluator": {"method": "ai", "aiPrompt": "评估项目深度与领域契合"}},
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _mock_rule_analyze_json() -> str:
+    """T13 mock:规则自分析 — 给一条缺口建议 + 可落地草案。"""
+    payload = {
+        "summary": "mock:规则整体合理,但缺少文化/稳定性维度",
+        "coverageGaps": ["稳定性维度缺失"],
+        "weightAdjustments": ["技能权重可从 50 降到 40"],
+        "industrySignals": ["该岗位属于技术序列"],
+        "recommendedChanges": ["增加一个 AI 稳定性维度"],
+        "proposedRule": {
+            "name": "优化后评分规则",
+            "description": "mock:加入稳定性维度",
+            "dimensions": [
+                {"id": "skills", "name": "关键技能", "weight": 40,
+                 "evaluator": {"method": "keyword", "keywords": ["Go"], "matchMode": "any"}},
+                {"id": "years", "name": "工作年限", "weight": 30,
+                 "evaluator": {"method": "duration", "minYears": 3, "preferredYears": 6}},
+                {"id": "stability", "name": "履历稳定性", "weight": 30,
+                 "evaluator": {"method": "ai", "aiPrompt": "评估跳槽频率与成长轨迹"}},
+            ],
+        },
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _mock_rule_dim_eval_json(user_msg: str) -> str:
+    """T13 mock:AI 维批量评估 — 从 user message 的维度 JSON 里取 id,
+    按简历文本关键词命中度给 level(含 gate_fail 标记时压到 0 级联测红旗)。"""
+    m = re.search(r"评估维度:\s*(\[.*?\])\s*候选人", user_msg, re.DOTALL)
+    ids: list[str] = []
+    if m:
+        try:
+            ids = [d["id"] for d in json.loads(m.group(1)) if d.get("id")]
+        except Exception:
+            ids = []
+    if not ids:
+        ids = ["fit"]
+    fail = "gate_fail" in user_msg or "ai_dim_zero" in user_msg
+    dims = {
+        did: {
+            "evidence": "mock:简历片段" if not fail else "未提及",
+            "level": 0 if fail else 3,
+        }
+        for did in ids
+    }
+    return json.dumps({"dims": dims}, ensure_ascii=False)

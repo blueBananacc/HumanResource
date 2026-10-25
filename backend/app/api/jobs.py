@@ -45,6 +45,8 @@ class JobIn(BaseModel):
     level: str = Field("intermediate")
     description: str = Field("", max_length=20000)
     skills: list[str] = Field(default_factory=list)
+    # T13:挂声明式评分规则(NULL → 走默认五维证据评分)
+    scoring_rule_id: str | None = None
     # optimistic lock:带读取时的 updated_at,失配 → 409
     base_updated_at: datetime | None = None
 
@@ -71,6 +73,7 @@ class JobOut(BaseModel):
     org_unit_id: str | None
     publish_status: str
     current_version: int
+    scoring_rule_id: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -84,6 +87,7 @@ def _job_out(j: Job) -> JobOut:
         description=j.description,
         skills=j.skills or [],
         org_unit_id=j.org_unit_id,
+        scoring_rule_id=j.scoring_rule_id,
         publish_status=j.publish_status,
         current_version=j.current_version,
         created_at=j.created_at,
@@ -101,6 +105,18 @@ def _validate_status(s: str) -> str:
     if s not in _STATUSES:
         raise HTTPException(400, f"非法 status: {s},允许 {sorted(_STATUSES)}")
     return s
+
+
+def _validate_rule_id(db: Session, rid: str | None, current: User) -> str | None:
+    """T13:校验挂的评分规则存在且属本租户(防跨租户引用)。"""
+    if not rid:
+        return None
+    from app.domain.models import ScoringRule
+
+    r = db.get(ScoringRule, rid)
+    if not r or r.tenant_id != current.tenant_id:
+        raise HTTPException(400, "评分规则不存在")
+    return rid
 
 
 def _enqueue_match_eval(job_id: str, user_id: str | None) -> None:
@@ -173,6 +189,7 @@ def create_job(
         level=_validate_level(body.level),
         description=body.description,
         skills=body.skills,
+        scoring_rule_id=_validate_rule_id(db, body.scoring_rule_id, current),
         created_by=current.id,
         # EPIC-05:新岗位走治理流,默认 draft;旧岗位由 migration 默认 published
         publish_status="draft",
@@ -246,6 +263,7 @@ def update_job(
     job.level = _validate_level(body.level)
     job.description = body.description
     job.skills = body.skills
+    job.scoring_rule_id = _validate_rule_id(db, body.scoring_rule_id, current)
     job.updated_at = datetime.now(UTC).replace(tzinfo=None)
     after = {
         "title": job.title,

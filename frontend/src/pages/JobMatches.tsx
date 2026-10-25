@@ -59,6 +59,7 @@ type Criterion = {
   weight: number;
   level: number;
   evidence: string;
+  method?: string; // T13 规则评估器方法;无 = T12 五维 AI 评分
 };
 
 type Match = {
@@ -73,6 +74,7 @@ type Match = {
   gate: Gate | null;
   criteria: Criterion[] | null;
   red_flags: { major: string[]; minor: string[] } | null;
+  rule_snapshot?: { rule_id: string; name: string; version: number } | null;
   error: string | null;
   finished_at: string | null;
   resume_file_name: string | null;
@@ -422,6 +424,11 @@ function MatchRow({
             >
               {open ? "收起评分明细" : "评分明细(逐维证据)"}
             </button>
+            {match.rule_snapshot && (
+              <span className="ml-2 rounded-full bg-[var(--color-cappuccino)] px-2 py-0.5 text-[10px] text-[var(--color-brand)] font-body">
+                规则「{match.rule_snapshot.name}」v{match.rule_snapshot.version}
+              </span>
+            )}
             {open && (
               <div className="mt-1.5 rounded-lg border border-[var(--color-border-subtle)] divide-y divide-[var(--color-border-row)]">
                 {match.criteria.map((c) => (
@@ -449,6 +456,19 @@ function MatchRow({
                       <span className="text-[10px] text-[var(--color-text-tertiary)] font-mono">
                         L{c.level} · 权重{c.weight}
                       </span>
+                      {c.method && (
+                        <span
+                          className={`rounded px-1 py-px text-[9px] font-body ${
+                            c.method === "ai"
+                              ? "bg-violet-50 text-violet-600"
+                              : "bg-sky-50 text-sky-600"
+                          }`}
+                        >
+                          {{ keyword: "关键词", duration: "年限", boolean: "有无", range: "区间", ai: "AI" }[
+                            c.method
+                          ] ?? c.method}
+                        </span>
+                      )}
                     </div>
                     <p className="mt-0.5 text-[11px] text-[var(--color-text-secondary)] font-body italic">
                       “{c.evidence}”

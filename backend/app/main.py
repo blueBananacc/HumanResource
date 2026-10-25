@@ -52,6 +52,7 @@ from app.api import hr_me as hr_me_api
 from app.api import idempotency as idempotency_api
 from app.api import imports as imports_api
 from app.api import scorecards as scorecards_api
+from app.api import scoring_rules as scoring_rules_api
 from app.api import search as search_api
 from app.api import saved_filters as saved_filters_api
 from app.api import scheduler as scheduler_api
@@ -473,6 +474,7 @@ def create_app() -> FastAPI:
     app.include_router(automations_api.router, prefix="/api")
     app.include_router(imports_api.router, prefix="/api")
     app.include_router(scorecards_api.router, prefix="/api")
+    app.include_router(scoring_rules_api.router, prefix="/api")
     app.include_router(search_api.router, prefix="/api")
     app.include_router(idempotency_api.router, prefix="/api")
     app.include_router(job_knowledge_api.router, prefix="/api")

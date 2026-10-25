@@ -1,10 +1,11 @@
 import { useState, useEffect, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Briefcase, Plus, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
+import { Select } from "@/components/ui/select";
 import { Empty } from "@/components/ui/empty";
 import { SearchInput } from "@/components/ui/search-input";
 import { Pagination } from "@/components/ui/pagination";
@@ -20,6 +21,7 @@ type Job = {
   status: string;
   description: string;
   skills: string[];
+  scoring_rule_id?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -263,7 +265,15 @@ export function JobFormModal({
     initial?.skills.join(", ") ?? "",
   );
   const [description, setDescription] = useState(initial?.description ?? "");
+  const [ruleId, setRuleId] = useState(initial?.scoring_rule_id ?? "");
   const [error, setError] = useState<string | null>(null);
+
+  // T13:可选的声明式评分规则(空 = 默认五维证据评分)
+  const { data: scoringRules } = useQuery({
+    queryKey: ["scoring-rules"],
+    queryFn: () =>
+      fetchJSON<{ id: string; name: string }[]>("/api/scoring-rules"),
+  });
 
   // mode 切换(创建 ↔ 编辑、或编辑不同 job)时同步表单值。
   // useState 初值只跑首次,这里用 effect 保证再次打开能回填正确数据。
@@ -273,12 +283,14 @@ export function JobFormModal({
       setLevel(mode.job.level);
       setSkillsRaw(mode.job.skills.join(", "));
       setDescription(mode.job.description);
+      setRuleId(mode.job.scoring_rule_id ?? "");
       setError(null);
     } else if (mode?.kind === "create") {
       setTitle("");
       setLevel("intermediate");
       setSkillsRaw("");
       setDescription("");
+      setRuleId("");
       setError(null);
     }
   }, [mode]);
@@ -293,6 +305,7 @@ export function JobFormModal({
           .split(/[,,、\s]+/)
           .map((s) => s.trim())
           .filter(Boolean),
+        scoring_rule_id: ruleId || null,
       });
       if (isEdit && initial) {
         return fetchJSON<Job>(`/api/jobs/${initial.id}`, {
@@ -385,6 +398,19 @@ export function JobFormModal({
           onChange={(e) => setSkillsRaw(e.target.value)}
           placeholder="逗号分隔,例:Python, FastAPI, PostgreSQL"
         />
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[13px] font-medium text-[#374151] font-body">
+            评分规则
+          </span>
+          <Select
+            value={ruleId}
+            onChange={setRuleId}
+            options={[
+              { value: "", label: "默认(五维证据评分)" },
+              ...(scoringRules ?? []).map((r) => ({ value: r.id, label: r.name })),
+            ]}
+          />
+        </div>
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center justify-between">
             <label

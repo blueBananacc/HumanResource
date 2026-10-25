@@ -7,6 +7,7 @@ import { EmailSettings } from "@/pages/EmailSettings";
 import { Jobs } from "@/pages/Jobs";
 import { JobDetail } from "@/pages/JobDetail";
 import { JobMatches } from "@/pages/JobMatches";
+import { ScoringRules } from "@/pages/ScoringRules";
 import { Pipeline } from "@/pages/Pipeline";
 import { ResumeDetail } from "@/pages/ResumeDetail";
 import { Interviews } from "@/pages/Interviews";
@@ -159,6 +160,7 @@ export const router = createBrowserRouter([
       { path: "jobs", element: <Jobs /> },
       { path: "jobs/:id", element: <JobDetail /> },
       { path: "jobs/:id/matches", element: <JobMatches /> },
+      { path: "scoring-rules", element: <ScoringRules /> },
       { path: "pipeline", element: <Pipeline /> },
       { path: "interviews", element: <Interviews /> },
       { path: "interviews/schedule", element: <Schedule /> },

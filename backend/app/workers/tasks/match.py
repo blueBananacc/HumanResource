@@ -137,6 +137,7 @@ def evaluate_match(self: Any, match_id: str) -> dict[str, Any]:
         m.gate = result.get("gate")
         m.criteria = result.get("criteria")
         m.red_flags = result.get("red_flags")
+        m.rule_snapshot = result.get("rule_snapshot")
         m.status = "gated" if result.get("gated") else "done"
         m.finished_at = _utcnow_naive()
         db.commit()

@@ -195,6 +195,14 @@ class Job(Base):
     #  emphasis:  {skills_w, experience_w, ...}}            # 评分权重
     gate_profile: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
+    # ---- T13 声明式评分规则(挂 NULL → 走 T12 固定五维路径) ----
+    scoring_rule_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("scoring_rules.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
@@ -863,6 +871,9 @@ class ResumeJobMatch(Base):
     criteria: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     # red_flags: {"major": [维度名], "minor": [维度名]} — 高权重维度 level=0
     red_flags: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # ---- T13:评估时冻结的评分规则快照(规则被改/删后仍可回溯评分依据)----
+    # {rule_id, name, version, dimensions: [{id,name,weight,evaluator}]}
+    rule_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # HR 在面试页"推荐面试"区点"忽略"后写入 — 该匹配不再出现在建议列表
     suggestion_dismissed_at: Mapped[datetime | None] = mapped_column(
@@ -877,6 +888,39 @@ class ResumeJobMatch(Base):
 
     __table_args__ = (
         UniqueConstraint("resume_id", "job_id", name="uq_resume_job_match"),
+    )
+
+
+class ScoringRule(Base):
+    """T13 声明式评分规则(租户级,可挂在多个岗位)。
+
+    ``dimensions`` JSON 数组:
+        [{id, name, weight, description?,
+          evaluator: {method: keyword|duration|ai|boolean|range,
+                      keywords?, matchMode?, minYears?, preferredYears?,
+                      aiPrompt?, booleanField?, field?, minValue?, maxValue?}}]
+
+    - 确定性方法(keyword/duration/boolean/range)纯函数评估,0 token;
+    - ai 方法由一次批量 LLM 调用评所有 ai 维(evidence+level 证据先行);
+    - ``version`` 每次内容修改 +1,评估时快照冻结进 match.rule_snapshot。
+    """
+
+    __tablename__ = "scoring_rules"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dimensions: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
     )
 
 

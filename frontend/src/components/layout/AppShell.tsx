@@ -14,6 +14,7 @@ const TITLE_BY_PATH: Record<string, string> = {
   "/jobs": "岗位",
   "/interviews": "面试",
   "/question-library": "题库",
+  "/scoring-rules": "评分规则",
   "/reports": "报告",
   "/settings/llm": "LLM 配置",
   "/settings/email": "邮箱拉取",

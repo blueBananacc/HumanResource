@@ -170,8 +170,26 @@ def evaluate_match(
             "gate": gate_result,
             "criteria": None,
             "red_flags": None,
+            "rule_snapshot": None,
             "gated": True,
         }
+
+    # ---- 2a) T13 声明式评分规则:岗位挂了规则走规则引擎 ----
+    if job.scoring_rule_id:
+        from app.domain.models import ScoringRule
+        from app.services import scoring_rules as sr
+
+        rule = db.get(ScoringRule, job.scoring_rule_id)
+        if rule and rule.tenant_id == job.tenant_id:
+            try:
+                result = sr.evaluate_with_rule(db, resume=resume, job=job, rule=rule)
+                result.update({"gate": gate_result, "gated": False})
+                return result
+            except Exception as e:  # noqa: BLE001 — 规则路径整体异常回落 T12 路径
+                logger.warning(
+                    "规则引擎异常,回落五维路径 rule=%s job=%s: %s",
+                    rule.id, job.id, e,
+                )
 
     # ---- 2) 证据先行评分 ----
     messages: list[Message] = [
@@ -198,7 +216,7 @@ def evaluate_match(
         logger.warning("LLM 匹配评估失败,使用兜底: %s", e)
         fb = _fallback_match(resume, job)
         fb.update({"gate": gate_result, "criteria": None,
-                   "red_flags": None, "gated": False})
+                   "red_flags": None, "rule_snapshot": None, "gated": False})
         return fb
 
     strengths = _normalize_str_list(parsed.get("strengths"))
@@ -225,6 +243,7 @@ def evaluate_match(
         "gate": gate_result,
         "criteria": criteria_rows,
         "red_flags": red_flags,
+        "rule_snapshot": None,
         "gated": False,
     }
 
