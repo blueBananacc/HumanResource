@@ -39,13 +39,26 @@ export class ApiError extends Error {
 export interface FetchJSONInit extends RequestInit {
   /** 候选人侧 verified session token —— 进 ``X-Candidate-Session`` header */
   candidateSession?: string;
+  /** 幂等键(T10):写请求显式指定后,同键重试由后端回放而非重复执行。
+   * 不传则写方法自动生成 UUID —— 每次"新操作"天然新键;
+   * 需要安全重试同一操作时,调用方持键传入即可。 */
+  idempotencyKey?: string;
+}
+
+const IDEMPOTENT_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+function newIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `ui-${crypto.randomUUID()}`;
+  }
+  return `ui-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
 export async function fetchJSON<T = unknown>(
   url: string,
   init: FetchJSONInit = {},
 ): Promise<T> {
-  const { candidateSession, ...rest } = init;
+  const { candidateSession, idempotencyKey, ...rest } = init;
   const token = getToken();
   const headers = new Headers(rest.headers);
   if (
@@ -57,6 +70,10 @@ export async function fetchJSON<T = unknown>(
   }
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (candidateSession) headers.set("X-Candidate-Session", candidateSession);
+  const method = (rest.method ?? "GET").toUpperCase();
+  if (IDEMPOTENT_METHODS.has(method) && !headers.has("Idempotency-Key")) {
+    headers.set("Idempotency-Key", idempotencyKey ?? newIdempotencyKey());
+  }
 
   const res = await fetch(url, { ...rest, headers });
   if (res.status === 401) {

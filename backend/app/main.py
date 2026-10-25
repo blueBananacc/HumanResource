@@ -49,6 +49,7 @@ from app.api import favorites as favorites_api
 from app.api import healthz
 from app.api import hiring as hiring_api
 from app.api import hr_me as hr_me_api
+from app.api import idempotency as idempotency_api
 from app.api import imports as imports_api
 from app.api import scorecards as scorecards_api
 from app.api import search as search_api
@@ -300,6 +301,9 @@ async def _email_sync_loop() -> None:
 
 WATCH_LOOP_LOCK_KEY = "free-hire:lock:watch-loop"
 
+# 幂等键清扫节流:watch_loop 每 tick(默认 300s)都会跑,清扫每小时一次即可
+_last_idem_purge: datetime | None = None
+
 
 async def _watch_loop() -> None:
     """触发式任务 + 报表订阅调度:默认 300s 一轮,模式同 _email_sync_loop。
@@ -332,6 +336,25 @@ async def _watch_loop() -> None:
                 subs = due_subscriptions(db)
                 for s in subs:
                     send_report_subscription.delay(str(s.id))
+                # T10:幂等键定时清扫(每小时)
+                global _last_idem_purge
+                if _last_idem_purge is None or (
+                    _started - _last_idem_purge
+                ).total_seconds() >= 3600:
+                    from app.services.idempotency import purge_expired
+                    from app.services.jobruns import record_run as _record_run
+
+                    purged = purge_expired()
+                    _last_idem_purge = _started
+                    _record_run(
+                        db,
+                        name="idempotency_purge",
+                        started_at=_started,
+                        status="success",
+                        message=f"purged={purged}" if purged else None,
+                    )
+                    if purged:
+                        logger.info("[watch-loop] 清扫过期幂等键 %d 条", purged)
             except Exception as e:  # noqa: BLE001
                 _err = e
                 raise
@@ -449,6 +472,7 @@ def create_app() -> FastAPI:
     app.include_router(imports_api.router, prefix="/api")
     app.include_router(scorecards_api.router, prefix="/api")
     app.include_router(search_api.router, prefix="/api")
+    app.include_router(idempotency_api.router, prefix="/api")
     app.include_router(ai_api.router, prefix="/api")
     app.include_router(doc_templates_api.router, prefix="/api")
 

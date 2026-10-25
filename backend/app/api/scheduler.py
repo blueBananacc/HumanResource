@@ -37,6 +37,7 @@ REGISTERED_JOBS = [
         "label": "报表订阅发送",
         "source": "celery",
     },
+    {"name": "idempotency_purge", "label": "幂等键过期清扫", "source": "fastapi-loop"},
 ]
 
 

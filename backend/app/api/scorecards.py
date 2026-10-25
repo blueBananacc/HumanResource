@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, count_total, paginate_params
 from app.api.auth import get_current_user
+from app.api.idempotency import idempotent
 from app.domain.models import (
     Candidate,
     Interview,
@@ -224,6 +225,7 @@ def _check_interviewers(db: Session, tenant_id: str, ids: list[str]) -> list[str
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_permission(PERM_WRITE_INTERVIEW))],
 )
+@idempotent(scope="scorecards.create", resource_type="interview_scorecard")
 def create_scorecard(
     body: ScorecardIn,
     request: Request,
@@ -428,6 +430,7 @@ def delete_scorecard(
     "/{sid}/feedback",
     response_model=ScorecardOut,
 )
+@idempotent(scope="scorecards.feedback", resource_type="interview_scorecard")
 def submit_feedback(
     sid: str,
     body: FeedbackIn,
@@ -463,6 +466,7 @@ def submit_feedback(
 
 
 @router.post("/{sid}/synthesize", response_model=ScorecardOut)
+@idempotent(scope="scorecards.synthesize", resource_type="interview_scorecard")
 def synthesize_scorecard(
     sid: str,
     request: Request,

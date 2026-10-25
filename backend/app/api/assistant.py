@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app.api.auth import get_current_user
+from app.api.idempotency import idempotent
 from app.api.license import require_feature
 from app.config import settings
 from app.domain.models import User
@@ -121,6 +122,7 @@ async def chat(
 
 
 @router.post("/confirm")
+@idempotent(scope="assistant.confirm", key_field="call_id", ttl_seconds=3600)
 async def confirm(
     body: ConfirmIn,
     current: User = Depends(get_current_user),

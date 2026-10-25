@@ -21,6 +21,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_user
+from app.api.idempotency import idempotent
 from app.api.license import require_feature
 from app.domain.models import (
     Announcement,
@@ -817,6 +818,7 @@ WRITABLE: dict[str, dict] = {
 
 
 @router.patch("/{entity}/{rid}")
+@idempotent(scope="entities.update")
 def update_entity(
     entity: str,
     rid: str,
@@ -1383,6 +1385,7 @@ def entity_schema(
 
 
 @router.post("/{entity}", status_code=201)
+@idempotent(scope="entities.create", resource_type="entity")
 def create_entity(
     entity: str,
     body: CreateIn,

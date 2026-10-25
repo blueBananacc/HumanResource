@@ -5,6 +5,7 @@ import {
   ClipboardList,
   Clock,
   FileSpreadsheet,
+  Fingerprint,
   Goal,
   Home,
   BookOpen,
@@ -318,6 +319,7 @@ export const bottomModules: NavModule[] = [
           { to: "/settings/automations", label: "自动化规则", icon: Zap, permission: PERM.MANAGE_SETTINGS, keywords: "自动化 规则 触发 automation 通知" },
           { to: "/settings/imports", label: "数据导入", icon: FileSpreadsheet, permission: PERM.MANAGE_EMPLOYEES, keywords: "导入 csv excel 批量 AI import" },
           { to: "/settings/schedulers", label: "后台任务", icon: ListChecks, permission: PERM.MANAGE_SETTINGS, keywords: "任务 调度 scheduler 运维" },
+          { to: "/settings/idempotency", label: "幂等键", icon: Fingerprint, permission: PERM.MANAGE_SETTINGS, keywords: "幂等 键 重试 idempotency 回放" },
         ],
       },
       {

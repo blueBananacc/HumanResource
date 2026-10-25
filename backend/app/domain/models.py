@@ -3182,3 +3182,53 @@ class SearchDocument(Base):
             "tenant_id", "entity", "entity_id", name="uq_search_doc_entity_row"
         ),
     )
+
+
+class IdempotencyKey(Base):
+    """幂等键 —— 可重试写操作的"一行一锁"(T10)。
+
+    - ``(tenant_id, scope, key)`` 唯一元组即锁:并发同 key 请求只有一个
+      能插入,输家读回既有行再裁决。
+    - ``request_hash``:canonical 请求(method+path+query+body)的
+      SHA-256。同 key 不同 body = REUSED_KEY(409)而非回放。
+    - ``status``: in_progress / completed / failed;终态行携带
+      ``response_status`` + ``response_body``,重试时原样回放。
+    - ``locked_at``:claim 时刻;持锁超过 stale 窗口(默认 120s)可被
+      FOR UPDATE 接管 —— 进程中途死掉不会永久占锁。
+    - ``expires_at``:默认 24h 回放窗;过期行由 claim 惰性清理 +
+      ``_watch_loop`` 定时清扫。
+    """
+
+    __tablename__ = "idempotency_keys"
+
+    STATUSES = ("in_progress", "completed", "failed")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    scope: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="in_progress", index=True
+    )
+    response_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_body: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
+    resource_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resource_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "scope", "key", name="uq_idem_tenant_scope_key"),
+    )

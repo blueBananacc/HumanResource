@@ -7,6 +7,7 @@
  */
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 const BACKEND = process.env.BACKEND_URL || "http://backend:8000";
 const BODY_LIMIT = 8000;
@@ -15,17 +16,29 @@ const BODY_LIMIT = 8000;
 // 实际体量(字段上限 50k,但真实 SOP 远小于此)同时保护模型上下文。
 const DOC_LIMIT = 30000;
 
+// T10:工具写调用的幂等键 = 该次 tool call 的 id(pi-agent 侧天然唯一)。
+// execute 经 hrTools 包装进入 callCtx;LLM 重试 / 确认门重放 / MCP 重连
+// 重发同一 call_id 的写调用时,backend 走幂等回放而非二次落库。
+const callCtx = new AsyncLocalStorage<{ callId?: string }>();
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
 async function callApi(
   token: string,
   path: string,
   opts: { method?: string; body?: unknown } = {},
 ): Promise<unknown> {
+  const method = (opts.method ?? "GET").toUpperCase();
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+  };
+  if (!SAFE_METHODS.has(method)) {
+    const callId = callCtx.getStore()?.callId;
+    if (callId) headers["Idempotency-Key"] = `tool:${callId}`;
+  }
   const resp = await fetch(`${BACKEND}${path}`, {
-    method: opts.method ?? "GET",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-    },
+    method,
+    headers,
     body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
   });
   const text = await resp.text();
@@ -961,7 +974,12 @@ export const WRITE_TOOLS = new Set([
 ]);
 
 export function hrTools(token: string): AgentTool[] {
-  return makeTools(token);
+  // 包装 execute:把 tool_call_id 注入 AsyncLocalStorage,callApi 取作幂等键。
+  return makeTools(token).map((tool) => ({
+    ...tool,
+    execute: (id: string, params: unknown) =>
+      callCtx.run({ callId: id }, () => tool.execute(id, params)),
+  })) as AgentTool[];
 }
 
 const TOOL_LABELS = new Map(makeTools("").map((t) => [t.name, t.label]));
