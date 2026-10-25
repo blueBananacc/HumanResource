@@ -1,20 +1,29 @@
-"""简历↔岗位 LLM 匹配评估服务。
+"""简历↔岗位 LLM 匹配评估服务(T12 两段式)。
 
 外部接口:``evaluate_match(db, resume, job) -> dict``。
 
-输入:
-- 简历 ``parsed_text``(前 3000 字)+ ``parsed_data.skills``
-- 岗位 title / level / skills / description
+流水线(移植 resume-matcher screenCandidate:Gate first, score second):
 
+1. **门槛 Gate** — :mod:`app.services.match_gate`:按岗位惰性派生的二值
+   门槛题逐候选判定;``FAIL ∧ severity≥7`` → 直接淘汰,score=NULL
+   ("被拒"≠"零分"),不再花评分调用。
+2. **证据先行评分** — 逐维 ``{evidence: 原文引用, level: 0-4 锚定级}``,
+   代码侧按 JD 权重加权聚合出 0-100 + 红旗;模型旧格式输出(无
+   criteria)自动兼容,用其直接给的 score。
+
+LLM 失败时给确定性兜底(基于 skill 重叠度),保证产品体验不全断。
+任何上游 LLMError 在本函数内吞掉,worker 不会走 failed 状态。
+
+输入:简历 ``parsed_text``(前 3000 字)+ 岗位 title/level/skills/description
++ T11 岗位知识源上下文。
 输出 dict:
-- ``score``:整数 0-100
-- ``strengths``:list[str] ≤5 条匹配亮点
-- ``gaps``:list[str] ≤5 条关键短板
-- ``comment``:str ≤120 字总结
-
-LLM 失败时给一个**确定性兜底**(基于 skill 重叠度),保证产品体验不全断。
-任何上游 LLMError 在本函数内吞掉,worker 不会走 failed 状态 — 与
-:mod:`app.services.interviewer` 评分链同思路(LLM 失败给保守分而非中断)。
+- ``score`` int 0-100,gated 时为 ``None``
+- ``strengths`` / ``gaps`` list[str] ≤5
+- ``comment`` str
+- ``gate`` dict | None — {passed, answers, disqualifiers}
+- ``criteria`` list | None — [{key,name,weight,level,evidence}]
+- ``red_flags`` dict | None — {"major": [...], "minor": [...]}
+- ``gated`` bool — 被门槛淘汰
 """
 from __future__ import annotations
 
@@ -25,7 +34,8 @@ from sqlalchemy.orm import Session
 
 from app.domain.models import Job, Resume
 from app.integrations.llm.provider import LLMError, Message, call_llm_json
-from app.services.prompting import render_prompt
+from app.services import match_gate
+from app.services.prompting import DATA_LABEL, guarded, render_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -47,18 +57,29 @@ def _resume_excerpt(resume: Resume) -> str:
 def _system_prompt() -> str:
     return (
         "你是高级招聘评估师,做简历与岗位的**匹配评估**。\n"
-        "基于候选人简历与岗位 JD,给出匹配度评分(0-100,整数)与短评。\n"
+        "对每个评估维度:**先引用简历原文作证据,再按锚定量表定级**。\n"
         "\n"
         "**只输出 JSON**,字段:\n"
-        '  {"score": <0-100 整数>,\n'
+        '  {"criteria": {\n'
+        '     "skills":         {"evidence": "简历原文引用或\\"未提及\\"", "level": 0-4},\n'
+        '     "experience":     {"evidence": "...", "level": 0-4},\n'
+        '     "project_depth":  {"evidence": "...", "level": 0-4},\n'
+        '     "domain":         {"evidence": "...", "level": 0-4},\n'
+        '     "stability":      {"evidence": "...", "level": 0-4}},\n'
         '   "strengths": ["匹配亮点 1", ...],   // <=5 条, 每条 <=30 字\n'
         '   "gaps":      ["关键短板 1", ...],   // <=5 条\n'
         '   "comment":   "总结 (<=120 字)"}\n'
         "\n"
+        "锚定量表(评证据强度,不评感觉):\n"
+        "  4=有直接、具体、可验证的证据,完全满足或超出要求\n"
+        "  3=有明确证据接近匹配,仅小缺口\n"
+        "  2=有主张但未证实(如只写'熟悉'却无项目支撑)\n"
+        "  1=仅弱相关/擦边证据\n"
+        "  0=简历未提及,或明确违反岗位约束\n"
+        "\n"
         "评估原则:\n"
-        "- 关键技能 / 经历重合度 ≈ 60% 权重\n"
-        "- 项目深度 / 业务规模 / 技术挑战 ≈ 25% 权重\n"
-        "- 候选人等级与岗位等级匹配度 ≈ 15% 权重\n"
+        "- 简历没写的一律 evidence=\"未提及\" + level=0,不猜不补\n"
+        "- 岗位禁止项在简历中明确出现时,该维度 level=0(负面匹配)\n"
         "- 不评判候选人种族 / 性别 / 婚育 / 户籍 / 学历背景\n"
         "禁止 JSON 之外的任何文字。"
     )
@@ -73,7 +94,7 @@ def _user_message(resume: Resume, job: Job, knowledge: str = "") -> str:
         f"JD: {(job.description or '')[:800]}\n"
         + (f"{knowledge}\n" if knowledge else "")
         + f"\n"
-        f"候选人简历摘录:\n"
+        f"候选人简历摘录{DATA_LABEL}:\n"
         f"{_resume_excerpt(resume)}\n"
         f"\n"
         f"请按要求输出 JSON。"
@@ -109,10 +130,10 @@ def evaluate_match(
     resume: Resume,
     job: Job,
 ) -> dict[str, Any]:
-    """单对 (resume, job) 评估,返回结构化结果。
+    """单对 (resume, job) 评估,返回结构化结果(见模块 docstring)。
 
-    LLM 调用走 :func:`app.integrations.llm.provider.chat` 的 ``response_json``
-    模式;失败给基于 skills 重叠度的兜底,**不抛**到调用方。
+    Gate 先跑:被硬约束淘汰 → ``gated=True, score=None``;
+    评分失败给 skills 重叠兜底,**不抛**到调用方。
     """
     # T11:岗位知识源(ready 状态)注入评估上下文;无源时为空串,零回归
     from app.services.job_knowledge import knowledge_context_text
@@ -120,11 +141,46 @@ def evaluate_match(
     knowledge = knowledge_context_text(
         db, job, query=f"{job.title} {' '.join(job.skills or [])}", limit=4
     )
+    excerpt = _resume_excerpt(resume)
+
+    # ---- 1) 门槛 Gate:能派生出画像才判;任何异常 fail-open 进评分 ----
+    gate_result: dict[str, Any] | None = None
+    try:
+        profile = match_gate.derive_gate_profile(db, job)
+        questions = profile.get("questions") or []
+        emphasis = match_gate.emphasis_of(profile)
+        if questions:
+            gate_result = match_gate.run_gate(
+                db, resume_text=excerpt, questions=questions,
+                tenant_id=job.tenant_id,
+            )
+        else:
+            gate_result = {"passed": True, "answers": [], "disqualifiers": [],
+                           "skipped": "no_questions"}
+    except Exception as e:  # noqa: BLE001 — 画像/判定任何异常都不阻断评分
+        logger.warning("Gate 链路异常 fail-open job=%s: %s", job.id, e)
+        emphasis = {c["key"]: c["default_weight"] for c in match_gate.CRITERIA}
+
+    if gate_result and not gate_result.get("passed"):
+        return {
+            "score": None,
+            "strengths": [],
+            "gaps": [f"门槛未过: {d['question']}" for d in gate_result["disqualifiers"]],
+            "comment": "硬性门槛不满足,未进入评分。",
+            "gate": gate_result,
+            "criteria": None,
+            "red_flags": None,
+            "gated": True,
+        }
+
+    # ---- 2) 证据先行评分 ----
     messages: list[Message] = [
         {
             "role": "system",
-            "content": render_prompt(db, job.tenant_id, "match.evaluate")
-            or _system_prompt(),
+            "content": guarded(
+                render_prompt(db, job.tenant_id, "match.evaluate")
+                or _system_prompt()
+            ),
         },
         {"role": "user", "content": _user_message(resume, job, knowledge)},
     ]
@@ -134,26 +190,42 @@ def evaluate_match(
             messages,
             db=db,
             tenant_id=job.tenant_id,
-            required=("score",),
+            required=(),
             temperature=0.2,
             prompt_key="match.evaluate",
         )
     except LLMError as e:
         logger.warning("LLM 匹配评估失败,使用兜底: %s", e)
-        return _fallback_match(resume, job)
+        fb = _fallback_match(resume, job)
+        fb.update({"gate": gate_result, "criteria": None,
+                   "red_flags": None, "gated": False})
+        return fb
 
-    score = _clamp_score(parsed.get("score", 60))
     strengths = _normalize_str_list(parsed.get("strengths"))
     gaps = _normalize_str_list(parsed.get("gaps"))
     comment = str(parsed.get("comment") or "").strip()[:200]
+
+    # 新格式:逐维 evidence+level → 代码侧加权;旧格式:用模型直给的 score
+    criteria_rows = None
+    red_flags = None
+    if isinstance(parsed.get("criteria"), dict) and parsed["criteria"]:
+        score, criteria_rows, red_flags = match_gate.aggregate_score(
+            parsed["criteria"], emphasis
+        )
+    else:
+        score = _clamp_score(parsed.get("score", 60))
     if not comment:
-        # LLM 没给 comment,用 score 区间兜一句
         comment = _comment_for_score(score)
+
     return {
         "score": score,
         "strengths": strengths,
         "gaps": gaps,
         "comment": comment,
+        "gate": gate_result,
+        "criteria": criteria_rows,
+        "red_flags": red_flags,
+        "gated": False,
     }
 
 

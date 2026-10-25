@@ -1,4 +1,4 @@
-import { Loader2, AlertCircle } from "lucide-react";
+import { Loader2, AlertCircle, Ban } from "lucide-react";
 
 /**
  * 简历↔岗位匹配度徽章。
@@ -11,6 +11,7 @@ import { Loader2, AlertCircle } from "lucide-react";
  * 状态:
  * - pending / matching → 旋转 spinner(给候选行占位,稍后轮询会变成数字)
  * - failed → 红色 ! + tooltip
+ * - gated  → 红色 ⊘(硬性门槛淘汰,T12;score 为 null,与 0 分不同语义)
  * - done → 数字
  */
 
@@ -18,7 +19,8 @@ export type MatchBadgeStatus =
   | "pending"
   | "matching"
   | "done"
-  | "failed";
+  | "failed"
+  | "gated";
 
 export function MatchBadge({
   status,
@@ -42,6 +44,17 @@ export function MatchBadge({
         title={status === "pending" ? "待评估" : "评估中…"}
       >
         <Loader2 className="w-3 h-3 animate-spin" />
+      </span>
+    );
+  }
+  if (status === "gated") {
+    return (
+      <span
+        className="inline-flex items-center justify-center rounded-full bg-red-50 text-red-600"
+        style={{ width: dim, height: dim }}
+        title="硬性门槛淘汰"
+      >
+        <Ban className="w-3.5 h-3.5" />
       </span>
     );
   }

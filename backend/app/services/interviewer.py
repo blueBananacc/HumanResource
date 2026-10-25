@@ -34,7 +34,7 @@ from app.integrations.llm.provider import (
     call_llm,
     call_llm_json,
 )
-from app.services.prompting import render_prompt
+from app.services.prompting import DATA_LABEL, guarded, render_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +127,7 @@ def _generate_question(
         )
     user_msg = (
         (f"{knowledge}\n\n" if knowledge else "")
-        + f"候选人简历摘录:\n{resume_excerpt}\n\n"
+        + f"候选人简历摘录{DATA_LABEL}:\n{resume_excerpt}\n\n"
         + (f"已经问过的问答:\n{prior}\n\n" if prior else "")
         + f"现在请提出第 {n}/{question_count} 题。直接返回题目文本,不要前缀编号或解释。"
     )
@@ -144,7 +144,7 @@ def _generate_question(
         kinds_brief=_kinds_brief(kinds),
     ) or _system_prompt(job, candidate, level, kinds=kinds, question_count=question_count)
     messages: list[Message] = [
-        {"role": "system", "content": sys_prompt},
+        {"role": "system", "content": guarded(sys_prompt)},
         {"role": "user", "content": user_msg},
     ]
     try:
@@ -180,9 +180,9 @@ def _score_answer(
         "禁止输出任何 JSON 之外的文字。\n"
         f"岗位: {job.title} ({level} 级别)\n"
     )
-    user = f"题目: {question}\n\n答案: {answer or '(未作答)'}"
+    user = f"题目: {question}\n\n候选人答案{DATA_LABEL}: {answer or '(未作答)'}"
     messages: list[Message] = [
-        {"role": "system", "content": sys},
+        {"role": "system", "content": guarded(sys)},
         {"role": "user", "content": user},
     ]
     try:
@@ -570,7 +570,7 @@ def _finish(
     try:
         parsed = call_llm_json(
             "interview.report",
-            [{"role": "system", "content": sys}, {"role": "user", "content": user}],
+            [{"role": "system", "content": guarded(sys)}, {"role": "user", "content": user}],
             db=db,
             tenant_id=job.tenant_id,
             required=("recommendation",),

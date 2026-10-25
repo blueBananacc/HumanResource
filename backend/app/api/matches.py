@@ -39,11 +39,14 @@ class MatchOut(BaseModel):
     id: str
     resume_id: str
     job_id: str
-    status: Literal["pending", "matching", "done", "failed"]
+    status: Literal["pending", "matching", "done", "failed", "gated"]
     score: int | None
     strengths: list[str]
     gaps: list[str]
     comment: str | None
+    gate: dict | None
+    criteria: list[dict] | None
+    red_flags: dict | None
     error: str | None
     started_at: datetime | None
     finished_at: datetime | None
@@ -90,6 +93,9 @@ def _to_out(
         strengths=list(m.strengths or []),
         gaps=list(m.gaps or []),
         comment=m.comment,
+        gate=m.gate,
+        criteria=m.criteria,
+        red_flags=m.red_flags,
         error=m.error,
         started_at=m.started_at,
         finished_at=m.finished_at,
@@ -259,22 +265,27 @@ def list_for_resume(
 def list_for_job(
     job_id: str,
     min_score: int = Query(0, ge=0, le=100),
+    status: str | None = Query(None, pattern="^(done|gated|failed|pending|matching)$"),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ) -> list[MatchOut]:
     """该岗位的 top N 匹配 — 按 score DESC,过滤 status='done' + score>=min_score。
 
-    pending / matching / failed 都排除(给 HR 看的"决策候选池"必须有分数)。
+    ``status=gated`` 时可单取门槛淘汰名单(disqualifier 证据在 ``gate`` 字段)。
+    pending / matching / failed 默认排除(给 HR 看的"决策候选池"必须有分数)。
     """
     job = _check_job(db, job_id, current)
+    want = status or "done"
+    cond = [
+        ResumeJobMatch.job_id == job.id,
+        ResumeJobMatch.status == want,
+    ]
+    if want == "done":
+        cond.append(ResumeJobMatch.score >= min_score)
     stmt = (
         select(ResumeJobMatch)
-        .where(
-            ResumeJobMatch.job_id == job.id,
-            ResumeJobMatch.status == "done",
-            ResumeJobMatch.score >= min_score,
-        )
+        .where(*cond)
         .order_by(ResumeJobMatch.score.desc().nullslast())
         .limit(limit)
     )

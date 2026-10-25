@@ -448,6 +448,7 @@ def ai_suggest(
         try:
             from app.services.prompting import (
                 PROMPT_REGISTRY,
+                guarded,
                 render_prompt,
                 render_vars,
             )
@@ -470,7 +471,7 @@ def ai_suggest(
             )
             data = call_llm_json(
                 "import.column_map",
-                [{"role": "system", "content": prompt}],
+                [{"role": "system", "content": guarded(prompt)}],
                 db=db, tenant_id=tenant_id,
                 prompt_key="import.column_map",
             )
@@ -617,6 +618,7 @@ def ai_check_note(
         from app.integrations.llm.provider import LLMError, call_llm
         from app.services.prompting import (
             PROMPT_REGISTRY,
+            guarded,
             render_prompt,
             render_vars,
         )
@@ -634,7 +636,7 @@ def ai_check_note(
         ) or render_vars(PROMPT_REGISTRY["import.check_note"].content, vars_)
         text = call_llm(
             "import.check_note",
-            [{"role": "system", "content": prompt}],
+            [{"role": "system", "content": guarded(prompt)}],
             db=db, tenant_id=tenant_id,
             prompt_key="import.check_note",
         ).strip()

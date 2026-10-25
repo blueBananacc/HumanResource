@@ -223,12 +223,15 @@ def submit_feedback(
 
 
 def _render(key: str, db: Session, tenant_id: str, module: str, **vars_) -> str:
-    from app.services.prompting import PROMPT_REGISTRY, render_prompt, render_vars
+    from app.services.prompting import (
+        PROMPT_REGISTRY, guarded, render_prompt, render_vars,
+    )
 
     prompt = render_prompt(db, tenant_id, key, module=module, **vars_)
     if prompt is None:
         prompt = render_vars(PROMPT_REGISTRY[key].content, vars_)
-    return prompt
+    # 上下文含候选人资料/面试官评语 — 不可信内容,注入防御
+    return guarded(prompt)
 
 
 def suggest_criteria(

@@ -106,7 +106,7 @@ def evaluate_match(self: Any, match_id: str) -> dict[str, Any]:
         if m is None:
             return {"match_id": match_id, "status": "missing"}
 
-        if m.status in ("done", "failed"):
+        if m.status in ("done", "failed", "gated"):
             return {
                 "match_id": match_id,
                 "status": "already_" + m.status,
@@ -134,12 +134,15 @@ def evaluate_match(self: Any, match_id: str) -> dict[str, Any]:
         m.strengths = result["strengths"]
         m.gaps = result["gaps"]
         m.comment = result["comment"]
-        m.status = "done"
+        m.gate = result.get("gate")
+        m.criteria = result.get("criteria")
+        m.red_flags = result.get("red_flags")
+        m.status = "gated" if result.get("gated") else "done"
         m.finished_at = _utcnow_naive()
         db.commit()
         return {
             "match_id": match_id,
-            "status": "done",
+            "status": m.status,
             "score": result["score"],
         }
     finally:
@@ -187,8 +190,8 @@ def evaluate_matches_for_resume(
                 job_id=job.id,
                 created_by=created_by,
             )
-            # 已 done / failed 的不重投(HR 显式 regen 才会重投)
-            if m.status in ("done", "failed", "matching"):
+            # 已 done / failed / gated 的不重投(HR 显式 regen 才会重投)
+            if m.status in ("done", "failed", "gated", "matching"):
                 continue
             evaluate_match.delay(m.id)
             enqueued += 1
@@ -246,7 +249,7 @@ def evaluate_matches_for_job(
                 job_id=job.id,
                 created_by=created_by,
             )
-            if m.status in ("done", "failed", "matching"):
+            if m.status in ("done", "failed", "gated", "matching"):
                 continue
             evaluate_match.delay(m.id)
             enqueued += 1

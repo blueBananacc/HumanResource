@@ -34,3 +34,5 @@
 - 环境状态变化（服务器、密钥、端口）→ 更新 `ops/environment-status.md`
 - 前端视觉/交互规则变化 → 更新 `design/hibob-style-reference.md`
 - 新增 md → 在本文件补一行
+
+- `docs/design/t12-gate-evidence-injection-design.md` — T12 硬性门槛 Gate(二值题+severity 阻断)+ 证据先行评分(逐维原文引用+锚定 0-4)+ Prompt 注入防御

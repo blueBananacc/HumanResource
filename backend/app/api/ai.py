@@ -36,7 +36,9 @@ from app.services.permissions import (
     get_org_scope,
     has_permission,
 )
-from app.services.prompting import PROMPT_REGISTRY, render_prompt, render_vars
+from app.services.prompting import (
+    PROMPT_REGISTRY, guarded, render_prompt, render_vars,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +151,7 @@ def field_assist(
         prompt = render_vars(spec.content, variables)
 
     text = _chat_or_503(
-        [{"role": "system", "content": prompt}], db, current.tenant_id,
+        [{"role": "system", "content": guarded(prompt)}], db, current.tenant_id,
         call_type="ai.field_assist", prompt_key=key, user_id=current.id,
     ).strip()[:_MAX_TEXT]
     write_audit(
@@ -187,7 +189,7 @@ def summarize(
         prompt = render_vars(spec.content, {"context": ctx_json})
 
     text = _chat_or_503(
-        [{"role": "system", "content": prompt}], db, current.tenant_id,
+        [{"role": "system", "content": guarded(prompt)}], db, current.tenant_id,
         call_type="ai.summarize", prompt_key=key, user_id=current.id,
     ).strip()[:_MAX_TEXT]
     write_audit(
@@ -276,7 +278,7 @@ def doc_draft(
              "instruction": body.instruction or "(无)"},
         )
     draft = _chat_or_503(
-        [{"role": "system", "content": prompt}], db, current.tenant_id,
+        [{"role": "system", "content": guarded(prompt)}], db, current.tenant_id,
         call_type="ai.doc_draft", prompt_key=body.key, user_id=current.id,
     ).strip()[:_MAX_TEXT]
     write_audit(

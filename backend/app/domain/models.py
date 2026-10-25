@@ -189,6 +189,12 @@ class Job(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     approval_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # ---- T12 筛选画像(惰性派生,按 JD 指纹缓存) ----
+    # {jd_hash, derived_at,
+    #  questions: [{id, question, severity(1-10), why}],   # 硬性门槛题
+    #  emphasis:  {skills_w, experience_w, ...}}            # 评分权重
+    gate_profile: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
@@ -806,7 +812,8 @@ class ResumeJobMatch(Base):
     评分 + 短评。HR 在简历库 / 岗位"匹配候选人"页直接看分数排序,而不是
     人眼挑简历。
 
-    状态机:pending → matching → done / failed
+    状态机:pending → matching → done / failed / gated(T12 门槛淘汰,
+    gated 时 score=NULL — 拒绝与 0 分两种语义)。
     autoretry=0,UI 显式"重新评估"才会重跑(同 :class:`QuestionSet` 模式)。
 
     LLM 输出 schema(写到 ``score`` / ``strengths`` / ``gaps`` / ``comment``):
@@ -847,6 +854,15 @@ class ResumeJobMatch(Base):
     strengths: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     gaps: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ---- T12:门槛判定 + 证据先行评分 ----
+    # gate: {passed, answers:[{id,question,verdict,evidence}],
+    #        disqualifiers:[{question,severity,evidence}]}
+    #   status='gated' 时 score 保持 NULL — 门槛拒绝和 0 分是两种语义。
+    gate: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # criteria: [{key, name, weight, level(0-4), evidence}] — 逐维引用原文的锚定评分
+    criteria: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    # red_flags: {"major": [维度名], "minor": [维度名]} — 高权重维度 level=0
+    red_flags: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # HR 在面试页"推荐面试"区点"忽略"后写入 — 该匹配不再出现在建议列表
     suggestion_dismissed_at: Mapped[datetime | None] = mapped_column(

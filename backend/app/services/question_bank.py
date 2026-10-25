@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.models import Candidate, Job, QuestionLibraryItem, QuestionSet, Resume
 from app.integrations.llm.provider import LLMError, Message, call_llm_json
-from app.services.prompting import render_prompt
+from app.services.prompting import DATA_LABEL, guarded, render_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +157,7 @@ def regenerate_item(db: Session, item: QuestionLibraryItem, instruction: str = "
         qs = db.get(QuestionSet, item.question_set_id)
         resume = db.get(Resume, qs.resume_id) if qs else None
         if resume and resume.parsed_text:
-            user_parts.append(f"候选人简历摘录:\n{resume.parsed_text[:2000]}")
+            user_parts.append(f"候选人简历摘录{DATA_LABEL}:\n{resume.parsed_text[:2000]}")
     user_parts.append(f"请求编号: {zlib.crc32((item.question + instruction).encode())}")
 
     regen_sys = render_prompt(
@@ -178,7 +178,7 @@ def regenerate_item(db: Session, item: QuestionLibraryItem, instruction: str = "
         instruction=instruction.strip() or "换一个角度考察同一能力,不要与原题雷同",
     ) or _regen_prompt(item, job=job, instruction=instruction.strip())
     messages: list[Message] = [
-        {"role": "system", "content": regen_sys},
+        {"role": "system", "content": guarded(regen_sys)},
         {"role": "user", "content": "\n".join(user_parts)},
     ]
     try:

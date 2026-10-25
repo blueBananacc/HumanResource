@@ -438,7 +438,7 @@ export function TalentDetail() {
                         {m.job_title ?? "未知岗位"}
                       </span>
                       <span className="text-[11px] text-[var(--color-text-tertiary)]">
-                        {m.status === "done" ? "已评估" : m.status} · {formatRelative(m.created_at)}
+                        {m.status === "done" ? "已评估" : m.status === "gated" ? "门槛淘汰" : m.status} · {formatRelative(m.created_at)}
                       </span>
                     </div>
                     <span className="font-mono text-base text-[var(--color-text-primary)]">

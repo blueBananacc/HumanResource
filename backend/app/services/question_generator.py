@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.models import Job, Resume
 from app.integrations.llm.provider import LLMError, Message, call_llm_json
-from app.services.prompting import render_prompt
+from app.services.prompting import DATA_LABEL, guarded, render_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -137,11 +137,11 @@ def generate_questions(
         )
     user_msg = (
         (f"{knowledge}\n\n" if knowledge else "")
-        + f"候选人简历摘录:\n{_resume_excerpt(resume)}\n\n请按要求出 {count} 道题。"
+        + f"候选人简历摘录{DATA_LABEL}:\n{_resume_excerpt(resume)}\n\n请按要求出 {count} 道题。"
     )
 
     messages: list[Message] = [
-        {"role": "system", "content": sys_prompt},
+        {"role": "system", "content": guarded(sys_prompt)},
         {"role": "user", "content": user_msg},
     ]
     try:
