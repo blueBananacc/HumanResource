@@ -927,6 +927,69 @@ class ScoringRule(Base):
     )
 
 
+class TalentProfile(Base):
+    """T16 人才画像 —— 可复用的「招什么样的人」模板(区别于岗位编制)。
+
+    ``spec`` JSON:
+        {skills: [], keywords: [], nice_to_have: [],
+         min_years: 0, education: ""}
+
+    - skills 喂 coverage(整词匹配),keywords 加分;
+    - min_years/education 做扫描预筛门槛(gate-lite,可过滤);
+    - ``source_job_id`` 记录画像来源岗位(从岗位沉淀画像时回填);
+    - ``last_used_at``/``use_count`` 支撑「上次 X 月用过」的对话依据。
+    """
+
+    __tablename__ = "talent_profiles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    spec: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    scoring_rule_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scoring_rules.id", ondelete="SET NULL"), nullable=True
+    )
+    source_job_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    use_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="active")
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class SourcingRun(Base):
+    """T16 扫描留痕 —— 每次人才库扫描的记录(审计 + 渠道效果统计原料)。"""
+
+    __tablename__ = "sourcing_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    profile_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("talent_profiles.id", ondelete="SET NULL"), nullable=True
+    )
+    spec_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    scanned_total: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    prefiltered: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    llm_scored: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    returned: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
 class JobVersion(Base):
     """岗位版本快照(EPIC-05 T8)。
 

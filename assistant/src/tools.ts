@@ -946,6 +946,93 @@ function makeTools(token: string): ToolDef[] {
           method: "POST",
         }),
     },
+    // ===== T16:对话式招聘(人才画像 + 人才库扫描 + 面试纪要) =====
+    {
+      name: "list_talent_profiles",
+      label: "查人才画像",
+      description:
+        "查人才画像(「招什么样的人」可复用模板,按名称模糊搜)," +
+        "返回 id/spec(技能/关键词/年限/学历)/上次使用时间",
+      parameters: Type.Object({
+        q: Type.Optional(Type.String({ description: "名称关键词" })),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/talent-profiles?q=${encodeURIComponent(p.q ?? "")}`),
+    },
+    {
+      name: "create_talent_profile",
+      label: "建人才画像",
+      description:
+        "创建人才画像(可复用招聘模板)。spec 结构:{skills[], keywords[]," +
+        " nice_to_have[], min_years, education}。用户给出描述时先组装好 spec 再调",
+      parameters: Type.Object({
+        name: Type.String({ description: "画像名,如「AI 工程师画像」" }),
+        spec: Type.Optional(
+          Type.Object(
+            {
+              skills: Type.Optional(Type.Array(Type.String())),
+              keywords: Type.Optional(Type.Array(Type.String())),
+              nice_to_have: Type.Optional(Type.Array(Type.String())),
+              min_years: Type.Optional(Type.Number()),
+              education: Type.Optional(Type.String()),
+            },
+            { description: "画像规格" },
+          ),
+        ),
+        source_job_id: Type.Optional(Type.String({ description: "来源岗位 id" })),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/talent-profiles", {
+          method: "POST",
+          body: {
+            name: p.name,
+            spec: p.spec ?? {},
+            source_job_id: p.source_job_id,
+          },
+        }),
+    },
+    {
+      name: "scan_talent_pool",
+      label: "扫描人才库",
+      description:
+        "按人才画像/技能扫描内部人才库,返回排序短名单(每人含匹配分、" +
+        "核心匹配点 highlights、缺口 gaps、技能覆盖 coverage)",
+      parameters: Type.Object({
+        profile_id: Type.Optional(Type.String({ description: "人才画像 id" })),
+        spec: Type.Optional(
+          Type.Object(
+            {
+              skills: Type.Optional(Type.Array(Type.String())),
+              keywords: Type.Optional(Type.Array(Type.String())),
+              min_years: Type.Optional(Type.Number()),
+              education: Type.Optional(Type.String()),
+            },
+            { description: "不用画像时的临时 spec" },
+          ),
+        ),
+        limit: Type.Optional(Type.Number({ description: "返回人数,默认 5" })),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/sourcing/scan", {
+          method: "POST",
+          body: {
+            profile_id: p.profile_id,
+            spec: p.spec,
+            limit: p.limit ?? 5,
+          },
+        }),
+    },
+    {
+      name: "get_interview_summary",
+      label: "查面试纪要",
+      description:
+        "查某场面试的纪要聚合:AI 结论/维度分/逐题问答摘要/评分卡合成建议",
+      parameters: Type.Object({
+        interview_id: Type.String({ description: "面试 id" }),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/interviews/${encodeURIComponent(p.interview_id)}/summary-view`),
+    },
   ];
 }
 
@@ -971,6 +1058,7 @@ export const WRITE_TOOLS = new Set([
   "create_scorecard",
   "submit_scorecard_feedback",
   "synthesize_scorecard",
+  "create_talent_profile",
 ]);
 
 export function hrTools(token: string): AgentTool[] {

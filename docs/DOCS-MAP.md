@@ -32,6 +32,7 @@
 | [t13-scoring-rule-engine-design.md](design/t13-scoring-rule-engine-design.md) | T13 设计：声明式评分规则引擎（维度×评估器/确定性评估器/规则快照/AI 生成与自分析） |
 | [t14-feature-scoring-parser.md](design/t14-feature-scoring-parser.md) | T14 设计：特征评分式简历结构解析器（span→行→section→subsection→字段，LLM 前置确定性预处理） |
 | [t15-keyword-match-coverage.md](design/t15-keyword-match-coverage.md) | T15 设计：CJK 整词匹配 + 关键词覆盖子分（keyword_in_text/compute_coverage/coverage 评估器） |
+| [t16-conversational-recruiting.md](design/t16-conversational-recruiting.md) | T16 设计：对话式招聘（TalentProfile 画像 + SourcingRun 扫描留痕 + 确定性预筛→LLM topK + 面试纪要聚合 + 助手工具/勾选卡） |
 
 ## 维护约定
 

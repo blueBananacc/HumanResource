@@ -43,6 +43,7 @@ from app.api.license import require_feature
 from app.domain.models import (
     Candidate,
     Interview,
+    InterviewScorecard,
     InterviewTurn,
     Job,
     Resume,
@@ -677,6 +678,70 @@ def get_report(
     )
     db.commit()
     return _full_out(db, interview)
+
+
+@router.get("/{interview_id}/summary-view", response_model=dict)
+def get_summary_view(
+    interview_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> dict:
+    """T16 面试纪要聚合视图:AI summary + 逐题问答 + 关联评分卡合成结论。
+
+    供助手「面试纪要」卡片与详情页共用;面试未完成时返回已有部分。
+    """
+    interview = db.get(Interview, interview_id)
+    if not interview or interview.tenant_id != current.tenant_id:
+        raise HTTPException(404, "面试不存在")
+    _check_interview_visibility(db, current, interview)
+
+    turns = db.scalars(
+        select(InterviewTurn)
+        .where(InterviewTurn.interview_id == interview.id)
+        .order_by(InterviewTurn.idx)
+    ).all()
+    cards = db.scalars(
+        select(InterviewScorecard).where(
+            InterviewScorecard.tenant_id == current.tenant_id,
+            InterviewScorecard.interview_id == interview.id,
+        )
+    ).all()
+    cand = db.get(Candidate, interview.candidate_id)
+    job = db.get(Job, interview.job_id)
+
+    return {
+        "id": interview.id,
+        "status": interview.status,
+        "candidate_name": cand.name if cand else "",
+        "job_title": job.title if job else "",
+        "finished_at": interview.finished_at.isoformat() if interview.finished_at else None,
+        "ai": {
+            "recommendation": (interview.summary or {}).get("recommendation"),
+            "dimension_scores": (interview.summary or {}).get("dimension_scores"),
+            "evidence_quotes": (interview.summary or {}).get("evidence_quotes") or [],
+            "comment": (interview.summary or {}).get("comment")
+                       or (interview.summary or {}).get("summary"),
+        },
+        "turns": [
+            {
+                "idx": t.idx,
+                "question": t.question,
+                "answer": (t.answer or "")[:300],
+                "scores": t.scores,
+                "evidence": t.evidence,
+            }
+            for t in turns
+        ],
+        "scorecards": [
+            {
+                "id": sc.id,
+                "title": sc.title,
+                "status": sc.status,
+                "ai_summary": sc.ai_summary,
+            }
+            for sc in cards
+        ],
+    }
 
 
 # ---------------------------- Invite 管理 -----------------------------

@@ -872,6 +872,10 @@ function ChatPanel({
                           args={m.tools?.find((s) => s.callId === r.callId)?.args}
                           isError={r.isError}
                           durationMs={r.durationMs}
+                          onInject={(text) => {
+                            setInput(text);
+                            inputRef.current?.focus();
+                          }}
                         />
                       ))}
                       {/* 写操作确认卡 */}

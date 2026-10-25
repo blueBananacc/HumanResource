@@ -355,6 +355,11 @@ def _mock_chat(messages: list[Message], *, response_json: bool) -> str:
             return _mock_rule_analyze_json()
         if "按给定维度逐一评估" in sys_prompt:
             return _mock_rule_dim_eval_json(last)
+        # T16 人才画像生成 + 人才库筛选精评(分派词独有,先于泛化分支)
+        if "人才画像设计器" in sys_prompt:
+            return _mock_profile_generate_json(last)
+        if "人才库筛选评估器" in sys_prompt:
+            return _mock_sourcing_score_json(last)
         # 匹配评估场景:必须早于"评分"分支判断,因为 prompt 里
         # 有"匹配度评分"会被下面"评分"分支误中
         if "匹配评估" in sys_prompt or "匹配度评分" in sys_prompt:
@@ -630,6 +635,51 @@ def _mock_match_json(context: str) -> str:
         "strengths": [f"具备 {s} 经验" for s in hits[:5]],
         "gaps": [f"未见 {s} 相关经验" for s in miss[:5]],
         "comment": comment,
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _mock_profile_generate_json(last: str) -> str:
+    """T16 画像生成 mock:从「招聘意图: X」里拆词当技能。"""
+    m = re.search(r"招聘意图[:：]\s*(.+)", last, re.DOTALL)
+    intent = (m.group(1).strip() if m else "新画像")
+    words = [w for w in re.split(r"[\s,,、/]+", intent) if len(w) >= 2]
+    skills = words[:8] or ["通用技能"]
+    payload = {
+        "name": f"{intent[:16]}画像",
+        "skills": skills,
+        "keywords": skills[1:4],
+        "nice_to_have": ["开源项目经验"],
+        "min_years": 0,
+        "education": "本科" if "工程师" in intent or "开发" in intent else "",
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _mock_sourcing_score_json(last: str) -> str:
+    """T16 人才库精评 mock:按 spec.skills 与简历文本整词命中打分。"""
+    from app.services.text_match import keyword_in_text
+
+    spec_m = re.search(r'"skills"\s*:\s*\[([^\]]*)\]', last)
+    skills = (
+        [s.strip().strip('"') for s in spec_m.group(1).split(",") if s.strip().strip('"')]
+        if spec_m else []
+    )
+    resume_m = re.search(r"简历文本[^\n]*:\s*(.+)", last, re.DOTALL)
+    resume_text = (resume_m.group(1) if resume_m else last)
+    skills_text_m = re.search(r"简历技能[:：]\s*\[([^\]]*)\]", last)
+    corpus = resume_text + " " + (skills_text_m.group(1) if skills_text_m else "")
+
+    if not skills:
+        score, hits, miss = 55, [], []
+    else:
+        hits = [s for s in skills if keyword_in_text(s, corpus)]
+        miss = [s for s in skills if not keyword_in_text(s, corpus)]
+        score = int(round(35 + len(hits) / len(skills) * 60))
+    payload = {
+        "score": max(0, min(100, score)),
+        "highlights": [f"具备 {s} 经验" for s in hits[:3]] or ["画像部分维度可评"],
+        "gaps": [f"缺少 {s}" for s in miss[:2]],
     }
     return json.dumps(payload, ensure_ascii=False)
 

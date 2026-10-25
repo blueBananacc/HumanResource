@@ -86,9 +86,11 @@ from app.api import resumes as resumes_api
 from app.api import rooms as rooms_api
 from app.api import salary_bands as salary_bands_api
 from app.api import skills as skills_api
+from app.api import sourcing as sourcing_api
 from app.api import smtp as smtp_api
 from app.api import sso as sso_api
 from app.api import surveys as surveys_api
+from app.api import talent_profiles as talent_profiles_api
 from app.api import talents as talents_api
 from app.api import users as users_api
 from app.api import voice as voice_api
@@ -481,6 +483,8 @@ def create_app() -> FastAPI:
     app.include_router(model_calls_api.router, prefix="/api")
     app.include_router(ai_api.router, prefix="/api")
     app.include_router(doc_templates_api.router, prefix="/api")
+    app.include_router(talent_profiles_api.router, prefix="/api")
+    app.include_router(sourcing_api.router, prefix="/api")
 
     return app
 
