@@ -3,8 +3,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { BrandShape } from "@/components/brand/BrandShape";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm";
 import { fetchJSON } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { PERM } from "@/lib/roles";
 import { formatRelative } from "@/lib/format";
 
 type LicenseStatus = {
@@ -25,6 +27,7 @@ type Resume = {
     display_phone: string | null;
   };
   skills: string[];
+  is_read: boolean;
 };
 
 type Job = { id: string; title: string; status: string };
@@ -177,6 +180,35 @@ function Stat({
 }
 
 function RecentResumes({ resumes }: { resumes: Resume[] }) {
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const { hasPermission } = useAuth();
+  const canDelete = hasPermission(PERM.DELETE_RESUMES);
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["resumes"] });
+  const toggleRead = useMutation({
+    mutationFn: (r: Resume) =>
+      fetchJSON(`/api/resumes/${r.id}/${r.is_read ? "unread" : "read"}`, {
+        method: "POST",
+      }),
+    onSuccess: invalidate,
+  });
+  const del = useMutation({
+    mutationFn: (id: string) =>
+      fetchJSON(`/api/resumes/${id}`, { method: "DELETE" }),
+    onSuccess: invalidate,
+  });
+
+  const onDelete = async (r: Resume) => {
+    const ok = await confirm({
+      title: `删除「${r.candidate.name}」的简历?`,
+      description: "删除后不可恢复;若该候选人没有其他简历,候选人档案会一并移除。",
+      confirmLabel: "删除",
+      tone: "danger",
+    });
+    if (ok) del.mutate(r.id);
+  };
+
   return (
     <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] flex flex-col">
       <CardHeader title="最近简历" />
@@ -197,27 +229,58 @@ function RecentResumes({ resumes }: { resumes: Resume[] }) {
           if (r.candidate.display_email) sub.push(r.candidate.display_email);
           if (r.candidate.display_phone) sub.push(r.candidate.display_phone);
           return (
-            <Link
+            <div
               key={r.id}
-              to={`/talents/${r.candidate.id}`}
-              className={`flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-[var(--color-bg-muted)] transition-colors ${
+              className={`flex items-center gap-2 px-3 py-3 rounded-lg hover:bg-[var(--color-bg-muted)] transition-colors ${
                 i < resumes.length - 1
                   ? "border-b border-[var(--color-border-row)]"
                   : ""
               }`}
             >
-              <div className="flex flex-col flex-1 min-w-0 gap-0.5">
-                <span className="font-medium text-sm font-body truncate">
-                  {r.candidate.name}
+              <Link
+                to={`/talents/${r.candidate.id}`}
+                className="flex items-center gap-3 flex-1 min-w-0"
+              >
+                <span className="w-1.5 shrink-0 grid place-items-center">
+                  {!r.is_read && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-orange)]" />
+                  )}
                 </span>
-                <span className="text-xs text-[var(--color-text-secondary)] font-body truncate">
-                  {sub.length > 0 ? sub.join(" · ") : r.file_name}
+                <div className="flex flex-col flex-1 min-w-0 gap-0.5">
+                  <span
+                    className={`font-medium text-sm font-body truncate ${
+                      r.is_read ? "text-[var(--color-text-tertiary)]" : ""
+                    }`}
+                  >
+                    {r.candidate.name}
+                  </span>
+                  <span className="text-xs text-[var(--color-text-secondary)] font-body truncate">
+                    {sub.length > 0 ? sub.join(" · ") : r.file_name}
+                  </span>
+                </div>
+                <span className="text-xs text-[var(--color-text-tertiary)] font-mono shrink-0">
+                  {formatRelative(r.created_at)}
                 </span>
+              </Link>
+              <div className="flex items-center gap-2.5 shrink-0">
+                <button
+                  onClick={() => toggleRead.mutate(r)}
+                  disabled={toggleRead.isPending}
+                  className="text-[11px] text-[var(--color-info)] hover:underline disabled:opacity-50"
+                >
+                  {r.is_read ? "标为未读" : "已读"}
+                </button>
+                {canDelete && (
+                  <button
+                    onClick={() => onDelete(r)}
+                    disabled={del.isPending}
+                    className="text-[11px] text-[var(--color-danger)] hover:underline disabled:opacity-50"
+                  >
+                    删除
+                  </button>
+                )}
               </div>
-              <span className="text-xs text-[var(--color-text-tertiary)] font-mono shrink-0">
-                {formatRelative(r.created_at)}
-              </span>
-            </Link>
+            </div>
           );
         })
       )}

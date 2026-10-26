@@ -316,6 +316,29 @@ class Resume(Base):
     )
 
 
+class ResumeReadState(Base):
+    """简历"已读"标记 —— 按用户维度(与通知已读语义一致)。
+
+    复合主键 (resume_id, user_id):一个用户对一份简历最多一条已读记录。
+    概览页「最近简历」用它渲染未读点/已读置灰,"标为已读/未读"写删本表行。
+    """
+
+    __tablename__ = "resume_read_states"
+
+    resume_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("resumes.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    read_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
 class Interview(Base):
     """AI 面试会话。状态机:in_progress → done / abandoned。
 

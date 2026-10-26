@@ -29,7 +29,14 @@ from sqlalchemy.orm import Session
 from app.api._pagination import PageOut, apply_q_ilike, count_total, paginate_params
 from app.api.auth import get_current_user
 from app.api.license import require_within_quota
-from app.domain.models import Candidate, Interview, InterviewTurn, Resume, User
+from app.domain.models import (
+    Candidate,
+    Interview,
+    InterviewTurn,
+    Resume,
+    ResumeReadState,
+    User,
+)
 from app.infra.db import get_db
 from app.infra.storage import ObjectNotFoundError, build_object_store
 from app.services.audit import write_audit
@@ -74,6 +81,8 @@ class ResumeOut(BaseModel):
     # pending / parsing / done / failed,UI 据此显示"解析中"/"解析失败"
     parse_status: str
     parse_error: str | None = None
+    # 当前用户是否已读(按用户维度,概览页「最近简历」的未读点/置灰)
+    is_read: bool = False
 
 
 class ResumeDetailOut(ResumeOut):
@@ -86,7 +95,7 @@ class ResumeDetailOut(ResumeOut):
     sections: dict | None = None
 
 
-def _serialize(r: Resume, c: Candidate) -> ResumeOut:
+def _serialize(r: Resume, c: Candidate, *, is_read: bool = False) -> ResumeOut:
     skills = (r.parsed_data or {}).get("skills") or []
     return ResumeOut(
         id=r.id,
@@ -104,6 +113,7 @@ def _serialize(r: Resume, c: Candidate) -> ResumeOut:
         skills=skills,
         parse_status=r.parse_status,
         parse_error=r.parse_error,
+        is_read=is_read,
     )
 
 
@@ -316,8 +326,16 @@ def list_resumes(
     rows = db.execute(
         stmt.order_by(Resume.created_at.desc()).limit(limit).offset(offset)
     ).all()
+    read_ids = set(
+        db.scalars(
+            select(ResumeReadState.resume_id).where(
+                ResumeReadState.user_id == current.id,
+                ResumeReadState.resume_id.in_([r.id for r, _ in rows]),
+            )
+        )
+    ) if rows else set()
     return PageOut[ResumeOut](
-        items=[_serialize(r, c) for r, c in rows],
+        items=[_serialize(r, c, is_read=r.id in read_ids) for r, c in rows],
         total=total,
         limit=limit,
         offset=offset,
@@ -511,6 +529,63 @@ async def download_resume(
     )
 
 
+def _get_resume_in_scope(
+    db: Session, resume_id: str, current: User
+) -> tuple[Resume, Candidate]:
+    r = db.get(Resume, resume_id)
+    if not r or r.tenant_id != current.tenant_id:
+        raise HTTPException(404, "简历不存在")
+    c = db.get(Candidate, r.candidate_id)
+    if c is not None:
+        ensure_can_see(get_org_scope(db, current), c.org_unit_id)
+    return r, c
+
+
+@router.post("/{resume_id}/read")
+def mark_resume_read(
+    resume_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> dict:
+    """标为已读 —— 按当前用户维度,幂等(重复调用安全)。"""
+    _get_resume_in_scope(db, resume_id, current)
+    if not db.get(ResumeReadState, (resume_id, current.id)):
+        db.add(
+            ResumeReadState(
+                tenant_id=current.tenant_id,
+                resume_id=resume_id,
+                user_id=current.id,
+            )
+        )
+        write_audit(
+            db, actor=current, entity_type="resume", entity_id=resume_id,
+            action="mark_read", detail={}, request=request,
+        )
+    db.commit()
+    return {"is_read": True}
+
+
+@router.post("/{resume_id}/unread")
+def mark_resume_unread(
+    resume_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> dict:
+    """标为未读 —— 删掉当前用户的已读记录,幂等。"""
+    _get_resume_in_scope(db, resume_id, current)
+    row = db.get(ResumeReadState, (resume_id, current.id))
+    if row is not None:
+        db.delete(row)
+        write_audit(
+            db, actor=current, entity_type="resume", entity_id=resume_id,
+            action="mark_unread", detail={}, request=request,
+        )
+    db.commit()
+    return {"is_read": False}
+
+
 @router.delete(
     "/{resume_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -522,12 +597,7 @@ async def delete_resume(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ) -> None:
-    r = db.get(Resume, resume_id)
-    if not r or r.tenant_id != current.tenant_id:
-        raise HTTPException(404, "简历不存在")
-    c = db.get(Candidate, r.candidate_id)
-    if c is not None:
-        ensure_can_see(get_org_scope(db, current), c.org_unit_id)
+    r, c = _get_resume_in_scope(db, resume_id, current)
     # 先删存储,再删 DB(失败时存储多一份比 DB 引用空文件好处理)
     try:
         await build_object_store().delete(r.storage_key)
