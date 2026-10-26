@@ -597,6 +597,53 @@ def list_applications(
     )
 
 
+def _apply_decision(
+    db: Session, a: LeaveApplication, action: str, actor: User,
+    note: str | None, request: Request | None = None,
+) -> None:
+    """批准/驳回的域副作用(台账扣减+考勤标 leave)。审批中心引擎与
+    本模块散装端点共用这一份 —— 不 commit,由调用方收尾。"""
+    a.status = action
+    a.approver_id = actor.id
+    a.decided_at = _now()
+    a.decision_note = note
+    if action == "approved":
+        year = a.start_date.year
+        _write_ledger(
+            db, tenant_id=a.tenant_id, employee_id=a.employee_id,
+            leave_type_id=a.leave_type_id, year=year, delta=-a.days,
+            ref_type="application", ref_id=a.id,
+            note=f"请假 {a.start_date.isoformat()}~{a.end_date.isoformat()}",
+        )
+        _mark_attendance_leave(
+            db, tenant_id=a.tenant_id, employee_id=a.employee_id,
+            start=a.start_date, end=a.end_date,
+        )
+    write_audit(
+        db, actor=actor, entity_type="leave_application", entity_id=a.id,
+        action="approve" if action == "approved" else "reject",
+        detail={"days": a.days} if action == "approved" else {},
+        request=request,
+    )
+
+
+def _decide_via_engine_or_self(
+    db: Session, a: LeaveApplication, current: User, action: str,
+    note: str | None, request: Request,
+) -> None:
+    """有审批实例 → 引擎多步裁决;否则旧一级审批。"""
+    from app.services.approvals import decide_on_instance, instance_for
+
+    inst = instance_for(db, current.tenant_id, "leave", a.id)
+    if inst is not None:
+        decide_on_instance(db, inst, current, action, note, request)
+        return
+    if not _can_approve(db, current, a):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "只能审批直属下属的申请,不能自批")
+    _apply_decision(db, a, action, current, note, request)
+
+
 @router.post("/applications/{app_id}/approve", response_model=ApplicationOut)
 def approve_application(
     app_id: str,
@@ -610,28 +657,7 @@ def approve_application(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "申请不存在")
     if a.status != "pending":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "该申请已处理")
-    if not _can_approve(db, current, a):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "只能审批直属下属的申请,不能自批")
-    a.status = "approved"
-    a.approver_id = current.id
-    a.decided_at = _now()
-    a.decision_note = body.note
-    year = a.start_date.year
-    _write_ledger(
-        db, tenant_id=current.tenant_id, employee_id=a.employee_id,
-        leave_type_id=a.leave_type_id, year=year, delta=-a.days,
-        ref_type="application", ref_id=a.id,
-        note=f"请假 {a.start_date.isoformat()}~{a.end_date.isoformat()}",
-    )
-    _mark_attendance_leave(
-        db, tenant_id=current.tenant_id, employee_id=a.employee_id,
-        start=a.start_date, end=a.end_date,
-    )
-    write_audit(
-        db, actor=current, entity_type="leave_application", entity_id=a.id,
-        action="approve", detail={"days": a.days}, request=request,
-    )
+    _decide_via_engine_or_self(db, a, current, "approved", body.note, request)
     db.commit()
     db.refresh(a)
     emps, types, users = _emp_map(db, current.tenant_id), _type_map(db, current.tenant_id), _user_map(db, current.tenant_id)
@@ -651,17 +677,7 @@ def reject_application(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "申请不存在")
     if a.status != "pending":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "该申请已处理")
-    if not _can_approve(db, current, a):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "只能审批直属下属的申请,不能自批")
-    a.status = "rejected"
-    a.approver_id = current.id
-    a.decided_at = _now()
-    a.decision_note = body.note
-    write_audit(
-        db, actor=current, entity_type="leave_application", entity_id=a.id,
-        action="reject", detail={}, request=request,
-    )
+    _decide_via_engine_or_self(db, a, current, "rejected", body.note, request)
     db.commit()
     db.refresh(a)
     emps, types, users = _emp_map(db, current.tenant_id), _type_map(db, current.tenant_id), _user_map(db, current.tenant_id)

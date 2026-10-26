@@ -31,6 +31,7 @@ from app.api import activity as activity_api
 from app.api import ai as ai_api
 from app.api import announcements as announcements_api
 from app.api import applications as applications_api
+from app.api import approvals as approvals_api
 from app.api import assistant as assistant_api
 from app.api import attendance as attendance_api
 from app.api import audit as audit_api
@@ -38,6 +39,7 @@ from app.api import automations as automations_api
 from app.api import auth as auth_api
 from app.api import campaigns as campaigns_api
 from app.api import cases as cases_api
+from app.api import datasets as datasets_api
 from app.api import email as email_api
 from app.api import email_templates as email_templates_api
 from app.api import employees as employees_api
@@ -487,6 +489,8 @@ def create_app() -> FastAPI:
     app.include_router(talent_profiles_api.router, prefix="/api")
     app.include_router(sourcing_api.router, prefix="/api")
     app.include_router(shifts_api.router, prefix="/api")
+    app.include_router(approvals_api.router, prefix="/api")
+    app.include_router(datasets_api.router, prefix="/api")
 
     return app
 

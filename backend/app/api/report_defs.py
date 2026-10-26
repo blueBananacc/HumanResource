@@ -33,6 +33,7 @@ from app.infra.db import get_db
 from app.infra.license.state import is_feature_enabled
 from app.services.permissions import (
     PERM_MANAGE_EMPLOYEES,
+    PERM_MANAGE_PAYROLL,
     PERM_VIEW_REPORTS,
     apply_org_filter,
     get_org_scope,
@@ -183,6 +184,12 @@ def _r_hr_movements(db: Session, u: User, p: dict) -> dict:
     return build_movements_report(db, u, month=p.get("month"))
 
 
+def _r_payroll_input(db: Session, u: User, p: dict) -> dict:
+    from app.services.payroll_input import build_payroll_input
+
+    return build_payroll_input(db, u, month=p.get("month"))
+
+
 REPORT_DEFS: dict[str, dict] = {
     "pipeline_funnel": {
         "label": "招聘管道漏斗",
@@ -225,6 +232,13 @@ REPORT_DEFS: dict[str, dict] = {
         "perm": PERM_VIEW_REPORTS,
         "feature": "hr.suite",
         "run": _r_hr_movements,
+    },
+    "payroll_input": {
+        "label": "薪酬底表",
+        "description": "月度算薪输入:每人一行——应出勤/出勤/请假(分类型)/缺勤/工时/未免计异常/加班/报销/排班天数(month 参数 YYYY-MM,默认上月)",
+        "perm": PERM_MANAGE_PAYROLL,
+        "feature": "hr.suite",
+        "run": _r_payroll_input,
     },
 }
 

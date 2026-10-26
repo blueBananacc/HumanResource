@@ -26,6 +26,7 @@ from app.domain.models import (
     User,
 )
 from app.infra.db import get_db
+from app.services.approvals import route_request
 from app.services.audit import write_audit
 from app.services.permissions import (
     PERM_MANAGE_EMPLOYEES,
@@ -198,6 +199,7 @@ def me_create(
     db.add(r)
     db.flush()
     write_audit(db, actor=current, entity_type="employee_request", entity_id=r.id, action="create", request=request)
+    route_request(db, current.tenant_id, "employee_request", r)
     db.commit()
     return _out(db, r)
 
@@ -221,6 +223,9 @@ def me_cancel(
         raise HTTPException(status.HTTP_409_CONFLICT, "仅待审批申请可取消")
     r.status = "cancelled"
     r.updated_at = _now()
+    from app.services.approvals import cancel_instance_for
+
+    cancel_instance_for(db, current.tenant_id, "employee_request", r.id)
     db.commit()
     return _out(db, r)
 
@@ -292,6 +297,28 @@ def get_request(
     return _out(db, r)
 
 
+def _apply_request_decision(
+    db: Session, r: EmployeeRequest, action: str, actor: User,
+    note: str | None, request: Request | None = None,
+) -> None:
+    """裁决副作用(状态 + 通知提交人)。审批中心引擎与本端点共用 —— 不 commit。"""
+    r.status = action
+    r.decided_by = actor.id
+    r.decided_at = _now()
+    r.decision_note = note
+    r.updated_at = _now()
+    _notify_requester(
+        db, r,
+        "申请已批准" if action == "approved" else "申请被驳回",
+        f"「{r.subject}」{('已批准' if action == 'approved' else '被驳回')}"
+        + (f":{note}" if note else ""),
+    )
+    write_audit(
+        db, actor=actor, entity_type="employee_request", entity_id=r.id,
+        action=f"decide:{action}", detail={"note": note}, request=request,
+    )
+
+
 @router.post("/{rid}/decide", response_model=RequestOut)
 def decide(
     rid: str,
@@ -305,24 +332,16 @@ def decide(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "申请不存在")
     if r.status not in _DECIDABLE:
         raise HTTPException(status.HTTP_409_CONFLICT, "该申请已处理")
-    # 与 leave/expenses 审批同一口径:不能自批;hiring_manager 仅直属下属
-    if not can_decide_for_employee(db, current, r.employee_id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "无权审批该员工的申请")
-    r.status = body.action
-    r.decided_by = current.id
-    r.decided_at = _now()
-    r.decision_note = body.note
-    r.updated_at = _now()
-    _notify_requester(
-        db, r,
-        "申请已批准" if body.action == "approved" else "申请被驳回",
-        f"「{r.subject}」{('已批准' if body.action == 'approved' else '被驳回')}"
-        + (f":{body.note}" if body.note else ""),
-    )
-    write_audit(
-        db, actor=current, entity_type="employee_request", entity_id=r.id,
-        action=f"decide:{body.action}", detail={"note": body.note}, request=request,
-    )
+    from app.services.approvals import decide_on_instance, instance_for
+
+    inst = instance_for(db, current.tenant_id, "employee_request", r.id)
+    if inst is not None:
+        decide_on_instance(db, inst, current, body.action, body.note, request)
+    else:
+        # 与 leave/expenses 审批同一口径:不能自批;hiring_manager 仅直属下属
+        if not can_decide_for_employee(db, current, r.employee_id):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "无权审批该员工的申请")
+        _apply_request_decision(db, r, body.action, current, body.note, request)
     db.commit()
     return _out(db, r)
 

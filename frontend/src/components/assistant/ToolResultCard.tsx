@@ -775,6 +775,203 @@ export function ToolResultCard({
     );
   }
 
+  // ===== E4:薪酬底表 → 月度算薪输入表 =====
+  if (name === "run_report" && (json as Json)?.kind === "payroll_input") {
+    const d = ((json as Json).data ?? {}) as Json;
+    const rows = (d.rows ?? []) as Json[];
+    return (
+      <CardShell icon={BarChart3} title={`薪酬底表 · ${str(d.month)}`}>
+        <div className="pb-1.5 text-[11px] text-[var(--color-text-secondary)]">
+          应出勤 {str(d.workdays ?? 0)} 天 · 共 {str(d.total ?? rows.length)} 人
+        </div>
+        <div className="grid grid-cols-[80px_1fr_60px_60px_60px_60px] gap-x-2 text-[10px] text-[var(--color-text-tertiary)] pb-0.5">
+          <span>员工</span><span>部门</span>
+          <span className="text-right">出勤</span>
+          <span className="text-right">请假</span>
+          <span className="text-right">加班h</span>
+          <span className="text-right">报销</span>
+        </div>
+        {rows.slice(0, 10).map((r, i) => (
+          <div key={i}
+            className="grid grid-cols-[80px_1fr_60px_60px_60px_60px] gap-x-2 py-0.5 text-[11px] text-[var(--color-text-secondary)]">
+            <span className="truncate">{str(r.name)}</span>
+            <span className="truncate">{str(r.org ?? "—")}</span>
+            <span className="text-right font-mono">{str(r.present_days)}</span>
+            <span className="text-right font-mono">{str(r.leave_days)}</span>
+            <span className="text-right font-mono">{str(r.overtime_hours)}</span>
+            <span className="text-right font-mono">{str(r.expense_total)}</span>
+          </div>
+        ))}
+        {rows.length > 10 && (
+          <div className="text-[10px] text-[var(--color-text-tertiary)]">
+            … 共 {rows.length} 行
+          </div>
+        )}
+      </CardShell>
+    );
+  }
+
+  // ===== E3:审批收件箱 =====
+  if (name === "list_pending_approvals") {
+    const items = (((json as Json)?.items ?? []) as Json[]);
+    const TYPE_ZH: Record<string, string> = {
+      leave: "请假", overtime: "加班", attendance_request: "补卡",
+      expense_claim: "报销", employee_request: "申请",
+    };
+    return (
+      <CardShell
+        icon={CheckCircle2}
+        title={`待审批 ${items.length} 项`}
+        right={
+          <Link to="/approvals"
+            className="text-[10px] text-[var(--color-accent)] hover:underline">
+            去审批中心
+          </Link>
+        }
+      >
+        {items.length === 0 && (
+          <div className="text-[11px] text-[var(--color-text-tertiary)]">
+            没有需要你审批的待办
+          </div>
+        )}
+        {items.slice(0, 8).map((it, i) => (
+          <div key={i} className="flex items-center gap-2 py-0.5 text-[11px]">
+            <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] bg-[var(--color-info-soft,#eff6ff)] text-[var(--color-info,#2563eb)]">
+              {TYPE_ZH[str(it.request_type)] ?? str(it.request_type)}
+            </span>
+            <span className="truncate text-[var(--color-text-secondary)]">
+              {str(it.title)}
+            </span>
+            <span className="ml-auto shrink-0 text-[10px] text-[var(--color-text-tertiary)]">
+              {it.mode === "step"
+                ? `第 ${Number(it.step_idx ?? 0) + 1}/${str(it.step_count)} 级`
+                : "一级"}
+            </span>
+          </div>
+        ))}
+        {items.length > 8 && (
+          <div className="text-[10px] text-[var(--color-text-tertiary)]">
+            … 共 {items.length} 条
+          </div>
+        )}
+      </CardShell>
+    );
+  }
+
+  // ===== E3:审批裁决结果 =====
+  if (name === "decide_approval") {
+    const j = (json ?? {}) as Json;
+    const st = str(j.instance_status ?? j.status);
+    return (
+      <CardShell icon={CheckCircle2} title="审批已提交">
+        <div className="text-[11px] text-[var(--color-text-secondary)]">
+          {st === "approved" && "整单已通过"}
+          {st === "rejected" && "已驳回"}
+          {st === "pending" && `本步已通过,流转到第 ${Number(j.step_idx ?? 0) + 2} 级`}
+        </div>
+      </CardShell>
+    );
+  }
+
+  // ===== E3:审批策略清单 =====
+  if (name === "list_approval_policies") {
+    const items = (((json as Json)?.items ?? []) as Json[]);
+    return (
+      <CardShell icon={BookOpen} title={`审批策略 ${items.length} 条`}
+        right={
+          <Link to="/approvals"
+            className="text-[10px] text-[var(--color-accent)] hover:underline">
+            管理策略
+          </Link>
+        }
+      >
+        {items.length === 0 && (
+          <div className="text-[11px] text-[var(--color-text-tertiary)]">
+            未配置 — 所有单据走一级审批
+          </div>
+        )}
+        {items.slice(0, 6).map((p, i) => (
+          <div key={i} className="py-0.5 text-[11px] text-[var(--color-text-secondary)]">
+            <b>{str(p.name)}</b>({str(p.request_type)})
+            {(p.steps as Json[] ?? []).map((s, j) => (
+              <span key={j}> {j > 0 ? "→" : ""} {str(s.label ?? s.resolver)}</span>
+            ))}
+            {p.active === false && (
+              <span className="text-[var(--color-text-tertiary)]"> [停用]</span>
+            )}
+          </div>
+        ))}
+      </CardShell>
+    );
+  }
+
+  // ===== E2:生命周期事件/清单 =====
+  if (name === "run_lifecycle_event" || name === "list_lifecycle_events") {
+    const j = (json ?? {}) as Json;
+    const events = (j.items ?? (j.id ? [j] : [])) as Json[];
+    return (
+      <CardShell icon={Target} title="入转调离"
+        right={
+          <Link to="/lifecycle"
+            className="text-[10px] text-[var(--color-accent)] hover:underline">
+            查看全部
+          </Link>
+        }
+      >
+        {events.slice(0, 6).map((ev, i) => {
+          const tasks = (ev.tasks ?? []) as Json[];
+          const done = tasks.filter((x) => x.done || x.status === "done").length;
+          return (
+            <div key={i} className="py-0.5 text-[11px] text-[var(--color-text-secondary)]">
+              <b>{str(ev.employee_name ?? ev.employee_id)}</b> · {str(ev.kind)} ·{" "}
+              {STATUS_ZH[str(ev.status)] ?? str(ev.status)}
+              {tasks.length > 0 && (
+                <span className="text-[var(--color-text-tertiary)]">
+                  {" "}(任务 {done}/{tasks.length})
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </CardShell>
+    );
+  }
+
+  // ===== E5:数据集查询 → 动态表格 =====
+  if (name === "query_dataset") {
+    const j = (json ?? {}) as Json;
+    const rows = (j.rows ?? []) as Json[];
+    const cols = [...((j.dims ?? []) as string[]), ...((j.metrics ?? []) as string[])];
+    return (
+      <CardShell icon={BarChart3} title={`${str(j.label ?? j.dataset)} · ${str(j.total_rows ?? rows.length)} 行`}>
+        {cols.length > 0 && (
+          <div
+            className="grid gap-x-3 text-[10px] text-[var(--color-text-tertiary)] pb-0.5"
+            style={{ gridTemplateColumns: `repeat(${cols.length}, minmax(0,1fr))` }}
+          >
+            {cols.map((c) => <span key={c}>{c}</span>)}
+          </div>
+        )}
+        {rows.slice(0, 12).map((r, i) => (
+          <div
+            key={i}
+            className="grid gap-x-3 py-0.5 text-[11px] text-[var(--color-text-secondary)]"
+            style={{ gridTemplateColumns: `repeat(${cols.length}, minmax(0,1fr))` }}
+          >
+            {cols.map((c) => (
+              <span key={c} className="truncate">{str(r[c])}</span>
+            ))}
+          </div>
+        ))}
+        {j.truncated === true && (
+          <div className="text-[10px] text-[var(--color-warning,#d97706)]">
+            结果超 200 行已截断,可加过滤条件缩小范围
+          </div>
+        )}
+      </CardShell>
+    );
+  }
+
   // ===== 聚合/计数/报表 → 指标卡 =====
   if (
     name === "count_records" ||

@@ -1205,6 +1205,329 @@ function makeTools(token: string): ToolDef[] {
           body: { month: p.month, dry_run: p.dry_run ?? false },
         }),
     },
+    // ===== E1:员工自助(全部走 /me 端点,行级=本人绑定的员工档案) =====
+    {
+      name: "get_my_profile",
+      label: "查我的档案",
+      description:
+        "查本人员工档案:工号/部门/职位/上级/入职日期/用工类型。员工问" +
+        "「我的档案/我哪个部门/我上级是谁」用这个",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/me/profile"),
+    },
+    {
+      name: "get_my_attendance",
+      label: "查我的考勤",
+      description:
+        "查本人某月考勤明细(每天状态/首末打卡/工时)。month=YYYY-MM 默认当月",
+      parameters: Type.Object({
+        month: Type.Optional(Type.String({ description: "YYYY-MM" })),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/me/attendance?month=${encodeURIComponent(p.month ?? "")}`),
+    },
+    {
+      name: "my_leave_applications",
+      label: "查我的请假单",
+      description: "查本人请假申请列表(类型/日期/天数/状态/审批意见)",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/me/leave-applications"),
+    },
+    {
+      name: "list_leave_types",
+      label: "查假期类型",
+      description:
+        "查可申请假期类型列表(id/名称/是否带薪/是否调休)。提交请假/加班" +
+        "申请需要 leave_type_id 时先查这个",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/me/leave-types"),
+    },
+    {
+      name: "create_leave_application",
+      label: "提交请假申请",
+      description:
+        "代本人提交请假申请(需用户确认)。leave_type_id 用 list_leave_types 查;" +
+        "start_date/end_date=YYYY-MM-DD;days 不传由系统按工作日历算;reason 可选",
+      parameters: Type.Object({
+        leave_type_id: Type.String({ description: "假期类型 id" }),
+        start_date: Type.String({ description: "YYYY-MM-DD" }),
+        end_date: Type.String({ description: "YYYY-MM-DD" }),
+        days: Type.Optional(
+          Type.Number({ description: "天数,缺省=区间工作日数" }),
+        ),
+        reason: Type.Optional(Type.String({ description: "事由" })),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/me/leave-applications", {
+          method: "POST",
+          body: {
+            leave_type_id: p.leave_type_id,
+            start_date: p.start_date,
+            end_date: p.end_date,
+            days: p.days,
+            reason: p.reason ?? "",
+          },
+        }),
+    },
+    {
+      name: "my_overtime_requests",
+      label: "查我的加班单",
+      description: "查本人加班申请列表(加班日/时长/折算调休/状态)",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/me/overtime-requests"),
+    },
+    {
+      name: "create_overtime_request",
+      label: "提交加班申请",
+      description:
+        "代本人提交加班申请(需用户确认;批准自动折算调休入账)。" +
+        "leave_type_id 必须是调休类型(ist_comp),先 list_leave_types 查;" +
+        "work_date 不能是未来;hours 以 0.5 为步长",
+      parameters: Type.Object({
+        leave_type_id: Type.String({ description: "调休类型 id" }),
+        work_date: Type.String({ description: "加班日 YYYY-MM-DD" }),
+        hours: Type.Number({ description: "时长(小时,0.5 步长)" }),
+        reason: Type.Optional(Type.String({ description: "事由" })),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/me/overtime-requests", {
+          method: "POST",
+          body: {
+            leave_type_id: p.leave_type_id,
+            work_date: p.work_date,
+            hours: p.hours,
+            reason: p.reason ?? "",
+          },
+        }),
+    },
+    {
+      name: "my_requests",
+      label: "查我的申请",
+      description: "查本人提交的通用申请(类型/主题/状态/审批意见/留言数)",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/me/requests"),
+    },
+    {
+      name: "my_payslips",
+      label: "查我的工资条",
+      description: "查本人已发放工资条列表(月份/应发/实发/状态)",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/me/salary-slips"),
+    },
+    {
+      name: "my_goals",
+      label: "查我的目标",
+      description: "查本人绩效目标列表(标题/进度/状态/考核周期)",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/me/goals"),
+    },
+    // ===== E2:入离职编排(模板铺 checklist,完成自动回写档案) =====
+    {
+      name: "list_lifecycle_templates",
+      label: "查入转调离模板",
+      description: "查生命周期任务模板(入职/调动/晋升/离职,各含任务清单)",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/lifecycle/templates"),
+    },
+    {
+      name: "list_lifecycle_events",
+      label: "查入转调离事件",
+      description:
+        "查生命周期事件列表(进行中/已完成)。kind=onboarding|transfer|" +
+        "promotion|separation,status=in_progress|completed|cancelled",
+      parameters: Type.Object({
+        kind: Type.Optional(Type.String()),
+        status: Type.Optional(Type.String()),
+        employee_id: Type.Optional(Type.String()),
+      }),
+      execute: async (_id, p: any) => {
+        const qs = new URLSearchParams({ limit: "50" });
+        if (p.kind) qs.set("kind", p.kind);
+        if (p.status) qs.set("status", p.status);
+        if (p.employee_id) qs.set("employee_id", p.employee_id);
+        return t(`/api/lifecycle/events?${qs}`);
+      },
+    },
+    {
+      name: "run_lifecycle_event",
+      label: "发起入转调离",
+      description:
+        "为员工发起生命周期事件(需用户确认),按模板铺 checklist。" +
+        "kind=onboarding 入职 | transfer 调动(payload.to_org_unit_id)|" +
+        " promotion 晋升(payload.to_designation)| separation 离职;" +
+        "任务全勾后自动回写员工档案。employee_id 先用人事查询工具找",
+      parameters: Type.Object({
+        employee_id: Type.String({ description: "员工 id" }),
+        kind: Type.String({
+          description: "onboarding|transfer|promotion|separation",
+        }),
+        effective_date: Type.Optional(
+          Type.String({ description: "生效日 YYYY-MM-DD" }),
+        ),
+        template_id: Type.Optional(
+          Type.String({ description: "模板 id,缺省用默认模板" }),
+        ),
+        payload: Type.Optional(
+          Type.Record(Type.String(), Type.Unknown(), {
+            description: "transfer:to_org_unit_id;promotion:to_designation",
+          }),
+        ),
+        note: Type.Optional(Type.String()),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/lifecycle/events", {
+          method: "POST",
+          body: {
+            employee_id: p.employee_id,
+            kind: p.kind,
+            effective_date: p.effective_date,
+            template_id: p.template_id,
+            payload: p.payload,
+            note: p.note,
+          },
+        }),
+    },
+    {
+      name: "toggle_lifecycle_task",
+      label: "勾销入转调离任务",
+      description:
+        "勾选/取消某条清单任务(需用户确认);全部勾完事件自动完成并" +
+        "回写员工档案。task_id 来自 list_lifecycle_events 返回的 tasks",
+      parameters: Type.Object({
+        task_id: Type.String({ description: "任务 id" }),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/lifecycle/tasks/${encodeURIComponent(p.task_id)}/toggle`, {
+          method: "POST",
+        }),
+    },
+    // ===== E3:审批中心(统一收件箱 + 多级链裁决 + 代理人) =====
+    {
+      name: "list_pending_approvals",
+      label: "查我的待审批",
+      description:
+        "查当前用户可审批的待办:多级审批链当前步(step 模式)+" +
+        "未配策略的一级审批(legacy 模式)。员工问「我有什么要批的」、" +
+        "HR 问「待审批清单」用这个",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/approvals/inbox"),
+    },
+    {
+      name: "decide_approval",
+      label: "审批通过/驳回",
+      description:
+        "对收件箱里的申请表态(需用户确认)。request_type ∈ leave|" +
+        "overtime|attendance_request|expense_claim|employee_request;" +
+        "action=approved|rejected;note 可选。多级链自动推进到下一级," +
+        "末步批准才生效",
+      parameters: Type.Object({
+        request_type: Type.String(),
+        request_id: Type.String(),
+        action: Type.String({ description: "approved|rejected" }),
+        note: Type.Optional(Type.String()),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/approvals/decide", {
+          method: "POST",
+          body: {
+            request_type: p.request_type,
+            request_id: p.request_id,
+            action: p.action,
+            note: p.note,
+          },
+        }),
+    },
+    {
+      name: "list_approval_policies",
+      label: "查审批策略",
+      description:
+        "查审批策略配置(request_type/条件/多级步骤)。管理员可配;" +
+        "介绍「请假走几级审批」这类规则用这个",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/approvals/policies"),
+    },
+    {
+      name: "save_approval_policy",
+      label: "配置审批策略",
+      description:
+        "新建/覆盖审批策略(需用户确认;管理员权限)。request_type ∈ " +
+        "leave|overtime|attendance_request|expense_claim|employee_request;" +
+        "conditions=[{field,op,value}] 字段白名单见 list_approval_policies " +
+        "返回的 condition_fields(如 days gt 3);steps=[{resolver,key?,label?}]" +
+        " 按顺序逐级审批:manager=申请人直属上级/role=该角色全员(key=角色名)" +
+        "/user=指定人(key=user_id)",
+      parameters: Type.Object({
+        name: Type.String(),
+        request_type: Type.String(),
+        priority: Type.Optional(Type.Number()),
+        conditions: Type.Optional(
+          Type.Array(Type.Record(Type.String(), Type.Unknown())),
+        ),
+        steps: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/approvals/policies", {
+          method: "POST",
+          body: {
+            name: p.name,
+            request_type: p.request_type,
+            priority: p.priority ?? 0,
+            conditions: p.conditions ?? [],
+            steps: p.steps,
+          },
+        }),
+    },
+    {
+      name: "set_my_delegate",
+      label: "设置审批代理人",
+      description:
+        "把自己的审批权临时委托给另一个用户(需用户确认)。" +
+        "delegate_user_id 传 null 取消代理",
+      parameters: Type.Object({
+        delegate_user_id: Type.Union([Type.String(), Type.Null()]),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/approvals/delegate", {
+          method: "PATCH",
+          body: { delegate_user_id: p.delegate_user_id },
+        }),
+    },
+    // ===== E5:白名单数据集查询(NL 报表,确定性执行) =====
+    {
+      name: "list_datasets",
+      label: "查可统计的数据集",
+      description:
+        "查可自由统计的数据集清单及各自可用维度/指标/过滤字段。" +
+        "用户要临时口径的统计表(如「各部门 90 后占比」「各月请假天数」)" +
+        "先查这个选字段",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/datasets"),
+    },
+    {
+      name: "query_dataset",
+      label: "自由统计查询",
+      description:
+        "在白名单数据集上做分组统计。dataset 见 list_datasets;" +
+        "group_by=维度名数组;metrics=指标名数组(默认 count);" +
+        "filters 支持 month=YYYY-MM / date_from / date_to / 数据集白名单字段" +
+        "(eq 或数组 in)。结果行数封顶 200",
+      parameters: Type.Object({
+        dataset: Type.String(),
+        group_by: Type.Optional(Type.Array(Type.String())),
+        metrics: Type.Optional(Type.Array(Type.String())),
+        filters: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/datasets/query", {
+          method: "POST",
+          body: {
+            dataset: p.dataset,
+            group_by: p.group_by ?? [],
+            metrics: p.metrics ?? ["count"],
+            filters: p.filters ?? {},
+          },
+        }),
+    },
   ];
 }
 
@@ -1235,6 +1558,13 @@ export const WRITE_TOOLS = new Set([
   "apply_org_changes",
   "generate_shifts",
   "auto_cover_shifts",
+  "create_leave_application",
+  "create_overtime_request",
+  "run_lifecycle_event",
+  "toggle_lifecycle_task",
+  "decide_approval",
+  "save_approval_policy",
+  "set_my_delegate",
 ]);
 
 export function hrTools(token: string): AgentTool[] {

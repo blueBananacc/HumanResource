@@ -69,6 +69,7 @@ import { ExpenseTypes } from "@/pages/hris/ExpenseTypes";
 import { Payroll } from "@/pages/hris/Payroll";
 import { Announcements } from "@/pages/hris/Announcements";
 import { EmployeeRequests } from "@/pages/hris/EmployeeRequests";
+import { Approvals } from "@/pages/hris/Approvals";
 import { HrCases } from "@/pages/hris/HrCases";
 import { Knowledge } from "@/pages/hris/Knowledge";
 import { SalaryBands } from "@/pages/hris/SalaryBands";
@@ -142,6 +143,7 @@ export const router = createBrowserRouter([
       { path: "salary-bands", element: <SalaryBands /> },
       // ── HR 服务台 / 协作 ──
       { path: "announcements", element: <Announcements /> },
+      { path: "approvals", element: <Approvals /> },
       { path: "requests", element: <EmployeeRequests /> },
       { path: "cases", element: <HrCases /> },
       { path: "knowledge", element: <Knowledge /> },

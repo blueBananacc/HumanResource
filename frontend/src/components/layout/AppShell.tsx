@@ -45,6 +45,7 @@ const TITLE_BY_PATH: Record<string, string> = {
   "/expenses/types": "报销类型",
   "/payroll": "工资条",
   "/announcements": "公司公告",
+  "/approvals": "审批中心",
   "/requests": "员工申请",
   "/cases": "HR 工单",
   "/knowledge": "知识库",

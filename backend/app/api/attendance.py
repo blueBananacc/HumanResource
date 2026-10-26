@@ -448,6 +448,55 @@ def list_requests(
     )
 
 
+def _apply_request_decision(
+    db: Session, r: AttendanceRequest, action: str, actor: User,
+    note: str | None, request: Request | None = None,
+) -> None:
+    """批准 = 补写打卡 + 重算当日考勤;驳回只改状态。审批中心引擎与
+    本模块散装端点共用 —— 不 commit。"""
+    r.status = action
+    r.approver_id = actor.id
+    r.decided_at = datetime.now(UTC).replace(tzinfo=None)
+    r.decision_note = note
+    if action == "approved":
+        # 补写一条打卡(method=request 标记来源),再重算当日考勤
+        db.add(EmployeeCheckin(
+            tenant_id=r.tenant_id, employee_id=r.employee_id,
+            ts=r.ts, kind=r.kind, method="request",
+            # reason 是 Text 无上限,checkin.note 只有 VARCHAR(256) — 截断防超长
+            note=(r.reason or "补卡审批通过")[:256],
+        ))
+        # autoflush 关闭,先落库让 summarize_day 能读到这条 checkin
+        db.flush()
+        summarize_day(
+            db, tenant_id=r.tenant_id, employee_id=r.employee_id,
+            day=r.ts.date(),
+        )
+    write_audit(
+        db, actor=actor, entity_type="attendance_request", entity_id=r.id,
+        action="approve" if action == "approved" else "reject",
+        detail={"employee_id": r.employee_id, "ts": r.ts.isoformat(),
+                "kind": r.kind} if action == "approved" else {},
+        request=request,
+    )
+
+
+def _decide_via_engine_or_self(
+    db: Session, r: AttendanceRequest, current: User, action: str,
+    note: str | None, request: Request,
+) -> None:
+    from app.services.approvals import decide_on_instance, instance_for
+
+    inst = instance_for(db, current.tenant_id, "attendance_request", r.id)
+    if inst is not None:
+        decide_on_instance(db, inst, current, action, note, request)
+        return
+    if not can_decide_for_employee(db, current, r.employee_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "只能审批直属下属的申请,不能自批")
+    _apply_request_decision(db, r, action, current, note, request)
+
+
 @router.post("/requests/{req_id}/approve", response_model=AttendanceRequestOut)
 def approve_request(
     req_id: str,
@@ -462,33 +511,7 @@ def approve_request(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "申请不存在")
     if r.status != "pending":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "该申请已处理")
-    if not can_decide_for_employee(db, current, r.employee_id):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "只能审批直属下属的申请,不能自批")
-    r.status = "approved"
-    r.approver_id = current.id
-    r.decided_at = datetime.now(UTC).replace(tzinfo=None)
-    r.decision_note = body.note
-    # 补写一条打卡(method=request 标记来源),再重算当日考勤
-    db.add(EmployeeCheckin(
-        tenant_id=current.tenant_id, employee_id=r.employee_id,
-        ts=r.ts, kind=r.kind, method="request",
-        # reason 是 Text 无上限,checkin.note 只有 VARCHAR(256) — 截断防超长
-        note=(r.reason or "补卡审批通过")[:256],
-    ))
-    # autoflush 关闭,先落库让 summarize_day 能读到这条 checkin
-    db.flush()
-    summarize_day(
-        db, tenant_id=current.tenant_id, employee_id=r.employee_id,
-        day=r.ts.date(),
-    )
-    write_audit(
-        db, actor=current, entity_type="attendance_request", entity_id=r.id,
-        action="approve",
-        detail={"employee_id": r.employee_id, "ts": r.ts.isoformat(),
-                "kind": r.kind},
-        request=request,
-    )
+    _decide_via_engine_or_self(db, r, current, "approved", body.note, request)
     db.commit()
     emps, orgs, users = _req_maps(db, current.tenant_id)
     return _req_out(r, emps, orgs, users, current.id)
@@ -508,17 +531,7 @@ def reject_request(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "申请不存在")
     if r.status != "pending":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "该申请已处理")
-    if not can_decide_for_employee(db, current, r.employee_id):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "只能审批直属下属的申请,不能自批")
-    r.status = "rejected"
-    r.approver_id = current.id
-    r.decided_at = datetime.now(UTC).replace(tzinfo=None)
-    r.decision_note = body.note
-    write_audit(
-        db, actor=current, entity_type="attendance_request", entity_id=r.id,
-        action="reject", detail={}, request=request,
-    )
+    _decide_via_engine_or_self(db, r, current, "rejected", body.note, request)
     db.commit()
     emps, orgs, users = _req_maps(db, current.tenant_id)
     return _req_out(r, emps, orgs, users, current.id)

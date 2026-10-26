@@ -251,6 +251,22 @@ def _can_decide(db: Session, user: User, c: ExpenseClaim) -> bool:
     return False
 
 
+def _apply_claim_decision(
+    db: Session, c: ExpenseClaim, action: str, actor: User,
+    note: str | None, request: Request | None = None,
+) -> None:
+    """批准/驳回副作用(报销只改状态,付款走单独 /pay)。审批中心引擎
+    与本模块散装端点共用 —— 不 commit。"""
+    c.status = action
+    c.approver_id = actor.id
+    c.decided_at = _now()
+    c.decision_note = note
+    write_audit(
+        db, actor=actor, entity_type="expense_claim", entity_id=c.id,
+        action=action, detail={"total": c.total}, request=request,
+    )
+
+
 def _decide(
     db: Session, request: Request, current: User,
     claim_id: str, to: Literal["approved", "rejected"], note: str | None,
@@ -263,17 +279,16 @@ def _decide(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "报销单不存在")
     if c.status != "pending":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "已处理")
-    if not _can_decide(db, current, c):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "只能审批直属下属的报销,不能自批")
-    c.status = to
-    c.approver_id = current.id
-    c.decided_at = _now()
-    c.decision_note = note
-    write_audit(
-        db, actor=current, entity_type="expense_claim", entity_id=c.id,
-        action=to, detail={"total": c.total}, request=request,
-    )
+    from app.services.approvals import decide_on_instance, instance_for
+
+    inst = instance_for(db, current.tenant_id, "expense_claim", c.id)
+    if inst is not None:
+        decide_on_instance(db, inst, current, to, note, request)
+    else:
+        if not _can_decide(db, current, c):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "只能审批直属下属的报销,不能自批")
+        _apply_claim_decision(db, c, to, current, note, request)
     db.commit()
     emps, orgs, types = _maps(db, current.tenant_id)
     items = list(db.scalars(

@@ -118,6 +118,10 @@ class User(Base):
         DateTime, nullable=False, server_default=func.now()
     )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 审批代理人(E3):解析步骤审批人时把代理人一并纳入可审批集合
+    delegate_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
 
 class License(Base):
@@ -3531,4 +3535,101 @@ class JobKnowledgeChunk(Base):
 
     __table_args__ = (
         Index("ix_jk_chunks_job_src_idx", "job_id", "source_id", "chunk_index"),
+    )
+
+
+class ApprovalPolicy(Base):
+    """审批策略(E3 审批中心):某 request_type 满足条件时走这条多级链。
+
+    - ``request_type``: leave / overtime / attendance_request /
+      expense_claim / employee_request
+    - ``conditions`` JSON: [{field, op, value}],字段白名单见
+      ``services.approvals.CONDITION_FIELDS``,op ∈ eq|ne|gt|lt|ge|le|in,
+      全部 AND;空数组 = 该类型默认链
+    - ``steps`` JSON: [{resolver, key?, label?}],resolver ∈
+      manager(申请人直属上级)|role(该角色全部用户)|user(指定 user_id);
+      key 对 role=角色名、user=user_id、manager 不用
+    - 同类型多条策略按 ``priority`` 降序取首个匹配
+    """
+
+    __tablename__ = "approval_policies"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    conditions: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    steps: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sql_true())
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ApprovalInstance(Base):
+    """一次审批流的运行实例:某单据被某策略接管。
+
+    ``request_type + request_id`` 唯一 —— 一张单据至多被一条链接管;
+    无实例的单据走旧散装一级审批,向后兼容。
+    """
+
+    __tablename__ = "approval_instances"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    request_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    policy_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("approval_policies.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="pending", index=True
+    )
+    current_step_idx: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "request_type", "request_id",
+                         name="uq_approval_inst_req"),
+    )
+
+
+class ApprovalStep(Base):
+    """审批链中的一步:由 resolver 动态解析出可审批用户集合。"""
+
+    __tablename__ = "approval_steps"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    instance_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("approval_instances.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    resolver: Mapped[str] = mapped_column(String(16), nullable=False)
+    resolver_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="pending"
+    )
+    decided_by_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("instance_id", "idx", name="uq_approval_step_idx"),
     )

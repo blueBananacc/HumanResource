@@ -263,6 +263,7 @@ export const mainModules: NavModule[] = [
     groups: [
       {
         items: [
+          { to: "/approvals", label: "审批中心", keywords: "审批 收件箱 待办 approval inbox" },
           { to: "/announcements", label: "公告管理", permission: PERM.VIEW_REPORTS, keywords: "公告 通知 announcement news" },
           { to: "/requests", label: "员工申请", permission: PERM.MANAGE_EMPLOYEES, keywords: "申请 审批 培训 福利 request" },
           { to: "/cases", label: "HR 工单", permission: PERM.MANAGE_EMPLOYEES, keywords: "工单 诉求 ticket case 服务台" },

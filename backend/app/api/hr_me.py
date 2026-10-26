@@ -62,6 +62,7 @@ from app.domain.models import (
     User,
 )
 from app.infra.db import get_db
+from app.services.approvals import cancel_instance_for, route_request
 from app.services.attendance_policy import client_ip, get_policy, ip_allowed
 from app.services.audit import write_audit_denied
 from app.services.permissions import require_linked_employee
@@ -333,6 +334,8 @@ def me_leave_create(
         days=days, reason=body.reason, status="pending",
     )
     db.add(a)
+    db.flush()
+    route_request(db, current.tenant_id, "leave", a)
     db.commit()
     db.refresh(a)
     types = {lt.id: lt}
@@ -362,6 +365,8 @@ def me_leave_cancel(
         # 重算又会把这行标回 leave。
         db.flush()
         _cancel_ledger_and_attendance(db, a)
+    else:
+        cancel_instance_for(db, current.tenant_id, "leave", a.id)
     db.commit()
     db.refresh(a)
     lt = db.get(LeaveType, a.leave_type_id)
@@ -497,6 +502,8 @@ def me_overtime_create(
         leave_type_id=lt.id, reason=body.reason, status="pending",
     )
     db.add(r)
+    db.flush()
+    route_request(db, current.tenant_id, "overtime", r)
     db.commit()
     db.refresh(r)
     return _me_ot_out(db, r, {lt.id: lt})
@@ -553,6 +560,8 @@ def me_overtime_cancel(
             delta_days=-comp_days, ref_type="overtime_cancel", ref_id=r.id,
             note="加班撤销回冲调休",
         ))
+    else:
+        cancel_instance_for(db, current.tenant_id, "overtime", r.id)
     db.commit()
     db.refresh(r)
     lt = db.get(LeaveType, r.leave_type_id)
@@ -791,6 +800,8 @@ def me_att_request_create(
         kind=body.kind, reason=body.reason, status="pending",
     )
     db.add(r)
+    db.flush()
+    route_request(db, current.tenant_id, "attendance_request", r)
     db.commit()
     db.refresh(r)
     return _me_atr_out(r)
@@ -831,6 +842,8 @@ def me_att_request_cancel(
         summarize_day(
             db, tenant_id=current.tenant_id, employee_id=e.id, day=r.ts.date()
         )
+    else:
+        cancel_instance_for(db, current.tenant_id, "attendance_request", r.id)
     db.commit()
     db.refresh(r)
     return _me_atr_out(r)
@@ -1028,6 +1041,7 @@ def me_claim_create(
             tenant_id=current.tenant_id, claim_id=c.id, type_id=it.type_id,
             occurred_on=it.occurred_on, amount=it.amount, note=it.note,
         ))
+    route_request(db, current.tenant_id, "expense_claim", c)
     db.commit()
     return me_claim_detail(c.id, db, current)
 

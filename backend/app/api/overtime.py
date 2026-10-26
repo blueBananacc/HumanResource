@@ -164,6 +164,78 @@ def list_requests(
     )
 
 
+def _apply_decision(
+    db: Session, r: OvertimeRequest, action: str, actor: User,
+    note: str | None, request: Request | None = None,
+) -> None:
+    """批准 = 折算调休入账(额度 + 台账);驳回只改状态。
+    审批中心引擎与本模块散装端点共用 —— 不 commit。"""
+    if action == "approved":
+        comp_days = _comp_days(db, r.tenant_id, r.hours)
+        # 折算结果写死在申请行上:撤销回冲与后续展示都以入账值为准,
+        # 审批后改过日标准工时也不会回算错数
+        r.comp_days = comp_days
+        year = r.work_date.year
+        # 调休入账:当年 allocation 直接加天(不存在则建),台账记 +delta。
+        # 已有额度行走 SQL 原子自增 — 并发批同一员工两单不丢增量
+        # (Python 侧 read-modify-write 会互相覆盖)。
+        alloc = db.scalars(
+            select(LeaveAllocation).where(
+                LeaveAllocation.employee_id == r.employee_id,
+                LeaveAllocation.leave_type_id == r.leave_type_id,
+                LeaveAllocation.year == year,
+            )
+        ).first()
+        if alloc:
+            alloc.days = LeaveAllocation.days + comp_days
+        else:
+            alloc = LeaveAllocation(
+                tenant_id=r.tenant_id, employee_id=r.employee_id,
+                leave_type_id=r.leave_type_id, year=year, days=comp_days,
+                note="加班调休",
+            )
+            db.add(alloc)
+            try:
+                db.flush()
+            except IntegrityError:
+                db.rollback()
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT, "额度写入冲突,请重试") from None
+        db.add(LeaveLedgerEntry(
+            tenant_id=r.tenant_id, employee_id=r.employee_id,
+            leave_type_id=r.leave_type_id, year=year, delta_days=comp_days,
+            ref_type="overtime", ref_id=r.id,
+            note=f"加班 {r.work_date.isoformat()} {r.hours}h → 调休 {comp_days} 天",
+        ))
+    r.status = action
+    r.approver_id = actor.id
+    r.decided_at = _now()
+    r.decision_note = note
+    write_audit(
+        db, actor=actor, entity_type="overtime_request", entity_id=r.id,
+        action="approve" if action == "approved" else "reject",
+        detail={"hours": r.hours, "comp_days": r.comp_days}
+        if action == "approved" else {},
+        request=request,
+    )
+
+
+def _decide_via_engine_or_self(
+    db: Session, r: OvertimeRequest, current: User, action: str,
+    note: str | None, request: Request,
+) -> None:
+    from app.services.approvals import decide_on_instance, instance_for
+
+    inst = instance_for(db, current.tenant_id, "overtime", r.id)
+    if inst is not None:
+        decide_on_instance(db, inst, current, action, note, request)
+        return
+    if not can_decide_for_employee(db, current, r.employee_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "只能审批直属下属的申请,不能自批")
+    _apply_decision(db, r, action, current, note, request)
+
+
 @router.post("/requests/{req_id}/approve", response_model=OvertimeRequestOut)
 def approve_request(
     req_id: str,
@@ -177,55 +249,7 @@ def approve_request(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "申请不存在")
     if r.status != "pending":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "该申请已处理")
-    if not can_decide_for_employee(db, current, r.employee_id):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "只能审批直属下属的申请,不能自批")
-
-    comp_days = _comp_days(db, r.tenant_id, r.hours)
-    # 折算结果写死在申请行上:撤销回冲与后续展示都以入账值为准,
-    # 审批后改过日标准工时也不会回算错数
-    r.comp_days = comp_days
-    year = r.work_date.year
-    # 调休入账:当年 allocation 直接加天(不存在则建),台账记 +delta。
-    # 已有额度行走 SQL 原子自增 — 并发批同一员工两单不丢增量
-    # (Python 侧 read-modify-write 会互相覆盖)。
-    alloc = db.scalars(
-        select(LeaveAllocation).where(
-            LeaveAllocation.employee_id == r.employee_id,
-            LeaveAllocation.leave_type_id == r.leave_type_id,
-            LeaveAllocation.year == year,
-        )
-    ).first()
-    if alloc:
-        alloc.days = LeaveAllocation.days + comp_days
-    else:
-        alloc = LeaveAllocation(
-            tenant_id=current.tenant_id, employee_id=r.employee_id,
-            leave_type_id=r.leave_type_id, year=year, days=comp_days,
-            note="加班调休",
-        )
-        db.add(alloc)
-        try:
-            db.flush()
-        except IntegrityError:
-            db.rollback()
-            raise HTTPException(
-                status.HTTP_409_CONFLICT, "额度写入冲突,请重试") from None
-    db.add(LeaveLedgerEntry(
-        tenant_id=current.tenant_id, employee_id=r.employee_id,
-        leave_type_id=r.leave_type_id, year=year, delta_days=comp_days,
-        ref_type="overtime", ref_id=r.id,
-        note=f"加班 {r.work_date.isoformat()} {r.hours}h → 调休 {comp_days} 天",
-    ))
-    r.status = "approved"
-    r.approver_id = current.id
-    r.decided_at = _now()
-    r.decision_note = body.note
-    write_audit(
-        db, actor=current, entity_type="overtime_request", entity_id=r.id,
-        action="approve", detail={"hours": r.hours, "comp_days": comp_days},
-        request=request,
-    )
+    _decide_via_engine_or_self(db, r, current, "approved", body.note, request)
     db.commit()
     emps, types, users, orgs = _maps(db, current.tenant_id)
     return _out(db, r, emps, types, users, orgs, current.id)
@@ -244,17 +268,7 @@ def reject_request(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "申请不存在")
     if r.status != "pending":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "该申请已处理")
-    if not can_decide_for_employee(db, current, r.employee_id):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "只能审批直属下属的申请,不能自批")
-    r.status = "rejected"
-    r.approver_id = current.id
-    r.decided_at = _now()
-    r.decision_note = body.note
-    write_audit(
-        db, actor=current, entity_type="overtime_request", entity_id=r.id,
-        action="reject", detail={}, request=request,
-    )
+    _decide_via_engine_or_self(db, r, current, "rejected", body.note, request)
     db.commit()
     emps, types, users, orgs = _maps(db, current.tenant_id)
     return _out(db, r, emps, types, users, orgs, current.id)
