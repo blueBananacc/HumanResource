@@ -209,6 +209,15 @@ const SYSTEM_PROMPT = `你是 HROnfire 招聘平台的 AI 助手,服务对象是
 - list_attendance_flags:查考勤异常(迟到/早退,day 或 month 过滤,
   excused=false 只看未核对)
 - excuse_attendance_flags:批量免计考勤异常(需用户确认;传 flag id 数组)
+- generate_document:生成原生办公文档(需用户确认)——
+  kind=recruiting_pack 招聘汇报PPT / candidate_report 人才分析报告Word(需
+  candidate_id)/ exam_paper 题集转笔试卷Word(需 question_set_id)/
+  payroll_xlsx 薪酬底表 / candidates_xlsx 候选人清单 / pipeline_xlsx 管道明细;
+  返回 download_url,把它作为可点击链接给用户
+- start_recruit_run / update_recruit_step / get_recruit_run:
+  招聘任务链(编排可观测)——用户要「帮我招X/走完招聘全流程」时先
+  start_recruit_run 建链,之后每步:开始前 update_recruit_step(running),
+  做完 update_recruit_step(done, detail 附摘要如 {top:3} 或 {job_id});
 
 人事场景剧本:
 - 「我还有几天年假/XX假期余额」→ get_leave_balance,按类型列出
@@ -291,6 +300,22 @@ const SYSTEM_PROMPT = `你是 HROnfire 招聘平台的 AI 助手,服务对象是
    "是否要顺手建个岗位再发起面试",用户说直接发也需要 job_id,这时引导用户
    从 list_jobs 选一个最相近岗位
 4. 面试完成后 get_interview_summary 给纪要(未完成就如实说还在进行)
+
+招聘任务链剧本(用户说「帮我招 X / 走完整招聘流程 / 一条龙招聘」时):
+1. start_recruit_run(title, job_id?) 建链 — 面板会出现步骤链卡片
+2. 按返回的步骤 key 逐步推进,每步:update_recruit_step(running) →
+   做该步的实际工作(用对应工具) → update_recruit_step(done, detail 摘要):
+   - jd:list_jobs 找/确认岗位(detail 附 {job_id, title});没有岗位就先问
+     用户要 JD 素材,create_record 建岗位后回填 context
+   - parse:读岗位要求,detail 附 {skills:[...]} 技能要点
+   - source:scan_talent_pool / search_talents 查人才库(detail 附 {found:N})
+   - score:get_job_matches 拉匹配结果
+   - shortlist:挑 Top3(detail 附 {top:[姓名]})
+   - interview:经确认后 create_interview 逐个发起(detail 附 {sent:N})
+   - report:generate_document(kind=recruiting_pack) 出 PPT,
+     detail 附 {download_url}
+3. 某步卡住/被拒 → update_recruit_step(failed/skipped),如实告诉用户;
+   全程不要为了推进而跳过确认门,写操作照常等用户点确认
 
 面试质量洞察剧本(用户问"面试质量/维度覆盖/哪些考察项遗漏/通过率/面试时长/解读面试报告"时):
 1. run_report(kind="interview_quality", params{days},默认 30)拿结构化报告

@@ -45,6 +45,7 @@ from app.api import email_templates as email_templates_api
 from app.api import employees as employees_api
 from app.api import entities as entities_api
 from app.api import exports as exports_api
+from app.api import recruit_runs as recruit_runs_api
 from app.api import expenses as expenses_api
 from app.api import dictionaries as dictionaries_api
 from app.api import doc_templates as doc_templates_api
@@ -476,6 +477,7 @@ def create_app() -> FastAPI:
     app.include_router(activity_api.router, prefix="/api")
     app.include_router(entities_api.router, prefix="/api")
     app.include_router(exports_api.router, prefix="/api")
+    app.include_router(recruit_runs_api.router, prefix="/api")
     app.include_router(saved_filters_api.router, prefix="/api")
     app.include_router(favorites_api.router, prefix="/api")
     app.include_router(dictionaries_api.router, prefix="/api")

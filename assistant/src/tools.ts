@@ -567,6 +567,76 @@ function makeTools(token: string): ToolDef[] {
           (data) => toolResult(data, DOC_LIMIT),
         ),
     },
+    // ===== P1:招聘 SOP 任务链 =====
+    {
+      name: "start_recruit_run",
+      label: "发起招聘任务链",
+      description:
+        "当用户要求「帮我招一个 XX / 走完整个招聘流程」等编排型任务时先调用:" +
+        "创建可追踪的 SOP 任务链,返回 run_id 和步骤 key 清单(jd/parse/source/score/shortlist/interview/report)。" +
+        "之后每开始一步调 update_recruit_step 标 running,完成标 done(附 detail 摘要)——让用户在面板上实时看到推进。",
+      parameters: Type.Object({
+        title: Type.String({ description: "任务链标题,如「前端工程师招聘」" }),
+        job_id: Type.Optional(
+          Type.String({ description: "已有岗位 id;没有则先建岗位再补" }),
+        ),
+        kind: Type.Optional(
+          Type.String({ description: "默认 full_pipeline" }),
+        ),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/recruit-runs/", {
+          method: "POST",
+          body: {
+            title: p.title,
+            job_id: p.job_id ?? null,
+            kind: p.kind ?? "full_pipeline",
+          },
+        }),
+    },
+    {
+      name: "update_recruit_step",
+      label: "更新任务链步骤",
+      description:
+        "推进任务链:step_key 用 start_recruit_run 返回的 key;" +
+        "status=running 开始 / done 完成(detail 附摘要如 {top_candidates:[...]}) / failed / skipped;" +
+        "link 可附前端页面路径便于用户跳转。",
+      parameters: Type.Object({
+        run_id: Type.String({ description: "任务链 id" }),
+        step_key: Type.String({ description: "步骤 key" }),
+        status: Type.String({
+          description: "running/done/failed/skipped/waiting_confirm",
+        }),
+        detail: Type.Optional(
+          Type.Record(Type.String(), Type.Unknown(), {
+            description: "步骤产出摘要(JSON 对象)",
+          }),
+        ),
+        link: Type.Optional(Type.String({ description: "前端页面路径" })),
+      }),
+      execute: async (_id, p: any) =>
+        t(
+          `/api/recruit-runs/${encodeURIComponent(p.run_id)}/steps/${encodeURIComponent(p.step_key)}`,
+          {
+            method: "PATCH",
+            body: {
+              status: p.status,
+              detail: p.detail ?? null,
+              link: p.link ?? null,
+            },
+          },
+        ),
+    },
+    {
+      name: "get_recruit_run",
+      label: "查任务链进度",
+      description: "查看一条招聘任务链所有步骤的当前状态",
+      parameters: Type.Object({
+        run_id: Type.String({ description: "任务链 id" }),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/recruit-runs/${encodeURIComponent(p.run_id)}`),
+    },
     // ===== T3:员工服务 =====
     {
       name: "list_announcements",

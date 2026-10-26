@@ -18,6 +18,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { RecruitRunCard, type RecruitRun } from "@/components/assistant/RecruitRunCard";
 
 /** sidecar tool_result SSE 帧载荷。 */
 export type ToolResultData = {
@@ -409,6 +410,19 @@ export function ToolResultCard({
         </div>
       </CardShell>
     );
+  }
+
+  // ===== P1:招聘任务链 — 步骤链卡片(运行中轮询推进) =====
+  if (
+    (name === "start_recruit_run" ||
+      name === "update_recruit_step" ||
+      name === "get_recruit_run") &&
+    json &&
+    typeof json === "object" &&
+    (json as Json).id &&
+    Array.isArray((json as Json).steps)
+  ) {
+    return <RecruitRunCard run={json as unknown as RecruitRun} />;
   }
 
   // ===== 匹配/推荐 =====

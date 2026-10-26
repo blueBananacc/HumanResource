@@ -36,7 +36,7 @@ from sqlalchemy import (
 from sqlalchemy import false as sql_false
 from sqlalchemy import true as sql_true
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
@@ -3898,3 +3898,63 @@ class GeneratedDocument(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), index=True
     )
+
+
+class RecruitRun(Base):
+    """AI 招聘官 SOP 任务链运行实例(P1)。
+
+    由助手工具发起:把「建 JD→解析技能→搜人→打分→面试→汇报」建成
+    一条可追踪的 run,每步一个状态;前端步骤链卡片实时呈现。
+    底层仍是单 Agent + 工具,但 run/step 提供了可观测的编排状态机。
+    """
+
+    __tablename__ = "recruit_runs"
+
+    STATUS = ("running", "done", "failed", "cancelled")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(40), nullable=False, default="full_pipeline")
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running", index=True)
+    context: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), index=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    steps: Mapped[list["RecruitRunStep"]] = relationship(
+        "RecruitRunStep",
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="RecruitRunStep.seq",
+    )
+
+
+class RecruitRunStep(Base):
+    """SOP 任务链单步;agent_label 呈现「专项 Agent」分工(编排观感)。"""
+
+    __tablename__ = "recruit_run_steps"
+
+    STATUS = ("pending", "running", "done", "failed", "skipped", "waiting_confirm")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("recruit_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    key: Mapped[str] = mapped_column(String(60), nullable=False)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    agent_label: Mapped[str] = mapped_column(String(60), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    detail: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    link: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    run: Mapped[RecruitRun] = relationship("RecruitRun", back_populates="steps")
