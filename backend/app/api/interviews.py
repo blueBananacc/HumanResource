@@ -497,6 +497,7 @@ def answer(
 )
 def list_interviews(
     p: tuple[int, int, str | None] = Depends(paginate_params),
+    status_filter: str | None = Query(None, alias="status", description="按状态过滤:in_progress/done/abandoned"),
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ) -> PageOut[InterviewOut]:
@@ -520,6 +521,8 @@ def list_interviews(
         stmt, org_column=Candidate.org_unit_id, scope=get_org_scope(db, current)
     )
     stmt = apply_q_ilike(stmt, q, Candidate.name, Job.title)
+    if status_filter is not None:
+        stmt = stmt.where(Interview.status == status_filter)
 
     total = count_total(db, stmt)
     rows = db.scalars(

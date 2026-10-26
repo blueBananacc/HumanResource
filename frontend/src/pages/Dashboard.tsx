@@ -1,4 +1,4 @@
-import { Sparkles, FileText, Eye, EyeOff, Trash2 } from "lucide-react";
+import { Sparkles, FileText, Eye, EyeOff, Trash2, ArrowUpRight } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -64,9 +64,27 @@ export function Dashboard() {
       fetchJSON<{ items: Job[]; total: number }>("/api/jobs/?limit=1"),
   });
 
+  // 面试/报告计数:?limit=1 只要 total。已生成报告 = 完成的 AI 面试
+  const { data: activeInterviewsPage } = useQuery({
+    queryKey: ["interviews", "in-progress-count"],
+    queryFn: () =>
+      fetchJSON<{ items: unknown[]; total: number }>(
+        "/api/interviews/?status=in_progress&limit=1",
+      ),
+  });
+  const { data: doneInterviewsPage } = useQuery({
+    queryKey: ["interviews", "done-count"],
+    queryFn: () =>
+      fetchJSON<{ items: unknown[]; total: number }>(
+        "/api/interviews/?status=done&limit=1",
+      ),
+  });
+
   const totalResumes = resumesPage?.total ?? 0;
   const openJobs = openJobsPage?.total ?? 0;
   const allJobsCount = allJobsPage?.total ?? 0;
+  const activeInterviews = activeInterviewsPage?.total ?? 0;
+  const doneInterviews = doneInterviewsPage?.total ?? 0;
 
   return (
     <main className="flex flex-col w-full">
@@ -97,24 +115,28 @@ export function Dashboard() {
           value={String(totalResumes)}
           delta={totalResumes > 0 ? "本租户全部" : "等待第一份简历"}
           deltaClass="text-[var(--color-text-tertiary)]"
+          to="/talents"
         />
         <Stat
           label="开放岗位"
           value={String(openJobs)}
           delta={`共 ${allJobsCount} 个岗位`}
           deltaClass="text-[var(--color-text-tertiary)]"
+          to="/jobs"
         />
         <Stat
           label="进行中面试"
-          value="0"
-          delta="M1 阶段开放"
+          value={String(activeInterviews)}
+          delta="AI 面试会话"
           deltaClass="text-[var(--color-text-tertiary)]"
+          to="/interviews"
         />
         <Stat
           label="已生成报告"
-          value="0"
-          delta="M1 阶段开放"
+          value={String(doneInterviews)}
+          delta="已完成的 AI 面试"
           deltaClass="text-[var(--color-text-tertiary)]"
+          to="/reports"
         />
       </div>
 
@@ -162,23 +184,41 @@ function Stat({
   value,
   delta,
   deltaClass,
+  to,
 }: {
   label: string;
   value: string;
   delta: string;
   deltaClass: string;
+  to?: string;
 }) {
-  return (
-    <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-5 flex flex-col gap-1.5 transition-shadow duration-200 hover:shadow-[var(--shadow-card-hover)]">
-      <span className="text-[13px] text-[var(--color-text-secondary)] font-body">
-        {label}
+  const cls =
+    "group bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-5 flex flex-col gap-1.5 transition-all duration-200 hover:shadow-[var(--shadow-card-hover)]" +
+    (to ? " hover:border-[var(--color-border-strong)]" : "");
+  const body = (
+    <>
+      <span className="flex items-center justify-between gap-2">
+        <span className="text-[13px] text-[var(--color-text-secondary)] font-body">
+          {label}
+        </span>
+        {to && (
+          <ArrowUpRight className="w-4 h-4 text-[var(--color-text-tertiary)] opacity-0 group-hover:opacity-100 transition-opacity" />
+        )}
       </span>
       <span className="font-heading font-bold text-[32px] leading-none py-1 text-[var(--color-text-primary)]">
         {value}
       </span>
       <span className={`font-body text-[12px] ${deltaClass}`}>{delta}</span>
-    </div>
+    </>
   );
+  if (to) {
+    return (
+      <Link to={to} className={cls} title={`查看${label}`}>
+        {body}
+      </Link>
+    );
+  }
+  return <div className={cls}>{body}</div>;
 }
 
 /** Bob 风格头像色块:按候选人 id 取一个暖色底,首字符居中 */
