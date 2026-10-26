@@ -5,11 +5,13 @@
 - 再补几个后端直连 AI 调用(题库生成/AI摘要/纪要提炼)充实模型调用日志
 产物:助手会话历史(assistant/data)+ model_call_logs + 真实业务副作用
 """
-import json, sys, time
+import json, os, sys, time
 sys.path.insert(0, "/app")
 import httpx
 
-BASE = "http://localhost:8000"
+BASE = os.environ.get("SEED_BASE", "http://localhost:8000")
+ADMIN_PW = os.environ.get("SEED_ADMIN_PASSWORD", "admin123456")
+EMP_PW = os.environ.get("SEED_EMP_PASSWORD", "emp123456")
 CLIENT = httpx.Client(timeout=httpx.Timeout(300, connect=10))
 
 def login(email, pw):
@@ -88,13 +90,13 @@ EMP_SCRIPT = [
 
 results = []
 print("== admin 视角 ==")
-adm = login("admin@example.com", "admin123456")
+adm = login("admin@example.com", ADMIN_PW)
 for i, m in enumerate(ADMIN_SCRIPT):
     results.append(chat(adm, m, tag=f"admin#{i+1}"))
     time.sleep(1)
 
 print("\n\n== employee 视角 ==")
-emp = login("emp-uie2e@example.com", "emp123456")
+emp = login("emp-uie2e@example.com", EMP_PW)
 for i, m in enumerate(EMP_SCRIPT):
     results.append(chat(emp, m, tag=f"emp#{i+1}"))
     time.sleep(1)
@@ -120,9 +122,10 @@ call("POST", "/api/question-library/generate",
 # 实体 AI 摘要(员工详情/候选人详情的 SummaryCard)
 from sqlalchemy import select
 from app.infra.db import SessionLocal
-from app.domain.models import Employee, Candidate
+from app.domain.models import Employee, Candidate, User
 db = SessionLocal()
-T = "f30ffc6f-eff5-4bbf-9247-d0b1aee68abe"
+admin_u = db.scalars(select(User).where(User.email == "admin@example.com")).first()
+T = str(admin_u.tenant_id)   # 跟随 admin 租户
 zhangwei = db.scalars(select(Employee).where(Employee.tenant_id == T, Employee.name == "张伟")).first()
 wangfang = db.scalars(select(Employee).where(Employee.tenant_id == T, Employee.name == "王芳")).first()
 cand = db.scalars(select(Candidate).where(Candidate.tenant_id == T)).first()

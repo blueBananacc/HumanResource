@@ -1,0 +1,76 @@
+name: seed-demo
+
+# 把演示数据灌进线上环境:
+#   - seed 脚本或本文件变更时自动执行(幂等,可重复)
+#   - 也可在 Actions 页 workflow_dispatch 手动触发
+# 依赖与 deploy.yml 相同的 DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY secrets。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - backend/scripts/seed_demo.py
+      - backend/scripts/seed_assistant_demo.py
+      - .github/workflows/seed-demo.yml
+
+concurrency:
+  group: seed-demo
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+    steps:
+      - name: 未配置 secrets 时跳过
+        run: |
+          if [ -z "$DEPLOY_HOST" ]; then
+            echo "DEPLOY_* secrets 未配置,跳过(先在仓库 Settings → Secrets 配置)"
+            exit 0
+          fi
+
+      - name: SSH 执行演示数据脚本
+        uses: appleboy/ssh-action@v1.2.0
+        if: ${{ env.DEPLOY_HOST != '' }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          timeout: 30m
+          script: |
+            set -e
+            cd /opt/hronfire
+            git fetch --depth=50 origin
+            git reset --hard origin/main
+            cd deploy
+            COMPOSE="docker compose"; docker compose version >/dev/null 2>&1 || COMPOSE="docker-compose"
+            FILES="-f docker-compose.yml -f docker-compose.prod.yml"
+
+            # 等 backend 在线(与 deploy 工作流并发时,重建期间健康检查会断)
+            for i in $(seq 1 40); do
+              curl -fsS http://127.0.0.1/api/healthz >/dev/null 2>&1 && break || sleep 15
+            done
+            curl -fsS http://127.0.0.1/api/healthz >/dev/null
+
+            # 容器内 /app 是镜像内文件,可能落后于 git —— 用 docker cp 注入最新脚本
+            CID=$($COMPOSE $FILES ps -q backend)
+            $COMPOSE $FILES exec -T backend mkdir -p /app/scripts
+            docker cp /opt/hronfire/backend/scripts/seed_demo.py "$CID":/app/scripts/seed_demo.py
+            docker cp /opt/hronfire/backend/scripts/seed_assistant_demo.py "$CID":/app/scripts/seed_assistant_demo.py
+
+            ok=0
+            for i in 1 2 3; do
+              $COMPOSE $FILES exec -T backend python /app/scripts/seed_demo.py && { ok=1; break; }
+              echo "seed_demo 失败,30s 后重试 ($i/3)"; sleep 30
+            done
+            [ "$ok" = 1 ] || { echo "seed_demo 三次均失败"; exit 1; }
+
+            ok=0
+            for i in 1 2 3; do
+              $COMPOSE $FILES exec -T backend python /app/scripts/seed_assistant_demo.py && { ok=1; break; }
+              echo "seed_assistant_demo 失败,30s 后重试 ($i/3)"; sleep 30
+            done
+            [ "$ok" = 1 ] || { echo "seed_assistant_demo 三次均失败"; exit 1; }
+
+            echo "==== SEED DONE ===="

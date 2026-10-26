@@ -6,12 +6,13 @@
 申请、工单、知识库已有、项目与人才画像、生命周期、题库、
 招聘需求/Offer/评分卡/外联、自动化、筛选器/订阅/通知。
 """
-import sys
+import os, sys, uuid
 sys.path.insert(0, "/app")
 from datetime import date, datetime, time, timedelta
 from sqlalchemy import select, text
 
 from app.infra.db import SessionLocal
+from app.infra.security import hash_password
 from app.domain.models import (
     Announcement, Appraisal, AppraisalCycle, ApprovalPolicy, Attendance,
     AttendanceFlag, AttendanceRequest, AutomationRule, Employee,
@@ -26,7 +27,6 @@ from app.domain.models import (
 )
 from app.services.approvals import route_request
 
-T = "f30ffc6f-eff5-4bbf-9247-d0b1aee68abe"   # demo 租户
 ADMIN_EMAIL = "admin@example.com"
 db = SessionLocal()
 made = {"n": 0}
@@ -50,8 +50,43 @@ def emp(name):
         Employee.tenant_id == T, Employee.name == name)).first()
 
 admin = db.scalars(select(User).where(User.email == ADMIN_EMAIL)).first()
+assert admin, "admin 账号不存在"
+T = str(admin.tenant_id)          # 跟随 admin 所在租户,本地/线上通用
 ADMIN_UID = admin.id
-mgr_user = db.scalars(select(User).where(User.email == "mgr-uie2e@example.com")).first()
+
+# ============ 0. 演示账号引导(幂等,跨环境) ============
+def ensure_user(email, password, role):
+    u = db.scalars(select(User).where(User.email == email)).first()
+    if not u:
+        u = add(User(tenant_id=T, email=email, password_hash=hash_password(password),
+                     role=role, status="active"))
+        db.flush()
+    return u
+
+def ensure_emp(name, designation, user=None):
+    e = emp(name)
+    if not e:
+        no = "D" + uuid.uuid4().hex[:6].upper()
+        e = add(Employee(tenant_id=T, name=name, designation=designation,
+                         hire_date=date(2022, 1, 10), employee_no=no,
+                         work_email=f"{no.lower()}@hronfire.demo",
+                         employment_type="full_time", status="active"))
+        db.flush()
+    return e
+
+mgr_user = ensure_user("mgr-uie2e@example.com", "mgr123456", "hiring_manager")
+emp_user = ensure_user("emp-uie2e@example.com", "emp123456", "employee")
+_boss = ensure_emp("卢品超", "HR 负责人")
+ensure_emp("UI经理", "工程经理")
+ensure_emp("UI员工", "前端工程师")
+# 账号↔档案绑定(只在未绑定时写,不动既有绑定)
+if not db.scalars(select(Employee).where(Employee.tenant_id == T, Employee.user_id == admin.id)).first():
+    _boss.user_id = admin.id
+if not db.scalars(select(Employee).where(Employee.tenant_id == T, Employee.user_id == mgr_user.id)).first():
+    emp("UI经理").user_id = mgr_user.id
+if not db.scalars(select(Employee).where(Employee.tenant_id == T, Employee.user_id == emp_user.id)).first():
+    emp("UI员工").user_id = emp_user.id
+db.flush()
 
 # ============ 1. 组织与员工 ============
 org_eng = ensure(OrgUnit, name="平台工程组", kind="department")
