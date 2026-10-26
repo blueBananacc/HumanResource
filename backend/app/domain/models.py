@@ -342,6 +342,28 @@ class ResumeReadState(Base):
     dismissed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class ActivityDismissal(Base):
+    """概览「通知与动态」活动流的按用户移除标记。
+
+    动态流条目由多源(audit / 管道事件 / 预约 / 答卷)归并而来,没有统一
+    主键,item_key 用 ``{源}:{行id}`` 复合标识,如 ``audit:xxx``。
+    移除只是从当前用户的小部件视图里隐藏,不删审计/业务数据。
+    """
+
+    __tablename__ = "activity_dismissals"
+
+    item_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    dismissed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
 class Interview(Base):
     """AI 面试会话。状态机:in_progress → done / abandoned。
 

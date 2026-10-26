@@ -13,13 +13,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.license import require_feature
 from app.domain.models import (
+    ActivityDismissal,
     Announcement,
     Appraisal,
     Attendance,
@@ -70,6 +71,8 @@ router = APIRouter(
 
 
 class ActivityItem(BaseModel):
+    # 稳定条目键:{源}:{行id} —— 前端「已读/移除此条」凭它回传
+    id: str
     at: datetime
     actor_name: str | None
     verb: str
@@ -339,6 +342,15 @@ def activity_feed(
 ):
     since = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
     scope = get_org_scope(db, current)
+    # 当前用户已「移除此条」的 item_key —— 只影响其本人的小部件视图
+    dismissed = set(
+        db.scalars(
+            select(ActivityDismissal.item_key).where(
+                ActivityDismissal.user_id == current.id,
+                ActivityDismissal.tenant_id == current.tenant_id,
+            )
+        ).all()
+    )
     items: list[ActivityItem] = []
 
     # 1) audit 里的业务写(排除 auth 类噪音);scoped 用户按实体 org 过滤
@@ -359,6 +371,7 @@ def activity_feed(
         link_tpl = _ENTITY_LINKS.get(a.entity_type)
         items.append(
             ActivityItem(
+                id=f"audit:{a.id}",
                 at=a.created_at,
                 actor_name=a.actor_email,
                 verb=_verb(a.action),
@@ -387,6 +400,7 @@ def activity_feed(
     for e, cname, actor_email in evs:
         items.append(
             ActivityItem(
+                id=f"pipeline:{e.id}",
                 at=e.created_at,
                 actor_name=actor_email,
                 verb=f"从 {e.from_stage or '-'} 流转到 {e.to_stage}",
@@ -413,6 +427,7 @@ def activity_feed(
             continue
         items.append(
             ActivityItem(
+                id=f"rsv:{r.id}",
                 at=r.created_at,
                 actor_name=None,
                 verb="新建了预约",
@@ -430,6 +445,7 @@ def activity_feed(
     for r in resp:
         items.append(
             ActivityItem(
+                id=f"survey:{r.id}",
                 at=r.submitted_at,
                 actor_name=None,
                 verb="提交了问卷",
@@ -439,5 +455,38 @@ def activity_feed(
             )
         )
 
+    items = [it for it in items if it.id not in dismissed]
     items.sort(key=lambda x: x.at, reverse=True)
     return items[:limit]
+
+
+class DismissIn(BaseModel):
+    item_key: str
+
+
+@router.post("/dismiss", status_code=status.HTTP_204_NO_CONTENT)
+def dismiss_activity_item(
+    body: DismissIn,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+):
+    """「已读/移除此条」:把一条动态从当前用户的小部件里隐藏(幂等)。
+
+    只写 activity_dismissals,不删审计日志或业务数据 —— 其他人视角不变,
+    审计中心仍可查。
+    """
+    exists = db.scalar(
+        select(ActivityDismissal).where(
+            ActivityDismissal.item_key == body.item_key,
+            ActivityDismissal.user_id == current.id,
+        )
+    )
+    if exists is None:
+        db.add(
+            ActivityDismissal(
+                item_key=body.item_key,
+                user_id=current.id,
+                tenant_id=current.tenant_id,
+            )
+        )
+        db.commit()

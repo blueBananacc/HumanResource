@@ -1,4 +1,4 @@
-import { Sparkles, FileText, Eye, EyeOff, Trash2, ArrowUpRight } from "lucide-react";
+import { Sparkles, FileText, Eye, EyeOff, Trash2, ArrowUpRight, Check } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -407,6 +407,7 @@ type Notification = {
 };
 
 type ActivityItem = {
+  id: string;
   at: string;
   actor_name: string | null;
   verb: string;
@@ -435,6 +436,15 @@ function ActivityCard() {
   const markAll = useMutation({
     mutationFn: () => fetchJSON("/api/me/notifications/read-all", { method: "POST" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["me-notifications-unread"] }),
+  });
+  // 动态流「已读/移除此条」:只从本人小部件隐藏,审计/业务数据不动
+  const dismissActivity = useMutation({
+    mutationFn: (itemKey: string) =>
+      fetchJSON("/api/activity/dismiss", {
+        method: "POST",
+        body: JSON.stringify({ item_key: itemKey }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["activity-feed"] }),
   });
 
   const unread = notes ?? [];
@@ -472,7 +482,7 @@ function ActivityCard() {
               </div>
             );
             return (
-              <div key={n.id} className="flex items-start gap-3 px-5 py-2.5 border-t border-[var(--color-border-row)]">
+              <div key={n.id} className="group flex items-start gap-3 px-5 py-2.5 border-t border-[var(--color-border-row)]">
                 <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-[var(--color-orange)] shrink-0" />
                 {n.link ? (
                   <Link
@@ -486,10 +496,11 @@ function ActivityCard() {
                   inner
                 )}
                 <button
-                  className="text-[11px] text-[var(--color-info)] hover:underline shrink-0"
+                  className="w-6 h-6 mt-0.5 rounded-lg grid place-items-center shrink-0 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-muted)] hover:text-[var(--color-text-primary)] transition-colors opacity-0 group-hover:opacity-100 focus-within:opacity-100"
                   onClick={() => markRead.mutate(n.id)}
+                  title="标为已读"
                 >
-                  已读
+                  <Check className="w-3.5 h-3.5" />
                 </button>
               </div>
             );
@@ -517,17 +528,29 @@ function ActivityCard() {
                 </span>
               </>
             );
-            return it.link ? (
-              <Link
-                key={i}
-                to={it.link}
-                className="flex items-center gap-3 px-5 py-2.5 border-t border-[var(--color-border-row)] hover:bg-[var(--color-bg-muted)]"
+            return (
+              <div
+                key={it.id ?? i}
+                className="group flex items-center gap-3 px-5 py-2.5 border-t border-[var(--color-border-row)]"
               >
-                {inner}
-              </Link>
-            ) : (
-              <div key={i} className="flex items-center gap-3 px-5 py-2.5 border-t border-[var(--color-border-row)]">
-                {inner}
+                {it.link ? (
+                  <Link
+                    to={it.link}
+                    className="flex items-center gap-3 flex-1 min-w-0 rounded -mx-1 px-1 hover:bg-[var(--color-bg-muted)]"
+                  >
+                    {inner}
+                  </Link>
+                ) : (
+                  <div className="flex items-center gap-3 flex-1 min-w-0">{inner}</div>
+                )}
+                <button
+                  className="w-6 h-6 rounded-lg grid place-items-center shrink-0 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-muted)] hover:text-[var(--color-text-primary)] transition-colors opacity-0 group-hover:opacity-100 focus-within:opacity-100"
+                  onClick={() => dismissActivity.mutate(it.id)}
+                  disabled={dismissActivity.isPending}
+                  title="标为已读并移除"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                </button>
               </div>
             );
           })}
