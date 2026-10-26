@@ -337,6 +337,9 @@ class ResumeReadState(Base):
     read_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
+    # 「仅移除此条消息」:概览小部件里隐藏该简历,人才库档案保留;
+    # NULL=未移除。移除不删数据,随时可在人才库找回
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Interview(Base):

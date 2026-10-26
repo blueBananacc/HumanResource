@@ -83,6 +83,8 @@ class ResumeOut(BaseModel):
     parse_error: str | None = None
     # 当前用户是否已读(按用户维度,概览页「最近简历」的未读点/置灰)
     is_read: bool = False
+    # 当前用户是否已从概览小部件移除(仅隐藏消息,不删简历数据)
+    is_dismissed: bool = False
 
 
 class ResumeDetailOut(ResumeOut):
@@ -95,7 +97,9 @@ class ResumeDetailOut(ResumeOut):
     sections: dict | None = None
 
 
-def _serialize(r: Resume, c: Candidate, *, is_read: bool = False) -> ResumeOut:
+def _serialize(
+    r: Resume, c: Candidate, *, is_read: bool = False, is_dismissed: bool = False
+) -> ResumeOut:
     skills = (r.parsed_data or {}).get("skills") or []
     return ResumeOut(
         id=r.id,
@@ -114,6 +118,7 @@ def _serialize(r: Resume, c: Candidate, *, is_read: bool = False) -> ResumeOut:
         parse_status=r.parse_status,
         parse_error=r.parse_error,
         is_read=is_read,
+        is_dismissed=is_dismissed,
     )
 
 
@@ -326,16 +331,19 @@ def list_resumes(
     rows = db.execute(
         stmt.order_by(Resume.created_at.desc()).limit(limit).offset(offset)
     ).all()
-    read_ids = set(
-        db.scalars(
-            select(ResumeReadState.resume_id).where(
-                ResumeReadState.user_id == current.id,
-                ResumeReadState.resume_id.in_([r.id for r, _ in rows]),
-            )
+    marks = db.execute(
+        select(ResumeReadState.resume_id, ResumeReadState.dismissed_at).where(
+            ResumeReadState.user_id == current.id,
+            ResumeReadState.resume_id.in_([r.id for r, _ in rows]),
         )
-    ) if rows else set()
+    ).all() if rows else []
+    read_ids = {m.resume_id for m in marks}
+    dismissed_ids = {m.resume_id for m in marks if m.dismissed_at is not None}
     return PageOut[ResumeOut](
-        items=[_serialize(r, c, is_read=r.id in read_ids) for r, c in rows],
+        items=[
+            _serialize(r, c, is_read=r.id in read_ids, is_dismissed=r.id in dismissed_ids)
+            for r, c in rows
+        ],
         total=total,
         limit=limit,
         offset=offset,
@@ -584,6 +592,44 @@ def mark_resume_unread(
         )
     db.commit()
     return {"is_read": False}
+
+
+@router.post("/{resume_id}/dismiss")
+def dismiss_resume_message(
+    resume_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> dict:
+    """仅把这条消息从概览小部件移除 —— 简历与候选人数据全部保留。
+
+    与删除的区别:删除走 ``DELETE /resumes/{id}`` 清数据,本接口只写
+    ``dismissed_at``(同时视为已读),人才库照常可见。幂等。
+    """
+    _get_resume_in_scope(db, resume_id, current)
+    now = datetime.utcnow()
+    row = db.get(ResumeReadState, (resume_id, current.id))
+    if row is None:
+        db.add(
+            ResumeReadState(
+                tenant_id=current.tenant_id,
+                resume_id=resume_id,
+                user_id=current.id,
+                read_at=now,
+                dismissed_at=now,
+            )
+        )
+        changed = True
+    else:
+        changed = row.dismissed_at is None
+        row.dismissed_at = row.dismissed_at or now
+    if changed:
+        write_audit(
+            db, actor=current, entity_type="resume", entity_id=resume_id,
+            action="dismiss", detail={}, request=request,
+        )
+    db.commit()
+    return {"is_dismissed": True}
 
 
 @router.delete(

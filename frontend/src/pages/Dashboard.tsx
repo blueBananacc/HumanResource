@@ -1,9 +1,10 @@
-import { Sparkles, FileText } from "lucide-react";
+import { Sparkles, FileText, Eye, EyeOff, Trash2 } from "lucide-react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { BrandShape } from "@/components/brand/BrandShape";
 import { Button } from "@/components/ui/button";
-import { useConfirm } from "@/components/ui/confirm";
+import { Modal } from "@/components/ui/modal";
 import { fetchJSON } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { PERM } from "@/lib/roles";
@@ -28,6 +29,7 @@ type Resume = {
   };
   skills: string[];
   is_read: boolean;
+  is_dismissed: boolean;
 };
 
 type Job = { id: string; title: string; status: string };
@@ -179,11 +181,25 @@ function Stat({
   );
 }
 
+/** Bob 风格头像色块:按候选人 id 取一个暖色底,首字符居中 */
+const AVATAR_TONES = [
+  { bg: "#FAA32B", fg: "#60032A" },
+  { bg: "#F36488", fg: "#FFFFFF" },
+  { bg: "#FEABB0", fg: "#83143D" },
+  { bg: "#FFD887", fg: "#60032A" },
+];
+
+function avatarTone(seed: string) {
+  let h = 0;
+  for (const ch of seed) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return AVATAR_TONES[h % AVATAR_TONES.length];
+}
+
 function RecentResumes({ resumes }: { resumes: Resume[] }) {
   const qc = useQueryClient();
-  const confirm = useConfirm();
   const { hasPermission } = useAuth();
   const canDelete = hasPermission(PERM.DELETE_RESUMES);
+  const [pendingDelete, setPendingDelete] = useState<Resume | null>(null);
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["resumes"] });
   const toggleRead = useMutation({
@@ -193,27 +209,31 @@ function RecentResumes({ resumes }: { resumes: Resume[] }) {
       }),
     onSuccess: invalidate,
   });
+  const dismiss = useMutation({
+    mutationFn: (id: string) =>
+      fetchJSON(`/api/resumes/${id}/dismiss`, { method: "POST" }),
+    onSuccess: () => {
+      setPendingDelete(null);
+      invalidate();
+    },
+  });
   const del = useMutation({
     mutationFn: (id: string) =>
       fetchJSON(`/api/resumes/${id}`, { method: "DELETE" }),
-    onSuccess: invalidate,
+    onSuccess: () => {
+      setPendingDelete(null);
+      invalidate();
+    },
   });
 
-  const onDelete = async (r: Resume) => {
-    const ok = await confirm({
-      title: `删除「${r.candidate.name}」的简历?`,
-      description: "删除后不可恢复;若该候选人没有其他简历,候选人档案会一并移除。",
-      confirmLabel: "删除",
-      tone: "danger",
-    });
-    if (ok) del.mutate(r.id);
-  };
+  // 「仅移除此条」不删数据,只是从本部件隐藏
+  const shown = resumes.filter((r) => !r.is_dismissed);
 
   return (
     <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] flex flex-col">
       <CardHeader title="最近简历" />
       <div className="px-3 flex-1">
-      {resumes.length === 0 ? (
+      {shown.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
           <FileText className="w-5 h-5 text-[var(--color-text-tertiary)]" />
           <span className="text-[13px] text-[var(--color-text-secondary)] font-body">
@@ -224,59 +244,73 @@ function RecentResumes({ resumes }: { resumes: Resume[] }) {
           </Link>
         </div>
       ) : (
-        resumes.map((r, i) => {
+        shown.map((r, i) => {
           const sub: string[] = [];
           if (r.candidate.display_email) sub.push(r.candidate.display_email);
           if (r.candidate.display_phone) sub.push(r.candidate.display_phone);
+          const tone = avatarTone(r.candidate.id);
           return (
             <div
               key={r.id}
-              className={`flex items-center gap-2 px-3 py-3 rounded-lg hover:bg-[var(--color-bg-muted)] transition-colors ${
-                i < resumes.length - 1
+              className={`group flex items-center gap-3 px-3 py-3 transition-colors ${
+                i < shown.length - 1
                   ? "border-b border-[var(--color-border-row)]"
                   : ""
               }`}
             >
               <Link
                 to={`/talents/${r.candidate.id}`}
-                className="flex items-center gap-3 flex-1 min-w-0"
+                className="flex items-center gap-3 flex-1 min-w-0 rounded-lg"
               >
-                <span className="w-1.5 shrink-0 grid place-items-center">
-                  {!r.is_read && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-orange)]" />
-                  )}
+                <span
+                  className="w-9 h-9 rounded-full grid place-items-center shrink-0 font-heading font-semibold text-[15px]"
+                  style={{ background: tone.bg, color: tone.fg }}
+                >
+                  {(r.candidate.name || "?").slice(0, 1)}
                 </span>
                 <div className="flex flex-col flex-1 min-w-0 gap-0.5">
-                  <span
-                    className={`font-medium text-sm font-body truncate ${
-                      r.is_read ? "text-[var(--color-text-tertiary)]" : ""
-                    }`}
-                  >
-                    {r.candidate.name}
+                  <span className="flex items-center gap-2 min-w-0">
+                    <span
+                      className={`font-medium text-sm font-body truncate ${
+                        r.is_read ? "text-[var(--color-text-tertiary)]" : ""
+                      }`}
+                    >
+                      {r.candidate.name}
+                    </span>
+                    {!r.is_read && (
+                      <span className="px-1.5 py-0.5 rounded-full bg-[var(--color-bg-muted)] text-[var(--color-orange)] text-[10px] font-bold font-body shrink-0">
+                        新
+                      </span>
+                    )}
                   </span>
                   <span className="text-xs text-[var(--color-text-secondary)] font-body truncate">
                     {sub.length > 0 ? sub.join(" · ") : r.file_name}
                   </span>
                 </div>
-                <span className="text-xs text-[var(--color-text-tertiary)] font-mono shrink-0">
-                  {formatRelative(r.created_at)}
-                </span>
               </Link>
-              <div className="flex items-center gap-2.5 shrink-0">
+              <span className="text-xs text-[var(--color-text-tertiary)] font-mono shrink-0">
+                {formatRelative(r.created_at)}
+              </span>
+              <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                 <button
                   onClick={() => toggleRead.mutate(r)}
                   disabled={toggleRead.isPending}
-                  className="text-[11px] text-[var(--color-info)] hover:underline disabled:opacity-50"
+                  title={r.is_read ? "标为未读" : "标为已读"}
+                  className="w-7 h-7 rounded-lg grid place-items-center text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-muted)] hover:text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
                 >
-                  {r.is_read ? "标为未读" : "已读"}
+                  {r.is_read ? (
+                    <EyeOff className="w-4 h-4" />
+                  ) : (
+                    <Eye className="w-4 h-4" />
+                  )}
                 </button>
                 {canDelete && (
                   <button
-                    onClick={() => onDelete(r)}
-                    disabled={del.isPending}
-                    className="text-[11px] text-[var(--color-danger)] hover:underline disabled:opacity-50"
+                    onClick={() => setPendingDelete(r)}
+                    title="删除"
+                    className="w-7 h-7 rounded-lg grid place-items-center text-[var(--color-text-tertiary)] hover:bg-red-50 hover:text-[var(--color-danger)] transition-colors"
                   >
-                    删除
+                    <Trash2 className="w-4 h-4" />
                   </button>
                 )}
               </div>
@@ -291,6 +325,35 @@ function RecentResumes({ resumes }: { resumes: Resume[] }) {
       >
         查看全部
       </Link>
+
+      <Modal
+        open={pendingDelete !== null}
+        onClose={() => setPendingDelete(null)}
+        title={`删除「${pendingDelete?.candidate.name ?? ""}」的简历?`}
+        description="「仅移除此条」只把它从概览里撤掉,简历和候选人档案仍在人才库;「删除简历」会彻底清除数据,不可恢复。"
+        width={460}
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => pendingDelete && dismiss.mutate(pendingDelete.id)}
+              disabled={dismiss.isPending}
+            >
+              仅移除此条
+            </Button>
+            <button
+              type="button"
+              onClick={() => pendingDelete && del.mutate(pendingDelete.id)}
+              disabled={del.isPending}
+              className="inline-flex items-center justify-center gap-2 rounded-[10px] px-5 py-2.5 text-sm font-medium font-body transition-colors bg-[var(--color-danger)] text-white hover:bg-[#dc2626] disabled:opacity-50"
+            >
+              删除简历
+            </button>
+          </>
+        }
+      >
+        <div className="py-2" />
+      </Modal>
     </div>
   );
 }
