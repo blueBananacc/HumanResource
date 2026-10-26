@@ -1659,11 +1659,96 @@ function makeTools(token: string): ToolDef[] {
           },
         }),
     },
+    // ===== P0:文档引擎 =====
+    {
+      name: "generate_document",
+      label: "生成文档",
+      description:
+        "生成可下载的原生文档(PPT/Word/Excel),返回下载链接。" +
+        "kind 取值:recruiting_pack=招聘进度汇报PPT(可指定 job_id 聚焦单岗位)、" +
+        "candidate_report=候选人才分析报告Word(需 candidate_id)、" +
+        "exam_paper=题集转笔试卷Word(需 question_set_id,with_answers 控制是否附答案)、" +
+        "payroll_xlsx=薪酬底表Excel(可指定 period 如 2026-10)、" +
+        "candidates_xlsx=候选人清单Excel(可指定 job_id)、" +
+        "pipeline_xlsx=招聘管道明细Excel(可指定 job_id)。",
+      parameters: Type.Object({
+        kind: Type.String({ description: "文档类型(见上)" }),
+        job_id: Type.Optional(Type.String({ description: "岗位 id" })),
+        candidate_id: Type.Optional(
+          Type.String({ description: "候选人 id" }),
+        ),
+        question_set_id: Type.Optional(
+          Type.String({ description: "题集 id" }),
+        ),
+        period: Type.Optional(
+          Type.String({ description: "薪酬月份 YYYY-MM" }),
+        ),
+        with_answers: Type.Optional(
+          Type.Boolean({ description: "笔试卷是否附答案,默认 true" }),
+        ),
+      }),
+      execute: async (_id, p: any) => {
+        const kind = String(p.kind);
+        let path = "";
+        let body: Record<string, unknown> = {};
+        switch (kind) {
+          case "recruiting_pack":
+            path = "/api/exports/recruiting-pack";
+            body = { job_id: p.job_id ?? null };
+            break;
+          case "candidate_report":
+            if (!p.candidate_id)
+              return toolResult({ error: "candidate_report 需要 candidate_id" });
+            path = `/api/exports/candidate-report/${encodeURIComponent(p.candidate_id)}`;
+            break;
+          case "exam_paper":
+            if (!p.question_set_id)
+              return toolResult({ error: "exam_paper 需要 question_set_id" });
+            path = `/api/exports/exam-paper/${encodeURIComponent(p.question_set_id)}`;
+            body = { with_answers: p.with_answers ?? true };
+            break;
+          case "payroll_xlsx":
+            path = "/api/exports/payroll.xlsx";
+            body = { period: p.period ?? null };
+            break;
+          case "candidates_xlsx":
+            path = "/api/exports/candidates.xlsx";
+            body = { job_id: p.job_id ?? null };
+            break;
+          case "pipeline_xlsx":
+            path = "/api/exports/pipeline.xlsx";
+            body = { job_id: p.job_id ?? null };
+            break;
+          default:
+            return toolResult({
+              error: `未知 kind:${kind};可选 recruiting_pack/candidate_report/exam_paper/payroll_xlsx/candidates_xlsx/pipeline_xlsx`,
+            });
+        }
+        const doc = (await callApi(token, path, {
+          method: "POST",
+          body,
+        })) as {
+          id?: string;
+          title?: string;
+          file_name?: string;
+          error?: string;
+        };
+        if (!doc || doc.error || !doc.id)
+          return toolResult(doc ?? { error: "生成失败" });
+        return toolResult({
+          title: doc.title,
+          file_name: doc.file_name,
+          download_url: `/api/exports/${doc.id}/download`,
+          hint: "把 download_url 作为可点击链接给用户(前端会自动带鉴权下载)",
+        });
+      },
+    },
   ];
 }
 
 /** 需要用户在界面上点"确认"才会真正执行的写操作 */
 export const WRITE_TOOLS = new Set([
+  "generate_document",
   "create_interview",
   "generate_questions",
   "dismiss_interview_suggestion",

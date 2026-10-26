@@ -7,12 +7,14 @@ import {
   MailCheck,
   Video,
   Sparkles,
+  Presentation,
+  FileSpreadsheet,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
-import { fetchJSON, ApiError } from "@/lib/api";
+import { fetchJSON, ApiError, exportGeneratedDoc } from "@/lib/api";
 import { Field } from "@/pages/hris/Employees";
 
 type Range = "7d" | "30d" | "90d" | "all";
@@ -87,6 +89,28 @@ export function Reports() {
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <Button
+            variant="secondary"
+            onClick={() => exportGeneratedDoc("/api/exports/recruiting-pack")}
+            title="生成 PPT:KPI/漏斗/Top 候选人/行动建议"
+          >
+            <Presentation className="w-4 h-4" />
+            汇报 PPT
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => exportGeneratedDoc("/api/exports/candidates.xlsx")}
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            候选人表
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => exportGeneratedDoc("/api/exports/pipeline.xlsx", {})}
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            管道表
+          </Button>
           <Button variant="secondary" onClick={() => setSubOpen(true)}>
             <MailCheck className="w-4 h-4" />
             订阅周报

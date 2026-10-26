@@ -109,6 +109,15 @@ export async function fetchJSON<T = unknown>(
  * 带上 — 直接 ``<a href="/api/...">`` 会丢 Authorization 被 401 弹回登录,
  * 所以统一 fetch + blob + a[download]。
  */
+/** P0 文档引擎:POST 生成文档 → 立即触发浏览器下载。 */
+export async function exportGeneratedDoc(url: string, body?: unknown): Promise<void> {
+  const doc = await fetchJSON<{ id: string; file_name: string }>(url, {
+    method: "POST",
+    body: JSON.stringify(body ?? {}),
+  });
+  await downloadApiFile(`/api/exports/${doc.id}/download`, doc.file_name);
+}
+
 export async function downloadApiFile(url: string, filename: string): Promise<void> {
   const token = getToken();
   const res = await fetch(url, {

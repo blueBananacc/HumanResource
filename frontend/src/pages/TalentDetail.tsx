@@ -31,7 +31,7 @@ import { MergeTalentModal } from "@/components/records/MergeTalentModal";
 import { SummaryCard } from "@/components/assistant/SummaryCard";
 import { DocDraftDrawer } from "@/components/assistant/DocDraftDrawer";
 import { useConfirm } from "@/components/ui/confirm";
-import { ApiError, fetchJSON } from "@/lib/api";
+import { ApiError, exportGeneratedDoc, fetchJSON } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { PERM } from "@/lib/roles";
 import { formatBytes, formatRelative } from "@/lib/format";
@@ -235,6 +235,16 @@ export function TalentDetail() {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <Button
+            variant="secondary"
+            onClick={() =>
+              exportGeneratedDoc(`/api/exports/candidate-report/${c.id}`)
+            }
+            title="生成 Word:档案 + 逐维评分依据 + 面试记录"
+          >
+            <FileText className="w-4 h-4" />
+            人才报告
+          </Button>
           <Button variant="secondary" onClick={() => setDocOpen(true)}>
             <Sparkles className="w-4 h-4" />
             AI 起草

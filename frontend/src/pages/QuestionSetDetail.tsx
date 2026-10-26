@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Briefcase, Copy, Layers, Loader2, RefreshCw, Trash2, XCircle } from "lucide-react";
+import { ArrowLeft, Briefcase, Copy, FileText, Layers, Loader2, RefreshCw, Trash2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { useConfirm } from "@/components/ui/confirm";
-import { fetchJSON } from "@/lib/api";
+import { exportGeneratedDoc, fetchJSON } from "@/lib/api";
 import { formatRelative, levelLabel } from "@/lib/format";
 import {
   ItemDrawer,
@@ -129,6 +129,18 @@ export function QuestionSetDetail() {
           返回题集
         </Link>
         <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            onClick={() =>
+              exportGeneratedDoc(`/api/exports/exam-paper/${id}`, {
+                with_answers: true,
+              })
+            }
+            title="生成 Word 笔试卷(含参考答案页,可打印下发)"
+          >
+            <FileText className="w-4 h-4" />
+            导出笔试卷
+          </Button>
           <Button
             variant="secondary"
             onClick={async () => {

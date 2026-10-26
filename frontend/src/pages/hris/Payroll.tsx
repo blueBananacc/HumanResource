@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Banknote,
   Eye,
+  FileSpreadsheet,
   Plus,
   Send,
   Trash2,
@@ -15,7 +16,7 @@ import { Modal } from "@/components/ui/modal";
 import { Empty } from "@/components/ui/empty";
 import { Pagination } from "@/components/ui/pagination";
 import { Select } from "@/components/ui/select";
-import { fetchJSON, ApiError } from "@/lib/api";
+import { fetchJSON, ApiError, exportGeneratedDoc } from "@/lib/api";
 import { usePagedQuery, PAGE_SIZE } from "@/lib/usePagedQuery";
 import { formatRelative } from "@/lib/format";
 import {
@@ -64,10 +65,24 @@ export function Payroll() {
           </p>
         </div>
         {!isError && (
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="w-4 h-4" />
-            录入工资条
-          </Button>
+          <div className="flex items-center gap-2 shrink-0">
+            <Button
+              variant="secondary"
+              onClick={() =>
+                exportGeneratedDoc("/api/exports/payroll.xlsx", {
+                  period: period || null,
+                })
+              }
+              title="导出当前筛选月份的 Excel 底表(发给薪酬/财务下游)"
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+              导出底表
+            </Button>
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus className="w-4 h-4" />
+              录入工资条
+            </Button>
+          </div>
         )}
       </div>
 
