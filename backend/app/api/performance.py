@@ -414,6 +414,12 @@ def review_appraisal(
     a.reviewer_id = current.id
     a.status = "reviewed"
     a.updated_at = _now()
+    # P2 画像管线:绩效评语 → suggested 技能
+    from app.services import profile_update
+    try:
+        profile_update.suggest_from_appraisal(db, a)
+    except Exception:  # noqa: BLE001
+        pass  # 建议失败不阻塞绩效流程
     write_audit(
         db, actor=current, entity_type="appraisal", entity_id=a.id,
         action="review", detail={"rating": a.manager_rating}, request=request,

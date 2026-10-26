@@ -36,6 +36,7 @@
 | [t17-interview-quality-report.md](design/t17-interview-quality-report.md) | T17 设计：组织面试质量报告（services/interview_quality 聚合 + report-defs 注册 + 洞察页 + InterviewQualityCard + 订阅推送） |
 | [h123-hr-assistant.md](design/h123-hr-assistant.md) | H1–H3 设计：人事 AI 助手五场景（假期余额/考勤免计/入离职月报 + 会话式组织调整 + Shift 排班域生成器/替班求解/月历页） |
 | [e-batch-employee-productivity.md](design/e-batch-employee-productivity.md) | E1–E5 设计：员工自助工具包 + 入离职编排 + 统一审批中心(策略/多级/代理人/收件箱) + 薪酬底表 + NL 报表白名单数据集 |
+| [p-batch-talent-profile.md](design/p-batch-talent-profile.md) | P 批次设计：员工人才画像(技能标签带来源/AI 建议待确认) + 画像更新管线(入职/项目/绩效/洞察触发) + 轻量项目 + AI 内部选人 |
 
 ## 维护约定
 

@@ -1528,6 +1528,137 @@ function makeTools(token: string): ToolDef[] {
           },
         }),
     },
+    // ===== P 批次:人才画像 + 内部人才匹配 =====
+    {
+      name: "get_talent_card",
+      label: "看员工人才画像",
+      description:
+        "取员工 360 画像卡:基本信息+确认技能(带等级/来源)+待确认建议+" +
+        "面试评价+项目经历+绩效+洞察时间线。employee_id 用 search_entities " +
+        "先查到;本人问自己的画像也可以",
+      parameters: Type.Object({
+        employee_id: Type.String(),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/employees/${encodeURIComponent(p.employee_id)}/talent-card`),
+    },
+    {
+      name: "search_talent",
+      label: "按技能搜内部人才",
+      description:
+        "「新项目需要 XX 能力强的人」用这里确定性预筛:skills=[{name," +
+        "min_level?}] name 是技能名片段(把用户需求拆成片段,如「AI coding " +
+        "强」→ [{name:'AI'},{name:'Python',min_level:3}]),对每个片段在" +
+        "员工已确认技能上匹配,按命中片段数+等级排序。include_suggested" +
+        "=true 时连待确认建议也算。返回带技能证据与等级,你再综合选出" +
+        "topK 并说明推荐理由",
+      parameters: Type.Object({
+        skills: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+        include_suggested: Type.Optional(Type.Boolean()),
+        org_unit_id: Type.Optional(Type.String()),
+        limit: Type.Optional(Type.Number()),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/talent/search", {
+          method: "POST",
+          body: {
+            skills: p.skills,
+            include_suggested: p.include_suggested ?? false,
+            org_unit_id: p.org_unit_id,
+            limit: p.limit ?? 20,
+          },
+        }),
+    },
+    {
+      name: "list_projects",
+      label: "查项目列表",
+      description:
+        "查公司项目(名字/状态/所需技能/成员数)。要把人加进项目、" +
+        "或问「XX 项目都有哪些人」先用它拿 project_id",
+      parameters: Type.Object({
+        status: Type.Optional(
+          Type.String({ description: "draft|active|done|cancelled" }),
+        ),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/projects${p.status ? `?status=${p.status}` : ""}`),
+    },
+    {
+      name: "create_project",
+      label: "新建项目",
+      description:
+        "登记新项目(需用户确认)。required_skills=[{name,min_level?}]" +
+        " 供 AI 选人匹配;建完可接着用 search_talent 找人",
+      parameters: Type.Object({
+        name: Type.String(),
+        description: Type.Optional(Type.String()),
+        required_skills: Type.Optional(
+          Type.Array(Type.Record(Type.String(), Type.Unknown())),
+        ),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/projects", {
+          method: "POST",
+          body: {
+            name: p.name,
+            description: p.description,
+            status: "draft",
+            required_skills: p.required_skills ?? [],
+          },
+        }),
+    },
+    {
+      name: "add_project_member",
+      label: "把员工加入项目",
+      description:
+        "把员工加进项目(需用户确认)。AI 推荐后用户拍板「就用 TA」时" +
+        "调用,joined_via=ai_match 留痕;手动指定可传 false。role 可选" +
+        "(如 TL/后端),allocation_pct 投入度 1-100",
+      parameters: Type.Object({
+        project_id: Type.String(),
+        employee_id: Type.String(),
+        role: Type.Optional(Type.String()),
+        allocation_pct: Type.Optional(Type.Number()),
+        ai_match: Type.Optional(Type.Boolean()),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/projects/${encodeURIComponent(p.project_id)}/members`, {
+          method: "POST",
+          body: {
+            employee_id: p.employee_id,
+            role: p.role,
+            allocation_pct: p.allocation_pct ?? 100,
+            joined_via: p.ai_match === false ? "manual" : "ai_match",
+          },
+        }),
+    },
+    {
+      name: "add_insight_note",
+      label: "给员工记一条洞察",
+      description:
+        "给员工画像加一条证据(需用户确认):会议纪要文本/项目复盘/" +
+        "主管随手评。kind=meeting|project_review|manager_note|milestone;" +
+        "body 是正文(纪要全文可直接粘贴,上限 8000 字);保存后自动" +
+        "提炼技能建议进待确认队列。visibility 默认 manager_only(本人不可见)",
+      parameters: Type.Object({
+        employee_id: Type.String(),
+        kind: Type.String(),
+        body: Type.String(),
+        title: Type.Optional(Type.String()),
+        visibility: Type.Optional(Type.String()),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/employees/${encodeURIComponent(p.employee_id)}/insights`, {
+          method: "POST",
+          body: {
+            kind: p.kind,
+            body: p.body,
+            title: p.title,
+            visibility: p.visibility ?? "manager_only",
+            extract_skills: true,
+          },
+        }),
+    },
   ];
 }
 
@@ -1565,6 +1696,9 @@ export const WRITE_TOOLS = new Set([
   "decide_approval",
   "save_approval_policy",
   "set_my_delegate",
+  "create_project",
+  "add_project_member",
+  "add_insight_note",
 ]);
 
 export function hrTools(token: string): AgentTool[] {

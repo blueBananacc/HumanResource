@@ -78,6 +78,7 @@ from app.api import org as org_api
 from app.api import overtime as overtime_api
 from app.api import payroll as payroll_api
 from app.api import performance as performance_api
+from app.api import projects as projects_api
 from app.api import prompt_templates as prompt_templates_api
 from app.api import question_library as question_library_api
 from app.api import question_sets as question_sets_api
@@ -93,6 +94,7 @@ from app.api import sourcing as sourcing_api
 from app.api import smtp as smtp_api
 from app.api import sso as sso_api
 from app.api import surveys as surveys_api
+from app.api import talent_cards as talent_cards_api
 from app.api import talent_profiles as talent_profiles_api
 from app.api import talents as talents_api
 from app.api import users as users_api
@@ -491,6 +493,8 @@ def create_app() -> FastAPI:
     app.include_router(shifts_api.router, prefix="/api")
     app.include_router(approvals_api.router, prefix="/api")
     app.include_router(datasets_api.router, prefix="/api")
+    app.include_router(talent_cards_api.router, prefix="/api")
+    app.include_router(projects_api.router, prefix="/api")
 
     return app
 

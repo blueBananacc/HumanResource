@@ -4,12 +4,14 @@ import {
   AlertTriangle,
   BarChart3,
   BookOpen,
+  Briefcase,
   CalendarDays,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   ExternalLink,
   FileText,
+  Sparkles,
   Target,
   Users,
   Video,
@@ -972,6 +974,85 @@ export function ToolResultCard({
     );
   }
 
+  // ===== P 批次:人才画像 / 内部人才匹配 =====
+  if (name === "search_talent") {
+    return <TalentMatchCard json={(json ?? {}) as Json} onInject={onInject} />;
+  }
+
+  if (name === "get_talent_card") {
+    const j = (json ?? {}) as Json;
+    const emp = (j.employee ?? {}) as Json;
+    const skills = (j.skills_confirmed ?? []) as Json[];
+    const suggested = Number(j.suggested_count ?? 0);
+    const projects = (j.projects ?? []) as Json[];
+    return (
+      <CardShell icon={Sparkles} title={`${str(emp.name)} 的人才画像`}>
+        <div className="text-[11px] text-[var(--color-text-tertiary)]">
+          {str(emp.designation)} · {str(emp.org_unit)} · {str(emp.status)}
+        </div>
+        {skills.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-1">
+            {skills.slice(0, 8).map((s, i) => (
+              <span
+                key={i}
+                className="rounded-full bg-[var(--color-accent-soft)] text-[var(--color-accent)] px-2 py-0.5 text-[10px]"
+              >
+                {str(s.name)} Lv.{str(s.level)}
+              </span>
+            ))}
+            {skills.length > 8 && (
+              <span className="text-[10px] text-[var(--color-text-tertiary)]">
+                +{skills.length - 8}
+              </span>
+            )}
+          </div>
+        )}
+        <div className="flex items-center gap-3 mt-1.5 text-[10px] text-[var(--color-text-tertiary)]">
+          <span>项目 {projects.length}</span>
+          <span>面试 {(j.interviews as unknown[] ?? []).length}</span>
+          <span>绩效 {(j.appraisals as unknown[] ?? []).length}</span>
+          {suggested > 0 && (
+            <span className="text-[var(--color-warning,#d97706)]">
+              {suggested} 条建议待确认
+            </span>
+          )}
+        </div>
+        <div className="mt-1">
+          <RowLink to={`/employees/${str(emp.id)}`}>打开完整画像 →</RowLink>
+        </div>
+      </CardShell>
+    );
+  }
+
+  if (name === "list_projects") {
+    const items = (((json as Json)?.items ?? []) as Json[]);
+    const ST: Record<string, string> = {
+      draft: "草稿", active: "进行中", done: "已完成", cancelled: "已取消",
+    };
+    return (
+      <CardShell icon={Briefcase} title={`项目 ${items.length} 个`}>
+        {items.length === 0 && (
+          <div className="text-[11px] text-[var(--color-text-tertiary)]">
+            还没有项目,可让我「建个项目」
+          </div>
+        )}
+        {items.slice(0, 8).map((p, i) => (
+          <div key={i} className="flex items-center gap-2 py-0.5 text-[11px]">
+            <span className="truncate text-[var(--color-text-secondary)]">
+              {str(p.name)}
+            </span>
+            <span className="ml-auto shrink-0 text-[10px] text-[var(--color-text-tertiary)]">
+              {ST[str(p.status)] ?? str(p.status)} · {str(p.member_count)}人
+            </span>
+          </div>
+        ))}
+        <div className="mt-1">
+          <RowLink to="/projects">项目管理 →</RowLink>
+        </div>
+      </CardShell>
+    );
+  }
+
   // ===== 聚合/计数/报表 → 指标卡 =====
   if (
     name === "count_records" ||
@@ -1124,6 +1205,127 @@ function CandidatePickCard({
             className="h-7 px-3 rounded-md border border-[var(--color-border-subtle)] text-[12px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-canvas)]"
           >
             继续查找
+          </button>
+        </div>
+      )}
+    </CardShell>
+  );
+}
+
+/** P 批次 — 内部人才匹配卡:勾选员工 → 「加入项目」注入话术。 */
+function TalentMatchCard({
+  json,
+  onInject,
+}: {
+  json: Json;
+  onInject?: (text: string) => void;
+}) {
+  const items = ((json.items ?? []) as Json[]);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const toggle = (id: string) =>
+    setPicked((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  const chosen = items.filter((it) => picked.has(str(it.employee_id)));
+  const hits = ((json.matched ?? {}) as Json).dict_hits as unknown[] | undefined;
+
+  return (
+    <CardShell icon={Users} title={`匹配员工 ${items.length} 人`}>
+      {hits && hits.length > 0 && (
+        <div className="text-[10px] text-[var(--color-text-tertiary)] pb-1">
+          命中技能:{hits.map((h) => str(h)).join("、")}
+        </div>
+      )}
+      {items.length === 0 && (
+        <div className="text-[11px] text-[var(--color-text-tertiary)]">
+          没有员工技能命中 —— 可换技能词、或打开「计入待确认建议」再试
+        </div>
+      )}
+      <div className="flex flex-col">
+        {items.map((it) => {
+          const id = str(it.employee_id);
+          const on = picked.has(id);
+          const skills = (it.matched_skills ?? []) as Json[];
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => toggle(id)}
+              className={cn(
+                "flex items-start gap-2 py-1.5 px-1.5 rounded-lg text-left border-b border-[var(--color-border-row)] last:border-0 transition-colors",
+                on
+                  ? "bg-[var(--color-accent-soft)]/50"
+                  : "hover:bg-[var(--color-bg-canvas)]",
+              )}
+            >
+              <span
+                className={cn(
+                  "mt-0.5 w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 text-[9px]",
+                  on
+                    ? "bg-[var(--color-accent)] border-[var(--color-accent)] text-white"
+                    : "border-[var(--color-border-subtle)]",
+                )}
+              >
+                {on && "✓"}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5">
+                  <RowLink to={`/employees/${id}`}>{str(it.name)}</RowLink>
+                  <span className="text-[10px] text-[var(--color-text-tertiary)]">
+                    {str(it.designation)}
+                    {it.org_unit ? ` · ${str(it.org_unit)}` : ""}
+                  </span>
+                  {Number(it.active_projects ?? 0) > 0 && (
+                    <span className="text-[10px] text-[var(--color-warning,#d97706)]">
+                      在项 {str(it.active_projects)}
+                    </span>
+                  )}
+                </span>
+                <span className="flex flex-wrap gap-1 mt-0.5">
+                  {skills.slice(0, 5).map((s, i) => (
+                    <span
+                      key={i}
+                      className={cn(
+                        "rounded-full px-1.5 py-px text-[10px]",
+                        s.status === "suggested"
+                          ? "border border-dashed border-[var(--color-border-subtle)] text-[var(--color-text-tertiary)]"
+                          : "bg-[var(--color-accent-soft)] text-[var(--color-accent)]",
+                      )}
+                    >
+                      {str(s.name)} Lv.{str(s.level)}
+                    </span>
+                  ))}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {onInject && items.length > 0 && (
+        <div className="mt-2 flex gap-2">
+          <button
+            type="button"
+            disabled={chosen.length === 0}
+            onClick={() =>
+              onInject(
+                `把以下员工加入项目:${chosen
+                  .map((c) => `${str(c.name)}(employee_id=${str(c.employee_id)})`)
+                  .join("、")}`,
+              )
+            }
+            className="flex-1 h-7 rounded-md bg-[var(--color-accent)] text-white text-[12px] font-bold hover:bg-[var(--color-accent-hover)] disabled:opacity-40 active:scale-[0.98] transition-all"
+          >
+            加入项目{chosen.length > 0 ? `(${chosen.length})` : ""}
+          </button>
+          <button
+            type="button"
+            onClick={() => onInject("换个技能组合再搜一遍")}
+            className="h-7 px-3 rounded-md border border-[var(--color-border-subtle)] text-[12px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-canvas)]"
+          >
+            换条件
           </button>
         </div>
       )}

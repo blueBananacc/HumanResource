@@ -46,6 +46,7 @@ const TITLE_BY_PATH: Record<string, string> = {
   "/payroll": "工资条",
   "/announcements": "公司公告",
   "/approvals": "审批中心",
+  "/projects": "项目",
   "/requests": "员工申请",
   "/cases": "HR 工单",
   "/knowledge": "知识库",

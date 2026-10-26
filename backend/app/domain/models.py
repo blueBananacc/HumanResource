@@ -3633,3 +3633,176 @@ class ApprovalStep(Base):
     __table_args__ = (
         UniqueConstraint("instance_id", "idx", name="uq_approval_step_idx"),
     )
+
+
+class EmployeeSkill(Base):
+    """P 批次人才画像 — 员工技能标签(带来源证据 + 待确认护栏)。
+
+    - ``level`` 1-5(对齐 CandidateSkill / CompetencyRatings 刻度)
+    - ``source``: resume / interview / appraisal / project / insight / manual / ai
+    - ``status``: ``suggested``(AI/规则建议,待 HR/主管确认) / ``confirmed``
+      —— AI 建议永不直接落 confirmed,这是画像可信度护栏
+    - ``evidence`` JSON: {"kind": "project|interview|insight|appraisal|resume",
+      "id": "...", "note": "..."} 记录标签出处,卡片页可穿透
+    - 同员工同技能唯一:重复证据只升级 level/补 evidence,不插重复行
+    """
+
+    __tablename__ = "employee_skills"
+
+    SOURCES = ("resume", "interview", "appraisal", "project", "insight",
+               "manual", "ai")
+    STATUSES = ("suggested", "confirmed")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    skill_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("skills.id", ondelete="CASCADE"), nullable=False
+    )
+    level: Mapped[int] = mapped_column(Integer, nullable=False, server_default="3")
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="manual", index=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="suggested", index=True
+    )
+    evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("employee_id", "skill_id", name="uq_employee_skills_pair"),
+    )
+
+
+class Project(Base):
+    """P 批次 — 轻量项目登记(人才归属载体,不做任务管理)。
+
+    ``required_skills`` JSON: [{"skill_id": "...", "min_level": 3}],
+    供 search_talent 的确定性预筛与匹配理由生成。
+    状态机: draft → active → done / cancelled;done 触发成员画像更新。
+    """
+
+    __tablename__ = "projects"
+
+    STATUSES = ("draft", "active", "done", "cancelled")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="draft", index=True
+    )
+    owner_employee_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="SET NULL"), nullable=True
+    )
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    required_skills: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class ProjectMember(Base):
+    """项目成员 — 员工档案「所属项目组」分组的载体。
+
+    ``joined_via``: manual / ai_match —— AI 推荐加入的留痕,
+    事后可统计 AI 选人命中率(贡献评价回填后对比)。
+    """
+
+    __tablename__ = "project_members"
+
+    VIA = ("manual", "ai_match")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    role: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    allocation_pct: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="100"
+    )
+    joined_via: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="manual"
+    )
+    contribution_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    joined_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    left_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "employee_id", name="uq_project_members_pair"),
+    )
+
+
+class InsightNote(Base):
+    """P 批次 — 画像证据统一输入口。
+
+    kind: meeting(会议纪要,手动上传入口) / project_review(项目复盘) /
+          manager_note(主管随手评) / milestone(里程碑)
+
+    新建即触发画像更新管线(P2):LLM 从 body 提取能力证据 →
+    EmployeeSkill(source=insight, status=suggested)。
+
+    ``visibility``: manager_only(默认,员工本人不可见) /
+    employee_visible —— 主管评价默认不给员工看,避免误伤。
+    """
+
+    __tablename__ = "insight_notes"
+
+    KINDS = ("meeting", "project_review", "manager_note", "milestone")
+    VISIBILITIES = ("manager_only", "employee_visible")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    kind: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="manager_note", index=True
+    )
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    author_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    source_ref: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    visibility: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="manager_only"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )

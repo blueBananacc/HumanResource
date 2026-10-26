@@ -70,6 +70,7 @@ import { Payroll } from "@/pages/hris/Payroll";
 import { Announcements } from "@/pages/hris/Announcements";
 import { EmployeeRequests } from "@/pages/hris/EmployeeRequests";
 import { Approvals } from "@/pages/hris/Approvals";
+import { Projects } from "@/pages/hris/Projects";
 import { HrCases } from "@/pages/hris/HrCases";
 import { Knowledge } from "@/pages/hris/Knowledge";
 import { SalaryBands } from "@/pages/hris/SalaryBands";
@@ -144,6 +145,7 @@ export const router = createBrowserRouter([
       // ── HR 服务台 / 协作 ──
       { path: "announcements", element: <Announcements /> },
       { path: "approvals", element: <Approvals /> },
+      { path: "projects", element: <Projects /> },
       { path: "requests", element: <EmployeeRequests /> },
       { path: "cases", element: <HrCases /> },
       { path: "knowledge", element: <Knowledge /> },

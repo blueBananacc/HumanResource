@@ -93,6 +93,7 @@ class EmployeeIn(BaseModel):
     ] = "full_time"
     status: Literal["active", "leave", "suspended", "terminated"] = "active"
     personal: dict[str, Any] | None = None
+    source_candidate_id: str | None = None  # P1:入职建卡来源(仅 POST 生效)
     # optimistic lock:带读取时的 updated_at,失配 → 409
     base_updated_at: datetime | None = None
 
@@ -311,9 +312,14 @@ def create_employee(
         employment_type=body.employment_type,
         status=body.status,
         personal=body.personal,
+        source_candidate_id=body.source_candidate_id,
     )
     db.add(e)
     try:
+        db.flush()
+        if e.source_candidate_id:
+            from app.services import profile_update
+            profile_update.seed_card_from_candidate(db, e)
         db.commit()
     except IntegrityError:
         db.rollback()

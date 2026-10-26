@@ -553,6 +553,9 @@ def _employee_from_offer(db: Session, o: JobOffer, actor: User) -> Employee:
     # 候选人标记 hired 便于人才库筛选
     if cand.status == "active":
         cand.status = "hired"
+    # P1 人才画像:入职第一天建卡 — 简历/面试技能迁入员工画像
+    from app.services import profile_update
+    profile_update.seed_card_from_candidate(db, emp)
     return emp
 
 
