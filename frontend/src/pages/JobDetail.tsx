@@ -23,6 +23,7 @@ import { formatRelative, levelLabel } from "@/lib/format";
 import { JobFormModal, type Job } from "./Jobs";
 import { JobGovernancePanel } from "./JobGovernancePanel";
 import { JobKnowledgeCard } from "@/components/jobs/JobKnowledgeCard";
+import { JobAiProfileCard, JobJdReview } from "@/components/jobs/JobAiCards";
 
 type JobStatus = "open" | "paused" | "closed";
 
@@ -312,11 +313,16 @@ export function JobDetail() {
         canCreateDict={hasPermission(PERM.MANAGE_SETTINGS)}
       />
 
+      {/* 动态职位画像(C3):规则权重×决策学习×匹配统计 */}
+      <JobAiProfileCard jobId={data.id} />
+
       {/* 岗位描述 */}
       <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-3">
-        <h3 className="font-heading font-semibold text-base text-[var(--color-text-primary)]">
-          岗位描述
-        </h3>
+        <div className="flex items-center justify-between">
+          <h3 className="font-heading font-semibold text-base text-[var(--color-text-primary)]">
+            岗位描述
+          </h3>
+        </div>
         {data.description.trim() ? (
           <p className="text-[14px] text-[var(--color-text-primary)] font-body whitespace-pre-wrap leading-relaxed">
             {data.description}
@@ -326,6 +332,8 @@ export function JobDetail() {
             尚未填写岗位描述。点击右上「编辑」补充。
           </span>
         )}
+        {/* AI 审核 JD(C1):六维合规检查 */}
+        <JobJdReview jobId={data.id} hasJd={!!data.description.trim()} />
       </div>
 
       {/* 岗位知识(T11):切块注入 AI prompt */}

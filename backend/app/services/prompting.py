@@ -239,6 +239,54 @@ PROMPT_REGISTRY: dict[str, PromptSpec] = {
             "输出要求:只给润色后的正文,保留原有信息,不要加解释。\n"
         ),
     ),
+    # ===== JD 合规审查(对标 Moka AI 审核 JD)=====
+    "jd.review": PromptSpec(
+        name="JD 合规审查",
+        description="六维审查 JD:DEI/措辞/结构/薪资透明/法律风险/可检索性",
+        module="jobs",
+        variables=[
+            {"name": "title", "desc": "岗位名称"},
+            {"name": "jd_text", "desc": "JD 全文"},
+        ],
+        content=(
+            "你是招聘合规专家,审查下面这份岗位描述(JD)。岗位:{{title}}\n\n"
+            "JD 全文:\n{{jd_text}}\n\n"
+            "按六个维度找问题,**只输出 JSON**:\n"
+            '{"score": 0-100, '
+            '"issues": [{"dimension": "DEI合规|措辞精准|结构完整|薪资透明|法律风险|可检索性", '
+            '"severity": "high|medium|low", "quote": "JD 原文片段", "suggestion": "改写建议"}], '
+            '"summary": "一句话总评"}\n\n'
+            "审查要点:\n"
+            "- DEI合规:性别/年龄/地域/婚育/学历歧视(如\"限男性\"\"35岁以下\"\"985优先\")\n"
+            "- 措辞精准:模糊词(\"大厂背景\"\"重度用户\")应改为可验证要求\n"
+            "- 结构完整:职责与任职要求是否混写、加分项是否单列\n"
+            "- 薪资透明:是否完全不提薪资/福利(低严重度)\n"
+            "- 法律风险:过度要求(无薪试岗/押金)、不当承诺、超长工时表述\n"
+            "- 可检索性:是否使用行业通用职位名/技能词便于候选人搜索\n"
+            "没有问题则 issues 为空数组,score>=90。"
+        ),
+    ),
+    # ===== 面试教练·面试官副驾(对标 Moka 面试教练实时护航)=====
+    "interview.copilot": PromptSpec(
+        name="面试官副驾",
+        description="按考察维度覆盖情况,给面试官追问建议",
+        module="interviews",
+        variables=[
+            {"name": "criteria", "desc": "待考察维度清单(JSON)"},
+            {"name": "covered", "desc": "已覆盖维度名"},
+            {"name": "answer_text", "desc": "候选人最近回答内容"},
+        ],
+        content=(
+            "你是面试教练。面试官正在进行结构化面试,考察维度:\n{{criteria}}\n\n"
+            "已覆盖维度:{{covered}}\n\n"
+            "候选人最近的回答:\n{{answer_text}}\n\n"
+            "**只输出 JSON**:\n"
+            '{"missing": ["尚未覆盖的维度名"], '
+            '"followups": [{"dimension": "维度名", "question": "建议追问的问题", "intent": "这句追问想验证什么"}], '
+            '"note": "一句教练提示(如回答是否空泛/需深挖)"}\n'
+            "followups 最多 3 条,优先补未覆盖维度;问题要行为化(要事例、要数据)。"
+        ),
+    ),
     "field.announcements.content.draft": PromptSpec(
         name="公告起草",
         description="按标题与要求起草公司公告正文",

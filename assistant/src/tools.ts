@@ -150,6 +150,21 @@ function makeTools(token: string): ToolDef[] {
         ),
     },
     {
+      name: "query_metrics",
+      label: "对话式 BI",
+      description:
+        "招聘经营指标问答:简历/候选人/岗位/面试 KPI、来源与漏斗分布、推荐率、岗位填充。问\"本月入职情况\"\"招聘漏斗转化\"\"哪个岗位人最多\"时用。",
+      parameters: Type.Object({
+        range: Type.Optional(
+          Type.String({ description: "时间窗:7d / 30d / 90d / all,默认 30d" }),
+        ),
+      }),
+      execute: async (_id, p: any) => {
+        const range = ["7d", "30d", "90d", "all"].includes(p.range) ? p.range : "30d";
+        return t(`/api/reports/overview?range=${range}`);
+      },
+    },
+    {
       name: "list_interviews",
       label: "查询面试列表",
       description: "列出远程面试(候选人/岗位可搜索),返回状态、完成度、平均分",

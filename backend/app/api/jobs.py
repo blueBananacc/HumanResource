@@ -231,6 +231,110 @@ def get_job(
     return _job_out(job)
 
 
+@router.get("/{job_id}/ai-profile")
+def job_ai_profile(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """动态职位画像(对标 Moka「动态校准画像」)。
+
+    合成三源数据,让「岗位当前看重什么」可见:
+    - 评分规则的声明式权重(挂在岗位上的当前标准)
+    - 决策学习的权重建议(近 90 天 HR 真实决策教出来的偏好)
+    - 匹配评估统计(已评人数/平均分,感知画像覆盖面)
+
+    ``one_liner`` 是模板化的一句话画像——不依赖 LLM,任何环境可用。
+    """
+    from sqlalchemy import func
+
+    from app.domain.models import ResumeJobMatch, ScoringRule
+    from app.services.decision_learning import weight_suggestions
+
+    job = db.get(Job, job_id)
+    if not job or job.tenant_id != current.tenant_id:
+        raise HTTPException(404, "岗位不存在")
+    ensure_can_see(get_org_scope(db, current), job.org_unit_id)
+
+    # 评分规则当前权重
+    rule_out = None
+    if job.scoring_rule_id:
+        rule = db.get(ScoringRule, job.scoring_rule_id)
+        if rule:
+            rule_out = {
+                "name": rule.name,
+                "version": rule.version,
+                "dimensions": [
+                    {"key": d.get("key"), "name": d.get("name"), "weight": d.get("weight")}
+                    for d in (rule.dimensions or [])
+                ],
+            }
+
+    # 岗位级决策学习(90 天)
+    learned = weight_suggestions(db, current.tenant_id, job_id=job_id, days=90)
+    n = learned["decisions_total"]
+    confidence = "high" if n >= 20 else ("medium" if n >= 5 else "low")
+    learned_out = {
+        "decisions_total": n,
+        "positive": learned["positive"],
+        "negative": learned["negative"],
+        "confidence": confidence,
+        "dimensions": [
+            {
+                "name": d["name"],
+                "current_weight": d["current_weight"],
+                "suggested_weight": d["suggested_weight"],
+                "gap": d["gap"],
+                "pos_avg_level": d.get("pos_avg_level"),
+                "neg_avg_level": d.get("neg_avg_level"),
+            }
+            for d in learned["dimensions"]
+        ],
+    }
+
+    # 匹配评估统计
+    stats = db.execute(
+        select(func.count(ResumeJobMatch.id), func.avg(ResumeJobMatch.score), func.max(ResumeJobMatch.score)).where(
+            ResumeJobMatch.tenant_id == current.tenant_id,
+            ResumeJobMatch.job_id == job_id,
+        )
+    ).one()
+    match_stats = {
+        "evaluated": stats[0] or 0,
+        "avg_score": round(float(stats[1]), 1) if stats[1] is not None else None,
+        "top_score": stats[2],
+    }
+
+    # 模板化一句话画像:权重最高的学习维度 + 决策规模
+    top = next(
+        (d for d in learned_out["dimensions"] if d["suggested_weight"] is not None), None
+    )
+    parts = []
+    if top and abs(top["gap"] or 0) >= 2:
+        direction = "更看重" if (top["gap"] or 0) > 0 else "放宽"
+        parts.append(f"实际决策显示该岗{direction}「{top['name']}」(建议权重 {top['suggested_weight']})")
+    elif rule_out and rule_out["dimensions"]:
+        w = max(rule_out["dimensions"], key=lambda d: d.get("weight") or 0)
+        parts.append(f"当前标准以「{w['name']}」为重(权重 {w['weight']})")
+    else:
+        parts.append("使用默认五维评估标准")
+    if n:
+        parts.append(f"近 90 天 {n} 次流转决策持续校准画像")
+    else:
+        parts.append("尚无流转决策,画像保持初始标准")
+    if match_stats["evaluated"]:
+        parts.append(f"已评估 {match_stats['evaluated']} 人,平均 {match_stats['avg_score']} 分")
+
+    return {
+        "job_id": job.id,
+        "title": job.title,
+        "rule": rule_out,
+        "learned": learned_out,
+        "match_stats": match_stats,
+        "one_liner": ";".join(parts) + "。",
+    }
+
+
 @router.put(
     "/{job_id}",
     response_model=JobOut,

@@ -178,6 +178,8 @@ const SYSTEM_PROMPT = `你是 HROnfire 招聘平台的 AI 助手,服务对象是
 - list_entities / search_records / count_records:通用实体检索与计数
   (不确定查什么实体时先 list_entities)
 - aggregate_records:数值字段聚合(sum/avg/min/max/count,回答"总额/平均"类问题)
+- query_metrics:对话式 BI——招聘经营指标总览(简历/候选人/岗位/面试 KPI、
+  来源分布、推荐率、岗位填充;问"本月入职情况""漏斗转化""哪个岗位人最多"时首选)
 - update_record:更新记录白名单字段(需用户确认才执行;先 search_records 拿 id)
 - list_relationships:查一条记录关联的其它实体(候选人→申请/面试/offer,员工→申请/工单等)
 - list_report_kinds / run_report:执行内置报表(管道漏斗/周摘要/待办/编制/

@@ -6,17 +6,17 @@
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import String, case, func, or_, select
+from sqlalchemy import String, case, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, apply_q_ilike, count_total, paginate_params
 from app.api.auth import get_current_user
 from app.api.license import require_feature
-from app.domain.models import KnowledgeArticle, User
+from app.domain.models import KnowledgeArticle, KnowledgeQueryLog, User
 from app.infra.db import get_db
 from app.services.audit import write_audit
 from app.services.bm25 import bm25_scores
@@ -377,6 +377,23 @@ def _hit(a: KnowledgeArticle, q: str, score: float | None = None) -> SearchHit:
     )
 
 
+def _log_query(db: Session, tenant_id: str, q: str, rows: list, source: str) -> None:
+    """检索日志(兜底回复标注):零命中查询沉淀为知识缺口榜单的原始数据。"""
+    try:
+        db.add(
+            KnowledgeQueryLog(
+                tenant_id=tenant_id,
+                query=q.strip()[:512],
+                hits_count=len(rows),
+                top_score=float(rows[0][1]) if rows else None,
+                source=source,
+            )
+        )
+        db.commit()
+    except Exception:  # 日志写失败绝不影响检索主链路
+        db.rollback()
+
+
 @router.post("/search", response_model=list[SearchHit])
 def search(
     body: SearchIn,
@@ -387,7 +404,55 @@ def search(
         db, current.tenant_id, body.q, body.limit,
         published_only=True, category=body.category,
     )
+    _log_query(db, current.tenant_id, body.q, rows, "ui")
     return [_hit(a, body.q, round(s, 4)) for a, s in rows]
+
+
+@router.get("/gaps")
+def knowledge_gaps(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """知识缺口榜单:零命中查询按频次聚合(近 90 天,Top 20)。
+
+    对标 Moka「兜底回复自动标注」—— HR 据此知道该补什么文章。
+    """
+    since = _now() - timedelta(days=90)
+    rows = db.execute(
+        select(
+            KnowledgeQueryLog.query,
+            func.count(KnowledgeQueryLog.id).label("cnt"),
+            func.max(KnowledgeQueryLog.created_at).label("last_seen"),
+            func.min(KnowledgeQueryLog.source).label("source"),
+        )
+        .where(
+            KnowledgeQueryLog.tenant_id == current.tenant_id,
+            KnowledgeQueryLog.hits_count == 0,
+            KnowledgeQueryLog.created_at >= since,
+        )
+        .group_by(KnowledgeQueryLog.query)
+        .order_by(desc("cnt"))
+        .limit(20)
+    ).all()
+    total_zero = db.scalar(
+        select(func.count(KnowledgeQueryLog.id)).where(
+            KnowledgeQueryLog.tenant_id == current.tenant_id,
+            KnowledgeQueryLog.hits_count == 0,
+            KnowledgeQueryLog.created_at >= since,
+        )
+    ) or 0
+    return {
+        "days": 90,
+        "zero_hit_total": total_zero,
+        "gaps": [
+            {
+                "query": r.query,
+                "count": r.cnt,
+                "last_seen": r.last_seen.isoformat() if r.last_seen else None,
+            }
+            for r in rows
+        ],
+    }
 
 
 @me_router.get("", response_model=list[SearchHit])
@@ -409,6 +474,7 @@ def me_search(
         return [_hit(a, "") for a in rows]
     q = q.strip()[:128]
     rows = _hybrid_search(db, current.tenant_id, q, 10, published_only=True)
+    _log_query(db, current.tenant_id, q, rows, "ess")
     return [_hit(a, q, round(s, 4)) for a, s in rows]
 
 

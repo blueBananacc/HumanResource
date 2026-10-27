@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { BookOpen, Pencil, Plus, Trash2 } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { BookOpen, Pencil, Plus, SearchX, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
@@ -41,6 +41,52 @@ const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
   archived: { label: "已归档", cls: "bg-amber-50 text-amber-700" },
 };
 
+type GapData = {
+  days: number;
+  zero_hit_total: number;
+  gaps: { query: string; count: number; last_seen: string | null }[];
+};
+
+/** 知识缺口榜单(兜底回复标注):零命中查询聚合,提示该补什么文章。 */
+function KnowledgeGapsCard({ canWrite }: { canWrite: boolean }) {
+  const { data } = useQuery<GapData>({
+    queryKey: ["knowledge-gaps"],
+    queryFn: () => fetchJSON("/api/knowledge/gaps"),
+    staleTime: 60_000,
+  });
+  if (!data || data.gaps.length === 0) return null;
+  return (
+    <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-5 flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <SearchX className="w-4 h-4 text-amber-500" />
+        <h3 className="font-heading font-semibold text-base text-[var(--color-text-primary)]">
+          知识缺口
+        </h3>
+        <span className="ml-auto text-[11px] text-[var(--color-text-tertiary)] font-body">
+          近 {data.days} 天共 {data.zero_hit_total} 次零命中检索 — 这些是员工/助手问了但库里没有的内容
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {data.gaps.slice(0, 10).map((g) => (
+          <span
+            key={g.query}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-[12px] font-body text-amber-700"
+            title={`最后检索 ${g.last_seen ?? ""}`}
+          >
+            {g.query}
+            <span className="rounded-full bg-white/70 px-1.5 text-[10px] font-mono">{g.count}×</span>
+          </span>
+        ))}
+      </div>
+      {canWrite && (
+        <p className="text-[11px] text-[var(--color-text-tertiary)] font-body">
+          建议:针对高频缺口写篇文章,检索命中率会立刻提升。
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function Knowledge() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<Article | null>(null);
@@ -77,6 +123,8 @@ export function Knowledge() {
           )}
         </div>
       </div>
+
+      <KnowledgeGapsCard canWrite={canWrite} />
 
       <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
         {isLoading ? (

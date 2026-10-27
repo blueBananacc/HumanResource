@@ -3029,6 +3029,30 @@ class KnowledgeArticle(Base):
     )
 
 
+class KnowledgeQueryLog(Base):
+    """知识库检索日志(兜底回复标注):记录每次查询的命中数与最高分。
+
+    对标 Moka「兜底回复自动标注 → HR 定期盘点知识缺口」:
+    hits_count=0 的查询聚合成 /knowledge/gaps 的缺口榜单,
+    让 RAG 形成"搜不到 → 补文章"的自改进飞轮。
+    """
+
+    __tablename__ = "knowledge_query_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    query: Mapped[str] = mapped_column(String(512), nullable=False)
+    hits_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    top_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # ui=知识库页搜索 / ess=员工自助问答 / assistant=助手工具
+    source: Mapped[str] = mapped_column(String(16), nullable=False, server_default="ui")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), index=True
+    )
+
+
 class ReportSubscription(Base):
     """定时报表订阅:_watch_loop 按 weekday+hour 投递邮件摘要。"""
 

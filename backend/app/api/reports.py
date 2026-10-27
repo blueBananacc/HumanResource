@@ -611,3 +611,107 @@ def question_analysis(
     items.sort(key=lambda x: x.use_count, reverse=True)
     return QuestionAnalysisResponse(items=items[:limit])
 
+
+
+# ==================== 人才地图(对标 Moka Mapping/人才星图的组织视图)====================
+
+
+@router.get(
+    "/talent-map",
+    dependencies=[Depends(require_permission(PERM_VIEW_REPORTS))],
+)
+def talent_map(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """组织级人才分布视图:阶段/来源/技能标签/岗位分布 + 近 30 天增长。
+
+    Moka 的人才地图重在外部渠道 mapping;我们做"库内地图"——
+    让 HR 一眼看到人才库的结构密度:人堆在哪个阶段、来自哪里、
+    技能分布是否覆盖在招岗位。
+    """
+    from collections import Counter
+
+    from app.domain.models import JobApplication, ResumeJobMatch
+
+    tid = current.tenant_id
+    scope = get_org_scope(db, current)
+    cand_sub = _candidate_scope_subquery(scope, tid)
+
+    candidates_total = db.scalar(
+        select(func.count(Candidate.id)).where(
+            Candidate.tenant_id == tid,
+            Candidate.id.in_(cand_sub) if cand_sub is not None else True,
+        )
+    ) or 0
+
+    since_30 = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=30)
+    growth_30d = db.scalar(
+        select(func.count(Candidate.id)).where(
+            Candidate.tenant_id == tid,
+            Candidate.created_at >= since_30,
+            Candidate.id.in_(cand_sub) if cand_sub is not None else True,
+        )
+    ) or 0
+
+    # 管道阶段分布(在途+已结束,按申请数)
+    st = select(JobApplication.stage, func.count().label("c")).where(
+        JobApplication.tenant_id == tid
+    )
+    if cand_sub is not None:
+        st = st.where(JobApplication.candidate_id.in_(cand_sub))
+    by_stage = [
+        {"stage": r[0], "count": r[1]}
+        for r in db.execute(st.group_by(JobApplication.stage)).all()
+    ]
+
+    # 简历来源分布
+    src = select(Resume.source, func.count().label("c")).where(Resume.tenant_id == tid)
+    if cand_sub is not None:
+        src = src.where(Resume.candidate_id.in_(cand_sub))
+    by_source = [
+        {"source": r[0] or "unknown", "count": r[1]}
+        for r in db.execute(src.group_by(Resume.source)).all()
+    ]
+
+    # 候选人标签 Top15(Python 侧聚合,tags 是 JSON 数组)
+    tag_rows = db.scalars(
+        select(Candidate.tags).where(
+            Candidate.tenant_id == tid,
+            Candidate.tags.is_not(None),
+            Candidate.id.in_(cand_sub) if cand_sub is not None else True,
+        )
+    ).all()
+    tag_counter: Counter[str] = Counter()
+    for tags in tag_rows:
+        for t in tags or []:
+            if t:
+                tag_counter[str(t)] += 1
+    top_tags = [{"tag": k, "count": v} for k, v in tag_counter.most_common(15)]
+
+    # 岗位候选分布 Top10
+    jb = (
+        select(Job.title, func.count(JobApplication.id).label("c"))
+        .join(JobApplication, JobApplication.job_id == Job.id)
+        .where(Job.tenant_id == tid)
+    )
+    if cand_sub is not None:
+        jb = jb.where(JobApplication.candidate_id.in_(cand_sub))
+    by_job = [
+        {"title": r[0], "count": r[1]}
+        for r in db.execute(jb.group_by(Job.title).order_by(func.count(JobApplication.id).desc()).limit(10)).all()
+    ]
+
+    avg_match = db.scalar(
+        select(func.avg(ResumeJobMatch.score)).where(ResumeJobMatch.tenant_id == tid)
+    )
+
+    return {
+        "candidates_total": candidates_total,
+        "growth_30d": growth_30d,
+        "by_stage": by_stage,
+        "by_source": by_source,
+        "top_tags": top_tags,
+        "by_job": by_job,
+        "avg_match_score": round(float(avg_match), 1) if avg_match is not None else None,
+    }

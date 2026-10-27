@@ -15,6 +15,7 @@ import { useAuth } from "@/lib/auth";
 import { PERM } from "@/lib/roles";
 import { formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { CopilotPanel } from "./CopilotPanel";
 
 // ---------- 类型 ----------
 
@@ -649,6 +650,16 @@ function ScorecardRow({
                 </span>
               ))}
             </div>
+          )}
+
+          {/* AI 面试副驾:open 评分卡才有追问建议的意义 */}
+          {sc.status === "open" && (
+            <CopilotPanel
+              scorecardId={sc.id}
+              coveredDims={sc.feedbacks.flatMap((f) =>
+                f.scores.map((s) => sc.criteria.find((x) => x.key === s.criterion)?.name ?? s.criterion)
+              )}
+            />
           )}
 
           {/* 分歧提示 */}

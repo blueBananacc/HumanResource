@@ -116,6 +116,7 @@ export const mainModules: NavModule[] = [
       {
         items: [
           { to: "/talents", label: "人才库", keywords: "候选人 简历 上传 talent resume" },
+          { to: "/talent-map", label: "人才地图", permission: PERM.VIEW_REPORTS, keywords: "地图 分布 mapping 技能 结构" },
           { to: "/campaigns", label: "人才再激活", permission: PERM.VIEW_REPORTS, feature: "hr.suite", keywords: "外联 触达 campaign 批量邮件" },
         ],
       },

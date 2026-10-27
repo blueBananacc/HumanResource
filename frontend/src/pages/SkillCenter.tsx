@@ -76,6 +76,20 @@ const SKILLS: Skill[] = [
     prompt: "为新岗位起一个完整招聘任务链",
     tag: "编排",
   },
+  {
+    icon: FileSearch,
+    title: "数据问答",
+    desc: "对话式 BI——问数字、漏斗、转化,AI 查真实指标回答",
+    prompt: "本月招聘漏斗转化情况怎么样?",
+    tag: "BI",
+  },
+  {
+    icon: ClipboardList,
+    title: "JD 合规审查",
+    desc: "六维体检岗位描述:歧视性用语/模糊措辞/法律风险",
+    prompt: "帮我审查一下当前在招岗位的 JD 有没有合规问题",
+    tag: "合规",
+  },
 ];
 
 function ask(prompt: string) {
