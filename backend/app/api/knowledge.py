@@ -19,6 +19,7 @@ from app.api.license import require_feature
 from app.domain.models import KnowledgeArticle, User
 from app.infra.db import get_db
 from app.services.audit import write_audit
+from app.services.bm25 import bm25_scores
 from app.services.embedding import cosine, embed_text, embed_texts
 from app.services.permissions import (
     PERM_MANAGE_EMPLOYEES,
@@ -272,7 +273,8 @@ def _hybrid_search(
     category: str | None = None,
 ) -> list[tuple[KnowledgeArticle, float]]:
     """召回 = 词面命中(trgm/ILIKE) ∪ 语义池(embedding 可用时全量带向量文章);
-    排序 = lex_score + 0.8*cosine(embedding)。无 embedding provider 时自动退化为纯词面。
+    排序 = BM25(应用层,CJK bigram,字段加权) + 0.8*cosine(embedding)。
+    无 embedding provider 时自动退化为纯 BM25。
     ``category`` 非空时限定分类(product_help 只查产品文档,不与租户知识混排)。"""
     lex = _lex_score(q).label("lex")
     base = select(KnowledgeArticle, lex).where(KnowledgeArticle.tenant_id == tenant_id)
@@ -303,8 +305,21 @@ def _hybrid_search(
             pool[a.id] = (a, 0.0)
     if not pool:
         return []
+
+    # 排序分:BM25(全语料 IDF,候选打分) — 无词面命中的语义召回项自然得 0
+    corpus = db.scalars(
+        select(KnowledgeArticle)
+        .where(KnowledgeArticle.tenant_id == tenant_id)
+        .where(KnowledgeArticle.status == "published")
+        .limit(500)
+    ).all()
+    bm = bm25_scores(
+        q,
+        [(a.id, a.title, a.tags, a.content) for a in corpus],
+        candidate_ids=set(pool),
+    )
     scored = [
-        (a, lx + (0.8 * cosine(q_emb, a.embedding) if q_emb else 0.0))
+        (a, bm.get(a.id, 0.0) + (0.8 * cosine(q_emb, a.embedding) if q_emb else 0.0))
         for a, lx in pool.values()
     ]
     scored.sort(key=lambda x: x[1], reverse=True)

@@ -24,6 +24,8 @@ type Provider = {
   api_key_masked: string;
   model: string;
   embedding_model: string | null;
+  embedding_base_url: string | null;
+  embedding_api_key_masked: string;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -296,6 +298,8 @@ function ProviderModal({
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [embeddingModel, setEmbeddingModel] = useState("");
+  const [embBaseUrl, setEmbBaseUrl] = useState("");
+  const [embApiKey, setEmbApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showModelHelp, setShowModelHelp] = useState(false);
 
@@ -307,12 +311,16 @@ function ProviderModal({
         setApiKey("");
         setModel(provider.model);
         setEmbeddingModel(provider.embedding_model ?? "");
+        setEmbBaseUrl(provider.embedding_base_url ?? "");
+        setEmbApiKey("");
       } else {
         setName("");
         setBaseUrl("");
         setApiKey("");
         setModel("");
         setEmbeddingModel("");
+        setEmbBaseUrl("");
+        setEmbApiKey("");
       }
       setError(null);
       setShowModelHelp(false);
@@ -332,6 +340,8 @@ function ProviderModal({
         api_key: apiKey.trim() || null,
         model: model.trim(),
         embedding_model: embeddingModel.trim() || null,
+        embedding_base_url: embBaseUrl.trim() || null,
+        embedding_api_key: embApiKey.trim() || null,
       };
       const url = isEdit
         ? `/api/llm/providers/${provider!.id}`
@@ -443,12 +453,40 @@ function ProviderModal({
           />
           {showModelHelp && <ModelHelp />}
         </div>
-        <Input
-          label="Embedding 模型(可选,知识库语义检索用)"
-          value={embeddingModel}
-          onChange={(e) => setEmbeddingModel(e.target.value)}
-          placeholder="text-embedding-3-small / bge-m3(留空则只用模糊检索;非 OpenAI 需填 Base URL)"
-        />
+        <div className="rounded-md border border-[var(--color-border-subtle)] bg-[var(--color-bg-subtle)] px-3 py-2.5 flex flex-col gap-2">
+          <div className="text-[12px] font-medium font-body text-[var(--color-text-secondary)]">
+            语义检索(Embedding,可选)— 配好后知识库走「BM25 词面 +
+            向量语义」混合召回;留空退化为纯 BM25,功能不受影响。
+          </div>
+          <Input
+            label="Embedding 模型"
+            value={embeddingModel}
+            onChange={(e) => setEmbeddingModel(e.target.value)}
+            placeholder="Qwen/Qwen3-Embedding-0.6B / bge-m3 / text-embedding-3-small"
+          />
+          <Input
+            label="Embedding Base URL"
+            value={embBaseUrl}
+            onChange={(e) => setEmbBaseUrl(e.target.value)}
+            placeholder="https://router.huggingface.co/v1(可与对话模型不同家)"
+          />
+          <Input
+            label={
+              isEdit
+                ? "Embedding API key(留空则不变;留空+无旧值则复用上方对话 key)"
+                : "Embedding API key(留空则复用上方对话 key)"
+            }
+            type="password"
+            value={embApiKey}
+            onChange={(e) => setEmbApiKey(e.target.value)}
+            placeholder={
+              isEdit
+                ? provider?.embedding_api_key_masked || "hf_..."
+                : "hf_...(HuggingFace 免费额度可跑 demo)"
+            }
+            autoComplete="off"
+          />
+        </div>
         <Input
           label={isEdit ? "API key (留空则不变)" : "API key"}
           type="password"

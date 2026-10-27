@@ -42,6 +42,8 @@ class ResolvedProvider:
     source: str  # db / env / mock
     is_mock: bool = False
     embedding_model: str | None = None
+    embedding_base_url: str | None = None
+    embedding_api_key: str | None = None
 
 
 def resolve_provider(db: Session, tenant_id: str | None = None) -> ResolvedProvider:
@@ -69,6 +71,10 @@ def resolve_provider(db: Session, tenant_id: str | None = None) -> ResolvedProvi
                 source="db",
                 is_mock=False,
                 embedding_model=row.embedding_model,
+                embedding_base_url=row.embedding_base_url,
+                embedding_api_key=decrypt(row.embedding_api_key_encrypted)
+                if row.embedding_api_key_encrypted
+                else None,
             )
 
     # .env 兜底
@@ -80,6 +86,8 @@ def resolve_provider(db: Session, tenant_id: str | None = None) -> ResolvedProvi
             source="env",
             is_mock=False,
             embedding_model=settings.llm_embedding_model,
+            embedding_base_url=settings.llm_embedding_base_url,
+            embedding_api_key=settings.llm_embedding_api_key,
         )
 
     # mock 兜底

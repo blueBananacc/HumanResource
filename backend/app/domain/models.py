@@ -541,6 +541,10 @@ class LLMProvider(Base):
     api_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(String(128), nullable=False)
     embedding_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # embedding 可与 chat 走不同服务(如 chat=DeepSeek、embedding=HF/SiliconFlow);
+    # 两者留空则回退共用 base_url/api_key
+    embedding_base_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    embedding_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

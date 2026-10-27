@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_default_model: str = "openai/gpt-4o-mini"
     llm_embedding_model: str | None = None
+    llm_embedding_base_url: str | None = None
+    llm_embedding_api_key: str | None = None
 
     # ---- AI 助手 sidecar(pi-agent-core,Node)----
     # docker 网内地址,不对外发布;frontend → backend /api/assistant → 这里。

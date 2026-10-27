@@ -47,6 +47,12 @@ class ProviderIn(BaseModel):
     api_key: str | None = Field(None, description="留空 / null 表示保留原 key")
     model: str = Field(..., min_length=1, max_length=128)
     embedding_model: str | None = Field(None, description="可选;知识库语义检索用")
+    embedding_base_url: str | None = Field(
+        None, description="可选;embedding 服务地址,留空共用 chat base_url"
+    )
+    embedding_api_key: str | None = Field(
+        None, description="可选;embedding 服务 key,留空保留原值/共用 chat key"
+    )
 
 
 class ProviderOut(BaseModel):
@@ -56,6 +62,8 @@ class ProviderOut(BaseModel):
     api_key_masked: str
     model: str
     embedding_model: str | None
+    embedding_base_url: str | None
+    embedding_api_key_masked: str | None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -63,6 +71,11 @@ class ProviderOut(BaseModel):
 
 def _to_out(p: LLMProvider) -> ProviderOut:
     plain = decrypt(p.api_key_encrypted)
+    emb_key = (
+        decrypt(p.embedding_api_key_encrypted)
+        if p.embedding_api_key_encrypted
+        else None
+    )
     return ProviderOut(
         id=p.id,
         name=p.name,
@@ -70,6 +83,8 @@ def _to_out(p: LLMProvider) -> ProviderOut:
         api_key_masked=mask_secret(plain),
         model=p.model,
         embedding_model=p.embedding_model,
+        embedding_base_url=p.embedding_base_url,
+        embedding_api_key_masked=mask_secret(emb_key) if emb_key else None,
         is_active=p.is_active,
         created_at=p.created_at,
         updated_at=p.updated_at,
@@ -106,6 +121,10 @@ def create_provider(
         api_key_encrypted=encrypt(body.api_key),
         model=body.model.strip(),
         embedding_model=body.embedding_model.strip() if body.embedding_model else None,
+        embedding_base_url=body.embedding_base_url or None,
+        embedding_api_key_encrypted=encrypt(body.embedding_api_key)
+        if body.embedding_api_key
+        else None,
         is_active=False,
         created_by=current.id,
     )
@@ -130,6 +149,9 @@ def update_provider(
     p.base_url = body.base_url or None
     p.model = body.model.strip()
     p.embedding_model = body.embedding_model.strip() if body.embedding_model else None
+    p.embedding_base_url = body.embedding_base_url or None
+    if body.embedding_api_key:  # 非空才覆盖,空字符串保留旧 key
+        p.embedding_api_key_encrypted = encrypt(body.embedding_api_key)
     if body.api_key:  # 非空才覆盖,空字符串保留旧 key
         p.api_key_encrypted = encrypt(body.api_key)
     p.updated_at = datetime.now(UTC).replace(tzinfo=None)

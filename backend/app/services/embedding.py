@@ -29,14 +29,15 @@ def embed_texts(db: Session, tenant_id: str | None, texts: list[str]) -> list[li
     if not texts:
         return None
     p = resolve_provider(db, tenant_id)
-    if p.is_mock or not p.api_key or not p.embedding_model:
+    api_key = p.embedding_api_key or p.api_key
+    if p.is_mock or not api_key or not p.embedding_model:
         return None
-    base = (p.base_url or _EMBED_DEFAULT_BASE).rstrip("/")
+    base = (p.embedding_base_url or p.base_url or _EMBED_DEFAULT_BASE).rstrip("/")
     try:
         resp = httpx.post(
             f"{base}/embeddings",
             json={"model": p.embedding_model, "input": texts[:50]},
-            headers={"Authorization": f"Bearer {p.api_key}"},
+            headers={"Authorization": f"Bearer {api_key}"},
             timeout=_EMBED_TIMEOUT,
         )
     except httpx.HTTPError as e:
