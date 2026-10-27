@@ -199,3 +199,29 @@
 - 12/16 宫格可变粒度、测评数据轴(依赖测评云)
 - 盘点会多人协作/直播式校准(本期单机拖拽校准已覆盖核心动作)
 - IDP 流程(下一批)
+
+## 十五、职位管理 + 调薪建议矩阵(Workday staffing model / merit matrix · 北森编制)
+
+### 竞品调研
+
+- **Workday Position Management**:职位是独立于任职人的实体(座位);open→filled→(frozen/closed);职位可挂默认薪酬带宽与编制限制;空职位报表是编制管控核心。与 Job-Based(岗位跟着人走)模式并列,我们选 position 模式——更适合编制管控演示。
+- **Workday Merit Matrix**:调薪评审 = 绩效评级 × compa-ratio(现薪/带宽中点)→ 建议调幅矩阵;评审人在建议值上调整 → 批准生效。矩阵格权重可配。
+- **北森编制/职级**:编制数 vs 在职的对账视图(编制达成)、职级/序列挂在职位上;offer→入职占编。
+
+### 落地映射
+
+- `Position`(title/designation/org_unit_id/salary_band_id/status/incumbent_id/opened/filled/closed_at)+ `Employee.position_id` 双向回填;`CompReviewDecision`(员工×周期,落位快照 suggested→final→approved)。
+- `GET /api/positions` 列表+stats(open/filled/frozen/空缺率=open/非closed/by_org 编制对账);fill(校验 active+无现任+open,换岗自动释放旧职位)/vacate/patch 状态机;审计 create/fill/vacate/update。
+- `lifecycle` separation 生效时自动 `release_employee_position` — 离职即释放回空缺。
+- 调薪矩阵:`GET /api/comp-review/matrix` 每员工 perf_band(最近已评 manager_rating,<2.5 低/≥3.75 高)× ratio_band(gross/带宽中点,<0.8 low/>1.2 high)落 3×3;现薪=最新 issued SalarySlip.gross;带宽=designation 精确>通用、org 匹配>全公司;无数据→中档+estimated。
+- 矩阵默认值:高绩效×低比 12% … 低绩效×高比 0%(固定九格,理由:demo 可解释,租户配置列入规划)。
+- `POST /comp-review/decisions` 记录/调整(draft);`/approve` 批准锁定;已批准不可再调(409);审计 decide/approve。
+- 权限:positions 读 manage_org|manage_employees、写 manage_org;comp-review 全 manage_payroll;scope=visible_employee_ids。
+- 前端:`/positions` 统计条(空缺率+by_org 对账)+ 职位卡列表(分配抽屉/释放/冻结/撤销);`/comp-review` 3×3 落位宫格(格内建议%+员工 chips,已决策/已批准配色)+ 决策抽屉(建议值引用+final_pct+批准)。
+
+### 有意不做
+
+- 算薪/个税/社保(项目原则:payroll 是聚合输入)
+- 矩阵格权重租户级配置、多步审批链(复用现有 approvals 是下一层)
+- 职位历史快照表(审计日志已覆盖变更轨迹)
+- 编制审批→自动开职位(requisition.headcount 与 position 打通列下一批)

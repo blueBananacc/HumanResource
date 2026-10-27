@@ -95,6 +95,8 @@ from app.api import shifts as shifts_api
 from app.api import skills as skills_api
 from app.api import flight_risk as flight_risk_api
 from app.api import talent_review as talent_review_api
+from app.api import positions as positions_api
+from app.api import comp_review as comp_review_api
 from app.api import internal_match as internal_match_api
 from app.api import sourcing as sourcing_api
 from app.api import smtp as smtp_api
@@ -508,6 +510,8 @@ def create_app() -> FastAPI:
     app.include_router(projects_api.router, prefix="/api")
     app.include_router(talent_review_api.router, prefix="/api")
     app.include_router(talent_review_api.pools, prefix="/api")
+    app.include_router(positions_api.router, prefix="/api")
+    app.include_router(comp_review_api.router, prefix="/api")
 
     return app
 

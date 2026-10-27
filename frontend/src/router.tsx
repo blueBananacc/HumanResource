@@ -78,6 +78,8 @@ import { Projects } from "@/pages/hris/Projects";
 import { HrCases } from "@/pages/hris/HrCases";
 import { Knowledge } from "@/pages/hris/Knowledge";
 import { SalaryBands } from "@/pages/hris/SalaryBands";
+import { Positions } from "@/pages/hris/Positions";
+import { CompReview } from "@/pages/hris/CompReview";
 import { Campaigns } from "@/pages/hris/Campaigns";
 // 员工自助(ESS)
 import { MeDashboard } from "@/pages/me/MeDashboard";
@@ -147,6 +149,8 @@ export const router = createBrowserRouter([
       { path: "expenses/types", element: <ExpenseTypes /> },
       { path: "payroll", element: <Payroll /> },
       { path: "salary-bands", element: <SalaryBands /> },
+      { path: "positions", element: <Positions /> },
+      { path: "comp-review", element: <CompReview /> },
       // ── HR 服务台 / 协作 ──
       { path: "announcements", element: <Announcements /> },
       { path: "approvals", element: <Approvals /> },

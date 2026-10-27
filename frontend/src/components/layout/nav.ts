@@ -94,7 +94,7 @@ export const mainModules: NavModule[] = [
     label: "组织",
     icon: Network,
     feature: "hr.suite",
-    alsoActive: ["/employees/", "/org-chart", "/lifecycle"],
+    alsoActive: ["/employees/", "/org-chart", "/lifecycle", "/positions"],
     groups: [
       {
         label: "员工",
@@ -102,6 +102,7 @@ export const mainModules: NavModule[] = [
           { to: "/employees", label: "员工列表", permission: PERM.MANAGE_EMPLOYEES, keywords: "员工 employee 花名册" },
           { to: "/org-chart", label: "组织架构图", keywords: "汇报线 架构 org" },
           { to: "/lifecycle", label: "生命周期", permission: PERM.MANAGE_LIFECYCLE, keywords: "入职 离职 调动 晋升 onboarding" },
+          { to: "/positions", label: "职位编制", permission: PERM.MANAGE_ORG, keywords: "职位 编制 空缺 position headcount" },
           { to: "/projects", label: "项目", keywords: "项目 人才归属 project 内部" },
         ],
       },
@@ -260,6 +261,7 @@ export const mainModules: NavModule[] = [
         items: [
           { to: "/payroll", label: "工资条", permission: PERM.MANAGE_PAYROLL, keywords: "工资 薪资 工资条 salary" },
           { to: "/salary-bands", label: "薪酬带宽", permission: PERM.MANAGE_PAYROLL, keywords: "定薪 带宽 区间 salary band" },
+          { to: "/comp-review", label: "调薪矩阵", permission: PERM.MANAGE_PAYROLL, keywords: "调薪 merit 矩阵 compa-ratio 加薪" },
         ],
       },
     ],

@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, count_total, paginate_params
 from app.api.license import require_feature
+from app.api.positions import release_employee_position
 from app.domain.models import (
     Employee,
     LifecycleEvent,
@@ -377,9 +378,10 @@ def _apply_event_effect(db: Session, ev: LifecycleEvent) -> None:
         emp.designation = p["to_designation"]
     elif ev.kind == "separation":
         emp.status = "terminated"
-        # 离职即禁用员工账号
+        # 离职即禁用员工账号 + 释放占坑职位
         if emp.user_id:
             u = db.get(User, emp.user_id)
             if u:
                 u.status = "disabled"
+        release_employee_position(db, emp)
     emp.updated_at = _now()

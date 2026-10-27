@@ -1174,6 +1174,10 @@ class Employee(Base):
     leave_policy_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("leave_policies.id", ondelete="SET NULL"), nullable=True
     )
+    position_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("positions.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -4122,3 +4126,85 @@ class TalentPoolMember(Base):
         DateTime, nullable=False, server_default=func.now()
     )
     exited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# ==================== 职位管理 / 调薪评审 ====================
+
+
+class Position(Base):
+    """职位(Position)——Workday staffing model 的独立编制实体。
+
+    一个 position = 一个座位,独立于任职人存在:
+    status: open(空缺) / filled(在编) / frozen(冻结) / closed(撤销)。
+    员工入职占坑(position_id 回填),离职/调动时 vacate 释放。
+    """
+
+    __tablename__ = "positions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    designation: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    org_unit_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("org_units.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    salary_band_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("salary_bands.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="open", index=True
+    )
+    incumbent_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="SET NULL"), nullable=True
+    )
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    filled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class CompReviewDecision(Base):
+    """调薪评审决策记录(每员工每评审周期一条)。
+
+    suggested_pct 由矩阵(绩效带 × compa-ratio 带)算出;
+    final_pct/final_amount 为评审人调整后的值;status: draft / approved。
+    """
+
+    __tablename__ = "comp_review_decisions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    cycle: Mapped[str] = mapped_column(String(32), nullable=False)
+    perf_band: Mapped[int] = mapped_column(Integer, nullable=False, server_default="2")
+    ratio_band: Mapped[str] = mapped_column(String(8), nullable=False, server_default="mid")
+    suggested_pct: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    final_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    final_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="draft")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decided_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "employee_id", "cycle", name="uq_comp_review_emp_cycle"),
+    )
