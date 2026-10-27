@@ -10,6 +10,7 @@ import { Empty } from "@/components/ui/empty";
 import { ApiError, fetchJSON } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { PERM } from "@/lib/roles";
+import { RadarChart } from "@/components/charts/RadarChart";
 import { formatRelative, levelLabel } from "@/lib/format";
 import { MatchBadge } from "@/components/match/MatchBadge";
 
@@ -431,7 +432,18 @@ function MatchRow({
               </span>
             )}
             {open && (
-              <div className="mt-1.5 rounded-lg border border-[var(--color-border-subtle)] divide-y divide-[var(--color-border-row)]">
+              <div className="mt-1.5 flex flex-wrap items-start gap-4">
+                {/* 雷达图:逐维 level(0-4)归一化后可视化,不替代下方证据链 */}
+                {match.criteria.length >= 3 && (
+                  <RadarChart
+                    dims={match.criteria.map((c) => ({
+                      name: c.name,
+                      value: c.level / 4,
+                    }))}
+                    size={200}
+                  />
+                )}
+                <div className="min-w-[280px] flex-1 rounded-lg border border-[var(--color-border-subtle)] divide-y divide-[var(--color-border-row)]">
                 {match.coverage && (
                   <div className="px-3 py-2 bg-[var(--color-bg-canvas)]">
                     <div className="flex items-center gap-2">
@@ -512,6 +524,7 @@ function MatchRow({
                     </p>
                   </div>
                 ))}
+                </div>
               </div>
             )}
           </div>

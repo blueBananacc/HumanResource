@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { BrandShape } from "@/components/brand/BrandShape";
+import { BriefingCard } from "@/components/dashboard/BriefingCard";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { fetchJSON } from "@/lib/api";
@@ -108,6 +109,8 @@ export function Dashboard() {
           </Link>
         </div>
       )}
+
+      <BriefingCard />
 
       <div className="grid grid-cols-4 gap-4">
         <Stat

@@ -37,6 +37,7 @@ from app.api import attendance as attendance_api
 from app.api import audit as audit_api
 from app.api import automations as automations_api
 from app.api import auth as auth_api
+from app.api import briefing as briefing_api
 from app.api import campaigns as campaigns_api
 from app.api import cases as cases_api
 from app.api import datasets as datasets_api
@@ -433,6 +434,7 @@ def create_app() -> FastAPI:
     app.include_router(smtp_api.router, prefix="/api")
     app.include_router(voice_api.router, prefix="/api")
     app.include_router(assistant_api.router, prefix="/api")
+    app.include_router(briefing_api.router, prefix="/api")
     app.include_router(mcp_api.router, prefix="/api")
     app.include_router(mcp_api.me_router, prefix="/api")
     # HRIS 员工核心(license feature: hr.suite)

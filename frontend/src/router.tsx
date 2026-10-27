@@ -19,6 +19,7 @@ import { AuditCenter } from "@/pages/AuditCenter";
 import { SsoCallback } from "@/pages/SsoCallback";
 import { SsoSettings } from "@/pages/SsoSettings";
 import { McpTokens } from "@/pages/McpTokens";
+import { SkillCenter } from "@/pages/SkillCenter";
 import { Dictionaries } from "@/pages/Dictionaries";
 import { Schedulers } from "@/pages/Schedulers";
 import { IdempotencyKeys } from "@/pages/IdempotencyKeys";
@@ -167,6 +168,7 @@ export const router = createBrowserRouter([
       { path: "jobs", element: <Jobs /> },
       { path: "jobs/:id", element: <JobDetail /> },
       { path: "jobs/:id/matches", element: <JobMatches /> },
+      { path: "skills", element: <SkillCenter /> },
       { path: "scoring-rules", element: <ScoringRules /> },
       { path: "pipeline", element: <Pipeline /> },
       { path: "interviews", element: <Interviews /> },

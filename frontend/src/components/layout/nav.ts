@@ -145,6 +145,12 @@ export const mainModules: NavModule[] = [
         ],
       },
       {
+        label: "AI",
+        items: [
+          { to: "/skills", label: "AI 技能中心", keywords: "技能 助手 自动化 ai skill 生态 mcp" },
+        ],
+      },
+      {
         label: "题库",
         items: [
           {
