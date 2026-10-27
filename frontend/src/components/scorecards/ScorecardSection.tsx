@@ -68,6 +68,13 @@ type Page<T> = { items: T[]; total: number };
 
 type InterviewerOption = { user_id: string; name: string; role: string; busy_count: number };
 
+// crypto.randomUUID 仅在 secure context(https/localhost)可用,HTTP 部署兜底
+const uid8 = () =>
+  (typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 14)}`
+  ).slice(0, 8);
+
 const DIM_LABEL: Record<string, string> = { tech: "技术", soft: "软素质", general: "通用" };
 const DIM_OPTS = [
   { value: "tech", label: "技术能力" },
@@ -116,7 +123,7 @@ function ScorecardFormModal({
   const [criteria, setCriteria] = useState<Criterion[]>(
     existing?.criteria?.length
       ? existing.criteria.map((c) => ({ ...c }))
-      : [{ key: crypto.randomUUID().slice(0, 8), name: "", dimension: "tech", weight: 1 }],
+      : [{ key: uid8(), name: "", dimension: "tech", weight: 1 }],
   );
   const [interviewers, setInterviewers] = useState<string[]>(
     existing?.interviewers.map((i) => i.user_id) ?? [],
@@ -142,7 +149,7 @@ function ScorecardFormModal({
       ),
     onSuccess: (d) => {
       const items = (d.criteria ?? []).map((c) => ({
-        key: crypto.randomUUID().slice(0, 8),
+        key: uid8(),
         name: c.name,
         dimension: c.dimension ?? "general",
         weight: 1,
@@ -301,7 +308,7 @@ function ScorecardFormModal({
             <button
               type="button"
               onClick={() =>
-                setCriteria((cs) => [...cs, { key: crypto.randomUUID().slice(0, 8), name: "", dimension: "general", weight: 1 }])
+                setCriteria((cs) => [...cs, { key: uid8(), name: "", dimension: "general", weight: 1 }])
               }
               className="self-start flex items-center gap-1 text-[12px] font-bold text-[var(--color-accent)] hover:underline"
             >
