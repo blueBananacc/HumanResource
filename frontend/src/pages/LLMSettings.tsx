@@ -211,6 +211,20 @@ function ProviderRow({
             </>
           )}
         </div>
+        <div className="text-[11px] font-body">
+          {provider.embedding_model ? (
+            <span className="text-[var(--color-success)]">
+              语义检索:{provider.embedding_model}
+              {provider.embedding_base_url && (
+                <span className="text-[var(--color-text-tertiary)]"> @ {provider.embedding_base_url}</span>
+              )}
+            </span>
+          ) : (
+            <span className="text-[var(--color-text-tertiary)]">
+              语义检索:未配置(纯 BM25)— 点「编辑」可在表单下方配置 Embedding
+            </span>
+          )}
+        </div>
         {testing && (
           <div
             className={`text-[11px] font-body mt-1 ${
@@ -468,7 +482,7 @@ function ProviderModal({
             label="Embedding Base URL"
             value={embBaseUrl}
             onChange={(e) => setEmbBaseUrl(e.target.value)}
-            placeholder="https://router.huggingface.co/v1(可与对话模型不同家)"
+            placeholder="https://api.siliconflow.cn/v1(可与对话模型不同家)"
           />
           <Input
             label={
@@ -481,8 +495,8 @@ function ProviderModal({
             onChange={(e) => setEmbApiKey(e.target.value)}
             placeholder={
               isEdit
-                ? provider?.embedding_api_key_masked || "hf_..."
-                : "hf_...(HuggingFace 免费额度可跑 demo)"
+                ? provider?.embedding_api_key_masked || "sk-..."
+                : "sk-...(SiliconFlow bge-m3 免费可用)"
             }
             autoComplete="off"
           />
