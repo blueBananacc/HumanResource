@@ -67,6 +67,7 @@ import { Requisitions } from "@/pages/hris/Requisitions";
 import { Offers } from "@/pages/hris/Offers";
 import { Performance } from "@/pages/hris/Performance";
 import { AppraisalCycles } from "@/pages/hris/AppraisalCycles";
+import { TalentReview } from "@/pages/hris/TalentReview";
 import { Expenses } from "@/pages/hris/Expenses";
 import { ExpenseTypes } from "@/pages/hris/ExpenseTypes";
 import { Payroll } from "@/pages/hris/Payroll";
@@ -141,6 +142,7 @@ export const router = createBrowserRouter([
       // ── HRIS 绩效/费用/薪酬 ──
       { path: "performance", element: <Performance /> },
       { path: "performance/cycles", element: <AppraisalCycles /> },
+      { path: "performance/review", element: <TalentReview /> },
       { path: "expenses", element: <Expenses /> },
       { path: "expenses/types", element: <ExpenseTypes /> },
       { path: "payroll", element: <Payroll /> },

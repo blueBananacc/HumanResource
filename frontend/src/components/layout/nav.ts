@@ -231,6 +231,7 @@ export const mainModules: NavModule[] = [
         items: [
           { to: "/performance", label: "目标", permission: PERM.VIEW_REPORTS, keywords: "目标 goal okr" },
           { to: "/performance/cycles", label: "考核", permission: PERM.MANAGE_PERFORMANCE, keywords: "绩效考核 appraisal 评分" },
+          { to: "/performance/review", label: "人才盘点", permission: PERM.MANAGE_PERFORMANCE, keywords: "盘点 九宫格 人才池 ninebox 继任" },
         ],
       },
     ],

@@ -41,6 +41,7 @@ const TITLE_BY_PATH: Record<string, string> = {
   "/offers": "Offer 管理",
   "/performance": "目标管理",
   "/performance/cycles": "绩效考核",
+  "/performance/review": "人才盘点",
   "/expenses": "报销审批",
   "/expenses/types": "报销类型",
   "/payroll": "工资条",

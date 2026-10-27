@@ -174,3 +174,28 @@
 
 - 实时语音转写(STT 管线)——Moka/北森的纪要依赖会议录音基础设施,超出当前产品边界;我们的入口是"粘贴会议记录文本"。
 - 纪要驱动的下一轮面试建议——面试域已有 interview-copilot 覆盖。
+
+
+## 十四、人才盘点九宫格 + 人才池(对标北森继任云)
+
+### 竞品调研(北森 res/98、res/901、succeed 产品页)
+
+- **九宫格**:评价结果自动生成初盘;轴可配(业绩-能力/业绩-潜力);粒度可变(9/12/16);校准会以**拖拽调格**为核心交互;按部门/序列/职级二级校准;校准字段含准备度/优劣势/发展建议。
+- **人才池**:建池(分层分类)→入池(盘点一键)→跟踪培养→出池;饱和度看板;继任地图分阶段梯队。
+- **IDP**:盘点结果导入个人发展计划(本期不做,列入规划)。
+
+### 落地映射
+
+- `NineBoxAssessment`(per 员工×周期):auto_perf/auto_potential 存初盘快照,perf_band/potential_band 为生效值,calibrated 标记校准覆盖 + 校准人/时间/备注。
+- **算分(可解释规则版)**:绩效 X=最近已评 Appraisal.manager_rating;潜力 Y=已确认技能均级×0.6 + 目标完成均值(0-100→0-5)×0.4;档带 >=3.75 高/2.5-3.75 中;无数据→中档+estimated 徽标。
+- `GET /api/talent-review/nine-box` 幂等建初盘快照并返回落位;`POST .../{eid}/calibrate` 拖拽覆盖(空 body 重置回自动);审计 nine_box_calibrate。
+- `TalentPool`(succession/high_potential/custom + target_designation)+ `TalentPoolMember`(stage in→developing→ready/exited,readiness 1-3):池 CRUD、批量入池(去重+scope 过滤)、阶段流转、饱和度分组统计(详情接口返回 members 带九宫格 band)。
+- 前端 `/performance/review`:3×3 可拖拽宫格(标准九格标签+策略提示)、组织筛选、点选员工抽屉(分数/落位/所属池+入池按钮+重置校准)、右侧池面板(建池/饱和度/成员阶段流转/移除)。
+- 权限:读 manage_performance 或 manage_employees;写 manage_performance;scope=visible_employee_ids。
+
+### 有意不做
+
+- 相对分位排名落位(数据量小,固定阈值更可解释)
+- 12/16 宫格可变粒度、测评数据轴(依赖测评云)
+- 盘点会多人协作/直播式校准(本期单机拖拽校准已覆盖核心动作)
+- IDP 流程(下一批)

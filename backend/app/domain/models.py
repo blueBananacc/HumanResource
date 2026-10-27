@@ -4033,3 +4033,92 @@ class DecisionFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), index=True
     )
+
+
+# ==================== 人才盘点 / 人才池 ====================
+
+
+class NineBoxAssessment(Base):
+    """人才盘点九宫格落位(按盘点周期)。
+
+    auto_perf/auto_potential 是系统初盘算分快照;calibrated=True 时
+    perf_band/potential_band 为校准会后的人工覆盖值。band: 1低/2中/3高。
+    """
+
+    __tablename__ = "nine_box_assessments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    cycle: Mapped[str] = mapped_column(String(32), nullable=False, server_default="")
+    auto_perf: Mapped[float | None] = mapped_column(Float, nullable=True)
+    auto_potential: Mapped[float | None] = mapped_column(Float, nullable=True)
+    perf_band: Mapped[int] = mapped_column(Integer, nullable=False, server_default="2")
+    potential_band: Mapped[int] = mapped_column(Integer, nullable=False, server_default="2")
+    calibrated: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sql_false())
+    calibrated_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    calibrated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TalentPool(Base):
+    """人才池(北森式:建池→入池→跟踪培养→出池)。
+
+    kind: succession 继任池 / high_potential 高潜池 / custom。
+    """
+
+    __tablename__ = "talent_pools"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False, server_default="custom")
+    target_designation: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class TalentPoolMember(Base):
+    """人才池成员。stage: in(入池) → developing(培养中) → ready(就绪) / exited(出池)。
+
+    readiness 为就绪度 1-3(近期可接任/6-12月/1年以上),对标北森梯队阶段。
+    """
+
+    __tablename__ = "talent_pool_members"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    pool_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("talent_pools.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    stage: Mapped[str] = mapped_column(String(16), nullable=False, server_default="in")
+    readiness: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    added_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    exited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
