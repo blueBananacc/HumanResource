@@ -146,6 +146,19 @@ def test_knowledge_gaps_aggregation(client, db):
     assert gap_qs.get("火星殖民福利") == 1
 
 
+def test_knowledge_gaps_via_list_search(client, db):
+    """UI 实际走的是 GET /articles?q= — 列表零命中同样计入缺口。"""
+    t = _tenant(db)
+    u = _user(db, t)
+    r = client.get(
+        "/api/knowledge/articles", params={"q": "反物质年终奖方案"}, headers=_hdr(u)
+    )
+    assert r.status_code == 200
+    r2 = client.get("/api/knowledge/gaps", headers=_hdr(u))
+    gap_qs = {g["query"] for g in r2.json()["gaps"]}
+    assert "反物质年终奖方案" in gap_qs
+
+
 # ---------------- 3. 动态职位画像 ----------------
 
 

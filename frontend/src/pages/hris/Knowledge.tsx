@@ -54,7 +54,7 @@ function KnowledgeGapsCard({ canWrite }: { canWrite: boolean }) {
     queryFn: () => fetchJSON("/api/knowledge/gaps"),
     staleTime: 60_000,
   });
-  if (!data || data.gaps.length === 0) return null;
+  if (!data) return null;
   return (
     <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-5 flex flex-col gap-3">
       <div className="flex items-center gap-2">
@@ -66,19 +66,25 @@ function KnowledgeGapsCard({ canWrite }: { canWrite: boolean }) {
           近 {data.days} 天共 {data.zero_hit_total} 次零命中检索 — 这些是员工/助手问了但库里没有的内容
         </span>
       </div>
-      <div className="flex flex-wrap gap-2">
-        {data.gaps.slice(0, 10).map((g) => (
-          <span
-            key={g.query}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-[12px] font-body text-amber-700"
-            title={`最后检索 ${g.last_seen ?? ""}`}
-          >
-            {g.query}
-            <span className="rounded-full bg-white/70 px-1.5 text-[10px] font-mono">{g.count}×</span>
-          </span>
-        ))}
-      </div>
-      {canWrite && (
+      {data.gaps.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {data.gaps.slice(0, 10).map((g) => (
+            <span
+              key={g.query}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-[12px] font-body text-amber-700"
+              title={`最后检索 ${g.last_seen ?? ""}`}
+            >
+              {g.query}
+              <span className="rounded-full bg-white/70 px-1.5 text-[10px] font-mono">{g.count}×</span>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="text-[12px] text-[var(--color-text-tertiary)] font-body">
+          暂无缺口 — 检索覆盖良好。零命中查询会自动记录在这里。
+        </p>
+      )}
+      {canWrite && data.gaps.length > 0 && (
         <p className="text-[11px] text-[var(--color-text-tertiary)] font-body">
           建议:针对高频缺口写篇文章,检索命中率会立刻提升。
         </p>

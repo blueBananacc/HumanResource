@@ -133,6 +133,9 @@ def list_articles(
         stmt = stmt.where(KnowledgeArticle.is_playbook == is_playbook)
     stmt = apply_q_ilike(stmt, q, KnowledgeArticle.title, KnowledgeArticle.content)
     total = count_total(db, stmt)
+    # 兜底标注:UI 列表检索零命中同样计入知识缺口(用户感知上这就是"搜不到")
+    if q and total == 0:
+        _log_query(db, current.tenant_id, q, [], "list")
     rows = db.scalars(
         stmt.order_by(KnowledgeArticle.updated_at.desc()).limit(limit).offset(offset)
     ).all()
