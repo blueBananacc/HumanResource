@@ -10,11 +10,24 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.domain.models import Candidate
+
+logger = logging.getLogger(__name__)
+
+
+def _try_auto_enroll(db: Session, candidate: Candidate) -> None:
+    """候选人创建/合并后跑自动入库规则;失败只记日志不拖垮主链路。"""
+    try:
+        from app.services.group_rules import enroll_candidate
+
+        enroll_candidate(db, candidate)
+    except Exception:  # noqa: BLE001
+        logger.exception("auto_enroll 失败 candidate=%s", candidate.id)
 
 
 def _hash(value: str | None, salt: str) -> str | None:
@@ -57,6 +70,7 @@ def upsert_candidate(
         )
         db.add(candidate)
         db.flush()
+        _try_auto_enroll(db, candidate)
         return candidate
 
     # 合并:用最新一次解析的 name / email / phone 覆盖展示信息。
@@ -71,6 +85,7 @@ def upsert_candidate(
         candidate.phone_hash = p_hash
         candidate.display_phone = phone
     db.flush()
+    _try_auto_enroll(db, candidate)
     return candidate
 
 

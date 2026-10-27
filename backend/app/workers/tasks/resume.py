@@ -125,6 +125,17 @@ def parse_resume_task(self: Any, resume_id: str) -> dict[str, Any]:
             if cand.name in ("", "未识别") and parsed.name_hint:
                 cand.name = parsed.name_hint
 
+        # 解析完拿到技能/全文 → 重跑自动入库规则(text/skill 条件此时才有数据)
+        if cand:
+            try:
+                from app.services.group_rules import enroll_candidate
+
+                enroll_candidate(db, cand)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "auto_enroll 失败 candidate=%s", cand.id, exc_info=True
+                )
+
         db.commit()
         logger.info(
             "parse_resume_task: resume %s done, skills=%d",

@@ -64,6 +64,20 @@ def record_event(
     db.add(ev)
     app.stage = to_stage
     app.stage_changed_at = _now()
+    # 阶段变化可能影响 stage 条件的自动入库规则 — 重评该候选人
+    try:
+        from app.domain.models import Candidate
+        from app.services.group_rules import enroll_candidate
+
+        cand = db.get(Candidate, app.candidate_id)
+        if cand is not None:
+            enroll_candidate(db, cand)
+    except Exception:  # noqa: BLE001 — 规则失败不拖垮管道流转
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "auto_enroll 失败 candidate=%s", app.candidate_id
+        )
     return ev
 
 

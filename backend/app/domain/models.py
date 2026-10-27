@@ -727,12 +727,16 @@ class SSOConfig(Base):
 
 
 class CandidateGroup(Base):
-    """候选人静态分组(人才池)。EPIC-04 P0 — 仅手动加入 / 移出。
+    """候选人分组(人才池)。EPIC-04:手动加人 + 自动入库规则。
 
     设计:
     - 单租户内 ``name`` 唯一(管理员维护)
     - 与候选人多对多关系走 ``candidate_group_members`` 关联表
-    - P0 不做规则化人才池(P1 再扩"自动入池规则")
+    - ``auto_rule`` JSONB — 自动入库规则(北森"自动入库"同款):
+      ``{"mode": "all"|"any", "conditions": [{field, op, value}]}``
+      字段词表见 ``app.services.group_rules.FIELDS``;评估确定性
+      (可解释、可复现),命中即入组,只增不删 — 手动加入的成员
+      不因规则变化被移除。
     """
 
     __tablename__ = "candidate_groups"
@@ -749,6 +753,7 @@ class CandidateGroup(Base):
     )
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    auto_rule: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
@@ -759,7 +764,7 @@ class CandidateGroup(Base):
 
 
 class CandidateGroupMember(Base):
-    """候选人 ↔ 分组 关联。"""
+    """候选人 ↔ 分组 关联。``source``:manual 手动 / auto 规则命中。"""
 
     __tablename__ = "candidate_group_members"
     __table_args__ = (
@@ -782,6 +787,9 @@ class CandidateGroupMember(Base):
         index=True,
     )
     added_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="manual"
+    )
     added_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )

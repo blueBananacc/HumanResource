@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -47,6 +49,8 @@ from app.services.permissions import (
 router = APIRouter(prefix="/skills", tags=["skills"])
 job_router = APIRouter(prefix="/jobs", tags=["skills"])
 cand_router = APIRouter(prefix="/candidates", tags=["skills"])
+
+logger = logging.getLogger(__name__)
 
 CATEGORIES = Skill.CATEGORIES
 IMPORTANCES = ("must", "nice")
@@ -609,6 +613,12 @@ def put_candidate_skills(
     db.add_all(new_rows)
     write_audit(db, actor=current, entity_type="candidate", entity_id=cand.id,
                 action="skills_update", detail={"count": len(new_rows)}, request=request)
+    try:
+        from app.services.group_rules import enroll_candidate
+
+        enroll_candidate(db, cand)
+    except Exception:  # noqa: BLE001
+        logger.exception("auto_enroll 失败 candidate=%s", cand.id)
     db.commit()
     return _cand_skills_out(db, current.tenant_id, candidate_id)
 
@@ -669,5 +679,11 @@ def import_resume_skills(
         imported += 1
     write_audit(db, actor=current, entity_type="candidate", entity_id=cand.id,
                 action="skills_import", detail={"imported": imported}, request=request)
+    try:
+        from app.services.group_rules import enroll_candidate
+
+        enroll_candidate(db, cand)
+    except Exception:  # noqa: BLE001
+        logger.exception("auto_enroll 失败 candidate=%s", cand.id)
     db.commit()
     return {"imported": imported, "total": len(names)}

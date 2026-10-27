@@ -225,3 +225,67 @@
 - 矩阵格权重租户级配置、多步审批链(复用现有 approvals 是下一层)
 - 职位历史快照表(审计日志已覆盖变更轨迹)
 - 编制审批→自动开职位(requisition.headcount 与 position 打通列下一批)
+
+
+## 十六、人才库自动入库规则 + 面试官工作台/面评催办(北森结构化人才库/面试协同 + 大易自动入库/催办)
+
+### 竞品来源(北森 beisen.com/product/recruitment、res/499、res/1823、res/3167;大易 TRM.AI2.0)
+
+- 北森"6 类结构化人才库 + **自动入库规则**":按候选人属性(技能/经历/学校/阶段)配置规则,符合条件简历自动归档入池;人才库从静态分组变活水。
+- 大易自动入库同理:"工作经历含阿里+职位含运营+本科"式条件自动归档。
+- 北森面试官协同:面试官**任务通知**(含简历/历史评价/附件上下文)→ 移动端结构化评价 → **HR 催促面试评价** + 系统每日提醒未完成反馈。
+- 大易面试官工作台:待筛选/待面试/待评价一站处理 + 超期评分卡自动催办。
+
+### 实现抽象
+
+```
+auto_rule {mode:all|any, conditions:[{field,op,value}]}
+   ├─ name/email/text contains ── 文本包含(简历全文=公司/学校/职位画像)
+   ├─ tag/skill contains_any|all ── 集合命中(技能=档案+简历解析并集)
+   ├─ stage in|not_in ─────────── 任一申请管道阶段(JobApplication.stage)
+   ├─ status/blacklisted eq ───── 档案状态
+   ├─ source in ────────────────── 简历/申请来源
+   └─ job eq ──────────────────── 申请过指定岗位
+evaluate() 逐条产出中文命中理由(可解释,与 BARS 证据链同思路)
+   ↓ 命中即入组(member.source=auto,只增不删)
+钩子:候选人创建/合并、标签更新、管道流转、简历解析完成、技能写入 + 手动 rescan
+```
+
+- **确定性可解释**:每条 condition 返回命中理由,前端逐条展示;不做黑盒评分。
+- **只增不删**:规则改/关不踢人 — 手动与 auto 成员并存,移出只能手工。防规则抖动误删池。
+- **幂等**:`uq_candidate_group_members` 兜底,重复评估/重扫不重复插。
+- **规则词表同源**:`GET /talent-groups/rule-fields` 返字段/算子/值类型,前端编辑器不硬编码。
+
+催办链路:
+
+```
+scorecard scheduled_at +24h 仍未交 → overdue
+   ├─ 手动:POST /scorecards/{id}/nudge (write_interview) → Notification 逐人
+   └─ 自动:_watch_loop tick → run_scorecard_nudges 全租户扫
+去重:Notification kind=scorecard.nudge + link=/interviews/workbench#nudge:{id},
+     cooldown 20h 内同卡同人不重复 — 防轰炸
+销账:提交反馈 → clear_nudges_on_feedback 把该卡 nudge/assign 通知标已读
+指派即通知:评分卡创建/改派新增 interviewer → scorecard.assign 通知(北森任务通知)
+```
+
+- **逾期口径**:`scheduled_at + 24h < now` 且卡 open;未排期(scheduled_at=null)永不逾期。
+- **工作台分桶**:todo(open+我未交+面试时刻已过/未排期)/ upcoming(面试在未来)/ done(我已交或卡关闭);todo 内 overdue 置顶。
+
+### API
+
+- `PUT /talent-groups/{id}/rule` — 设置/清除(`auto_rule=null`)规则,422 校验报错
+- `POST /talent-groups/{id}/rescan` — 全库重放补扫,返回 scanned + added(含逐人命中理由)
+- `POST /talent-groups/rule-preview` — 不落库试运行,编辑器"预览命中"
+- `GET /talent-groups/rule-fields` — 字段词表
+- `GET /api/scorecards/workbench` — {todo,upcoming,done},条目带 my_submitted/overdue/submitted_count
+- `POST /api/scorecards/{id}/nudge` — HR 手动催办(write_interview)
+
+### 前端
+
+- `TalentPool` 分组抽屉:每组展开规则编辑器(mode 下拉 + 条件行 field/op/value,字段词表驱动) + 预览/补扫/清除;"自动"徽标 + auto_count 显示
+- `/interviews/workbench` 面试官工作台:统计条(待评/逾期/将到/已交)+ 三 tab + 卡片(候选人链接/岗位/时间/地点/维度 chips/提交进度)+ 填反馈(复用 FeedbackModal 按需拉全卡)
+- `ScorecardSection` HR 管理操作区:未交人数>0 显示「催办(n)」按钮
+
+### 有意不做(下一轮候选)
+
+规则移除策略(退出不满足者)、定时自动 rescan(现靠钩子覆盖)、催办邮件通道(现只站内)、多级审批面评 SLA、面试官日历冲突检测(availability 已有忙数,未做强校验)。

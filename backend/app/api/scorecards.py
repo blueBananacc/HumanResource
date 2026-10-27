@@ -9,7 +9,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -276,6 +276,7 @@ def create_scorecard(
                 "fields": {"title": sc.title, "status": sc.status}},
         request=request,
     )
+    svc.notify_assigned(db, sc, interviewers)
     db.commit()
     return _full_out(db, sc)
 
@@ -295,6 +296,135 @@ def my_scorecards(
         .order_by(InterviewScorecard.created_at.desc())
     ).all()
     return [_full_out(db, sc) for sc in rows]
+
+
+# ---------------------------- 面试官工作台 ----------------------------
+
+
+class WorkbenchItem(BaseModel):
+    id: str
+    title: str
+    candidate_id: str
+    candidate_name: str
+    job_id: str | None
+    job_title: str | None
+    scheduled_at: datetime | None
+    location: str | None
+    status: str
+    criteria: list[dict[str, Any]]
+    my_submitted: bool
+    submitted_count: int
+    interviewer_count: int
+    overdue: bool
+
+
+class WorkbenchOut(BaseModel):
+    """面试官待办台:待我评价(含逾期) / 即将到来的面试 / 我已提交。"""
+
+    todo: list[WorkbenchItem]
+    upcoming: list[WorkbenchItem]
+    done: list[WorkbenchItem]
+
+
+def _wb_item(
+    db: Session, sc: InterviewScorecard, fb_users: set[str], current: User
+) -> WorkbenchItem:
+    cand = db.get(Candidate, sc.candidate_id)
+    job = db.get(Job, sc.job_id) if sc.job_id else None
+    return WorkbenchItem(
+        id=sc.id,
+        title=sc.title,
+        candidate_id=sc.candidate_id,
+        candidate_name=cand.name if cand else "(已删除)",
+        job_id=sc.job_id,
+        job_title=job.title if job else None,
+        scheduled_at=sc.scheduled_at,
+        location=sc.location,
+        status=sc.status,
+        criteria=list(sc.criteria or []),
+        my_submitted=current.id in fb_users,
+        submitted_count=len(fb_users),
+        interviewer_count=len(sc.interviewer_ids or []),
+        overdue=svc.scorecard_overdue(sc),
+    )
+
+
+@router.get("/workbench", response_model=WorkbenchOut)
+def interviewer_workbench(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """面试官工作台 — 我被指派的所有评分卡按待办分桶。
+
+    - ``todo``:open 且我未提交(``overdue`` 标记面试已过 24h 未交);
+    - ``upcoming``:open 且 scheduled_at 在未来(面试还没开始,先看上下文);
+    - ``done``:我已提交或卡已 closed。
+    """
+    rows = db.scalars(
+        select(InterviewScorecard)
+        .where(
+            InterviewScorecard.tenant_id == current.tenant_id,
+            InterviewScorecard.interviewer_ids.cast(String).like(f'%"{current.id}"%'),
+        )
+        .order_by(InterviewScorecard.scheduled_at.asc().nullslast())
+    ).all()
+    fb_users_map: dict[str, set[str]] = {}
+    if rows:
+        for sid, uid in db.execute(
+            select(
+                InterviewFeedback.scorecard_id,
+                InterviewFeedback.interviewer_user_id,
+            ).where(InterviewFeedback.scorecard_id.in_([r.id for r in rows]))
+        ).all():
+            fb_users_map.setdefault(sid, set()).add(uid)
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    todo: list[WorkbenchItem] = []
+    upcoming: list[WorkbenchItem] = []
+    done: list[WorkbenchItem] = []
+    for sc in rows:
+        item = _wb_item(db, sc, fb_users_map.get(sc.id, set()), current)
+        sched = sc.scheduled_at
+        sched_naive = sched.replace(tzinfo=None) if sched and sched.tzinfo else sched
+        if not item.my_submitted and sc.status == "open":
+            if sched_naive is None or sched_naive <= now:
+                todo.append(item)
+            else:
+                upcoming.append(item)
+        else:
+            done.append(item)
+    # 逾期优先排最前
+    todo.sort(key=lambda i: (not i.overdue, i.scheduled_at or datetime.max))
+    return WorkbenchOut(todo=todo, upcoming=upcoming, done=done)
+
+
+@router.post(
+    "/{sid}/nudge",
+    dependencies=[Depends(require_permission(PERM_WRITE_INTERVIEW))],
+)
+def nudge_scorecard(
+    sid: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """HR 手动催办:给该卡未交反馈的面试官发提醒(cooldown 去重)。"""
+    sc = _get_scoped(db, current, sid)
+    if sc.status != "open":
+        raise HTTPException(400, "评分卡已关闭")
+    sent = svc.nudge_scorecard(db, sc)
+    names = svc.user_display_names(db, sc.tenant_id, sent)
+    write_audit(
+        db, actor=current, entity_type="interview_scorecard", entity_id=sc.id,
+        action="nudge",
+        detail={"sent_to": sent, "pending": svc.pending_interviewers(db, sc)},
+        request=request,
+    )
+    db.commit()
+    return {
+        "sent": [{"user_id": u, "name": names.get(u, "?")} for u in sent],
+        "pending_count": len(svc.pending_interviewers(db, sc)),
+    }
 
 
 @router.get(
@@ -377,8 +507,11 @@ def update_scorecard(
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         changed["criteria"] = sc.criteria
+    newly_assigned: list[str] = []
     if body.interviewer_ids is not None:
+        before = set(sc.interviewer_ids or [])
         sc.interviewer_ids = _check_interviewers(db, current.tenant_id, body.interviewer_ids)
+        newly_assigned = [u for u in sc.interviewer_ids if u not in before]
         changed["interviewer_ids"] = sc.interviewer_ids
     if body.title is not None:
         sc.title = body.title.strip()
@@ -402,6 +535,7 @@ def update_scorecard(
         db, actor=current, entity_type="interview_scorecard", entity_id=sc.id,
         action="update", detail={"fields": changed}, request=request,
     )
+    svc.notify_assigned(db, sc, newly_assigned)
     db.commit()
     return _full_out(db, sc)
 
@@ -455,6 +589,7 @@ def submit_feedback(
         verdict=body.verdict, notes=(body.notes or "").strip() or None,
         scores=scores,
     )
+    svc.clear_nudges_on_feedback(db, sc, current.id)
     write_audit(
         db, actor=current, entity_type="interview_scorecard", entity_id=sc.id,
         action="feedback",

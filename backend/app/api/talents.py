@@ -181,8 +181,20 @@ class GroupOut(BaseModel):
     name: str
     description: str | None
     member_count: int
+    auto_rule: dict[str, Any] | None = None
+    auto_count: int = 0
     created_at: datetime
     updated_at: datetime
+
+
+class GroupRuleIn(BaseModel):
+    """自动入库规则写入:``auto_rule=None`` 表示清除规则回到纯手动组。"""
+
+    auto_rule: dict[str, Any] | None = None
+
+
+class RulePreviewIn(BaseModel):
+    auto_rule: dict[str, Any]
 
 
 class NoteOut(BaseModel):
@@ -704,6 +716,12 @@ def set_tags(
         detail={"before": before, "after": body.tags},
         request=request,
     )
+    try:
+        from app.services.group_rules import enroll_candidate
+
+        enroll_candidate(db, c)
+    except Exception:  # noqa: BLE001
+        logger.exception("auto_enroll 失败 candidate=%s", c.id)
     db.commit()
     return {"tags": list(c.tags or [])}
 
@@ -873,18 +891,26 @@ def list_groups(
     counts_rows = db.execute(
         select(
             CandidateGroupMember.group_id,
+            CandidateGroupMember.source,
             func.count(CandidateGroupMember.id),
         )
         .where(CandidateGroupMember.group_id.in_([g.id for g in rows]))
-        .group_by(CandidateGroupMember.group_id)
+        .group_by(CandidateGroupMember.group_id, CandidateGroupMember.source)
     ).all()
-    counts = {gid: int(cnt) for gid, cnt in counts_rows}
+    counts: dict[str, int] = {}
+    auto_counts: dict[str, int] = {}
+    for gid, src, cnt in counts_rows:
+        counts[gid] = counts.get(gid, 0) + int(cnt)
+        if src == "auto":
+            auto_counts[gid] = auto_counts.get(gid, 0) + int(cnt)
     return [
         GroupOut(
             id=g.id,
             name=g.name,
             description=g.description,
             member_count=counts.get(g.id, 0),
+            auto_rule=g.auto_rule,
+            auto_count=auto_counts.get(g.id, 0),
             created_at=g.created_at,
             updated_at=g.updated_at,
         )
@@ -962,6 +988,137 @@ def delete_group(
     )
     db.delete(g)
     db.commit()
+
+
+# ============ 自动入库规则 ============
+
+
+def _get_group(db: Session, group_id: str, current: User) -> CandidateGroup:
+    g = db.get(CandidateGroup, group_id)
+    if not g or g.tenant_id != current.tenant_id:
+        raise HTTPException(404, "分组不存在")
+    return g
+
+
+@groups_router.put(
+    "/{group_id}/rule",
+    response_model=GroupOut,
+    dependencies=[Depends(require_permission(PERM_WRITE_RESUMES))],
+)
+def set_group_rule(
+    group_id: str,
+    body: GroupRuleIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> GroupOut:
+    """设置/清除自动入库规则。设置后新候选人即时评估;存量用 rescan。"""
+    from app.services import group_rules
+
+    g = _get_group(db, group_id, current)
+    rule = None
+    if body.auto_rule is not None:
+        try:
+            rule = group_rules.validate_rule(body.auto_rule)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from None
+    g.auto_rule = rule
+    g.updated_at = _utcnow_naive()
+    write_audit(
+        db,
+        actor=current,
+        entity_type="candidate_group",
+        entity_id=g.id,
+        action="set_rule",
+        detail={"group_name": g.name, "rule": rule},
+        request=request,
+    )
+    db.commit()
+    rows = db.execute(
+        select(CandidateGroupMember.source, func.count(CandidateGroupMember.id))
+        .where(CandidateGroupMember.group_id == g.id)
+        .group_by(CandidateGroupMember.source)
+    ).all()
+    cnt = sum(int(c) for _s, c in rows)
+    auto_cnt = sum(int(c) for s, c in rows if s == "auto")
+    return GroupOut(
+        id=g.id, name=g.name, description=g.description, member_count=cnt,
+        auto_rule=g.auto_rule, auto_count=auto_cnt,
+        created_at=g.created_at, updated_at=g.updated_at,
+    )
+
+
+@groups_router.post(
+    "/{group_id}/rescan",
+    dependencies=[Depends(require_permission(PERM_WRITE_RESUMES))],
+)
+def rescan_group(
+    group_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """手动补扫:对租户全部候选人重放规则,命中补入组。幂等。"""
+    from app.services import group_rules
+
+    g = _get_group(db, group_id, current)
+    try:
+        result = group_rules.rescan_group(db, g)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    if result["added"]:
+        write_audit(
+            db,
+            actor=current,
+            entity_type="candidate_group",
+            entity_id=g.id,
+            action="rescan",
+            detail={
+                "group_name": g.name,
+                "scanned": result["scanned"],
+                "added": len(result["added"]),
+            },
+            request=request,
+        )
+    db.commit()
+    return {"scanned": result["scanned"], "added": result["added"]}
+
+
+@groups_router.post(
+    "/rule-preview",
+    dependencies=[Depends(require_permission(PERM_WRITE_RESUMES))],
+)
+def preview_group_rule(
+    body: RulePreviewIn,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """规则试运行:不落库,返回命中样本与总数(编辑器预览)。"""
+    from app.services import group_rules
+
+    try:
+        rule = group_rules.validate_rule(body.auto_rule)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    return group_rules.preview_rule(db, current.tenant_id, rule)
+
+
+@groups_router.get(
+    "/rule-fields",
+    dependencies=[Depends(require_permission(PERM_VIEW_REPORTS))],
+)
+def rule_fields() -> dict[str, Any]:
+    """规则编辑器字段词表 — 前端渲染下拉用,与后端校验同源。"""
+    from app.services.group_rules import FIELDS, MODES
+
+    return {
+        "modes": [{"value": m, "label": "全部满足" if m == "all" else "任一满足"} for m in MODES],
+        "fields": [
+            {"field": f, "label": spec["label"], "ops": spec["ops"], "value": spec["value"]}
+            for f, spec in FIELDS.items()
+        ],
+        "stages": list(JobApplication.STAGES),
+    }
 
 
 @groups_router.post(

@@ -182,6 +182,7 @@ export const mainModules: NavModule[] = [
       {
         items: [
           { to: "/interviews", label: "面试安排", permission: PERM.VIEW_REPORTS, keywords: "interview 推荐面试" },
+          { to: "/interviews/workbench", label: "面试官工作台", keywords: "面评 反馈 待办 催办 scorecard workbench" },
           { to: "/reports", label: "面试报告", permission: PERM.VIEW_REPORTS, keywords: "报告 report" },
           { to: "/reports/interview-quality", label: "质量洞察", permission: PERM.VIEW_REPORTS, keywords: "质量 洞察 quality 维度 遗漏" },
           { to: "/surveys", label: "问卷调查", icon: ClipboardList, permission: PERM.VIEW_REPORTS, keywords: "问卷 survey 满意度 反馈" },

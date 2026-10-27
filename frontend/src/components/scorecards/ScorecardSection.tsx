@@ -365,7 +365,7 @@ function ScorecardFormModal({
 
 // ---------- 面试官反馈弹窗 ----------
 
-function FeedbackModal({
+export function FeedbackModal({
   open,
   onClose,
   scorecard,
@@ -561,6 +561,15 @@ function ScorecardRow({
     mutationFn: () => fetchJSON(`/api/scorecards/${sc.id}`, { method: "DELETE" }),
     onSuccess: onChanged,
   });
+  // HR 催办:给未交反馈的面试官发提醒(后端 cooldown 去重)
+  const nudgeMut = useMutation({
+    mutationFn: () =>
+      fetchJSON<{ sent: { user_id: string; name: string }[]; pending_count: number }>(
+        `/api/scorecards/${sc.id}/nudge`,
+        { method: "POST" },
+      ),
+  });
+  const pendingCount = sc.interviewers.filter((i) => !i.submitted).length;
 
   const agg = sc.aggregate;
   const ai = sc.ai_summary;
@@ -737,6 +746,23 @@ function ScorecardRow({
           {canWrite && (
             <div className="flex items-center gap-2 pt-1">
               <Button size="sm" variant="secondary" onClick={onEdit}>编辑</Button>
+              {!closed && pendingCount > 0 && (
+                <Button
+                  size="sm" variant="secondary"
+                  onClick={() => nudgeMut.mutate()}
+                  disabled={nudgeMut.isPending}
+                  title="给未提交反馈的面试官发催办通知"
+                >
+                  {nudgeMut.isPending ? "催办中…" : `催办(${pendingCount})`}
+                </Button>
+              )}
+              {nudgeMut.isSuccess && (
+                <span className="text-[11px] text-[var(--color-success)]">
+                  {nudgeMut.data.sent.length > 0
+                    ? `已催办 ${nudgeMut.data.sent.length} 人`
+                    : "冷却期内,暂不重复催办"}
+                </span>
+              )}
               {!closed && sc.feedbacks.length > 0 && (
                 <Button
                   size="sm" variant="secondary"

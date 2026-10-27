@@ -351,6 +351,12 @@ async def _watch_loop() -> None:
                 fired = run_watchers(db)
                 if fired:
                     logger.info("[watch-loop] 触发 %d 条通知", fired)
+                # 面评催办:评分卡 open + 面试结束超 24h + 面试官未交 → 通知本人
+                from app.services.scorecards import run_scorecard_nudges
+
+                nudged = run_scorecard_nudges(db)
+                if nudged:
+                    logger.info("[watch-loop] 面评催办 %d 条", nudged)
                 subs = due_subscriptions(db)
                 for s in subs:
                     send_report_subscription.delay(str(s.id))

@@ -12,7 +12,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.domain.models import (
@@ -23,6 +23,7 @@ from app.domain.models import (
     InterviewScorecard,
     Job,
     JobSkill,
+    Notification,
     Skill,
     User,
 )
@@ -215,6 +216,159 @@ def submit_feedback(
         fb.notes = notes
         fb.submitted_at = _utcnow()
     return fb
+
+
+# ---------------------------------------------------------------------------
+# 面评催办(北森"催促面试评价"同款)
+# ---------------------------------------------------------------------------
+
+# 面试结束(scheduled_at)后超过该时长仍未提交反馈 → 视为逾期,可催办
+OVERDUE_HOURS = 24
+# 同一面试官对同一卡:距上次催办不足该时长不重复发(防轰炸)
+NUDGE_COOLDOWN_HOURS = 20
+
+
+def pending_interviewers(
+    db: Session, sc: InterviewScorecard
+) -> list[str]:
+    """已指派但尚未提交反馈的面试官 user_id。"""
+    submitted = set(
+        db.scalars(
+            select(InterviewFeedback.interviewer_user_id).where(
+                InterviewFeedback.scorecard_id == sc.id
+            )
+        ).all()
+    )
+    return [u for u in (sc.interviewer_ids or []) if u not in submitted]
+
+
+def scorecard_overdue(sc: InterviewScorecard, now: datetime | None = None) -> bool:
+    """面试已过 N 小时且卡仍 open — 反馈进入逾期态。"""
+    if sc.status != "open" or sc.scheduled_at is None:
+        return False
+    now = now or _utcnow()
+    sched = sc.scheduled_at
+    if sched.tzinfo is not None:
+        sched = sched.replace(tzinfo=None)
+    return (now - sched).total_seconds() > OVERDUE_HOURS * 3600
+
+
+def _nudge_link(sc: InterviewScorecard) -> str:
+    return f"/interviews/workbench#nudge:{sc.id}"
+
+
+def notify_assigned(
+    db: Session, sc: InterviewScorecard, user_ids: list[str]
+) -> int:
+    """面试官被指派时的任务通知(北森:任务含简历/评估上下文)。"""
+    if not user_ids:
+        return 0
+    cand = db.get(Candidate, sc.candidate_id)
+    when = (
+        sc.scheduled_at.strftime("%m-%d %H:%M") if sc.scheduled_at else "时间待定"
+    )
+    n = 0
+    for uid in user_ids:
+        db.add(
+            Notification(
+                tenant_id=sc.tenant_id,
+                user_id=uid,
+                kind="scorecard.assign",
+                title="你收到一场面试评价任务",
+                body=f"「{sc.title}」候选人 {cand.name if cand else '?'} · {when}",
+                link=f"/interviews/workbench#assign:{sc.id}",
+            )
+        )
+        n += 1
+    return n
+
+
+def _recently_nudged(
+    db: Session, user_id: str, sc: InterviewScorecard, now: datetime
+) -> bool:
+    """cooldown 内已对该用户催过这张卡。"""
+    from datetime import timedelta
+
+    cutoff = now - timedelta(hours=NUDGE_COOLDOWN_HOURS)
+    return (
+        db.execute(
+            select(func.count(Notification.id)).where(
+                Notification.user_id == user_id,
+                Notification.kind == "scorecard.nudge",
+                Notification.link == _nudge_link(sc),
+                Notification.created_at >= cutoff,
+            )
+        ).scalar_one()
+        > 0
+    )
+
+
+def nudge_scorecard(
+    db: Session, sc: InterviewScorecard, *, now: datetime | None = None
+) -> list[str]:
+    """对该卡所有未交反馈的面试官发催办通知(cooldown 去重)。
+
+    返回实际发出通知的 user_id 列表。
+    """
+    now = now or _utcnow()
+    cand = db.get(Candidate, sc.candidate_id)
+    sent: list[str] = []
+    for uid in pending_interviewers(db, sc):
+        if _recently_nudged(db, uid, sc, now):
+            continue
+        db.add(
+            Notification(
+                tenant_id=sc.tenant_id,
+                user_id=uid,
+                kind="scorecard.nudge",
+                title="面试反馈待提交",
+                body=(
+                    f"「{sc.title}」候选人 {cand.name if cand else '?'}"
+                    " 的面试已结束,请尽快填写评分卡"
+                ),
+                link=_nudge_link(sc),
+            )
+        )
+        sent.append(uid)
+    return sent
+
+
+def run_scorecard_nudges(db: Session, *, now: datetime | None = None) -> int:
+    """全租户自动催办扫描:_watch_loop 每 tick 调用。
+
+    条件:评分卡 open + scheduled_at 已过 OVERDUE_HOURS + 面试官未交。
+    通知按 cooldown 去重,天然幂等。返回发出数。
+    """
+    now = now or _utcnow()
+    cards = db.scalars(
+        select(InterviewScorecard).where(InterviewScorecard.status == "open")
+    ).all()
+    sent = 0
+    for sc in cards:
+        if not scorecard_overdue(sc, now):
+            continue
+        sent += len(nudge_scorecard(db, sc, now=now))
+    if sent:
+        db.commit()
+    return sent
+
+
+def clear_nudges_on_feedback(
+    db: Session, sc: InterviewScorecard, user_id: str
+) -> int:
+    """面试官提交反馈后,把该卡的催办通知标记已读(ack)。"""
+    rows = db.scalars(
+        select(Notification).where(
+            Notification.user_id == user_id,
+            Notification.kind.in_(("scorecard.nudge", "scorecard.assign")),
+            Notification.link.like(f"%{sc.id}%"),
+            Notification.read_at.is_(None),
+        )
+    ).all()
+    now = _utcnow()
+    for n in rows:
+        n.read_at = now
+    return len(rows)
 
 
 # ---------------------------------------------------------------------------

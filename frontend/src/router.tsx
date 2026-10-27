@@ -12,6 +12,7 @@ import { ScoringRules } from "@/pages/ScoringRules";
 import { Pipeline } from "@/pages/Pipeline";
 import { ResumeDetail } from "@/pages/ResumeDetail";
 import { Interviews } from "@/pages/Interviews";
+import { InterviewerWorkbench } from "@/pages/InterviewerWorkbench";
 import { Schedule } from "@/pages/Schedule";
 import { InterviewReport } from "@/pages/InterviewReport";
 import { Reports } from "@/pages/Reports";
@@ -181,6 +182,7 @@ export const router = createBrowserRouter([
       { path: "scoring-rules", element: <ScoringRules /> },
       { path: "pipeline", element: <Pipeline /> },
       { path: "interviews", element: <Interviews /> },
+      { path: "interviews/workbench", element: <InterviewerWorkbench /> },
       { path: "interviews/schedule", element: <Schedule /> },
       { path: "surveys", element: <Surveys /> },
       { path: "interviews/:id/report", element: <InterviewReport /> },
