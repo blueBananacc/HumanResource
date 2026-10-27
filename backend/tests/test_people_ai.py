@@ -416,3 +416,96 @@ def test_flight_risk_perm_and_isolation(client, db):
     u1 = _user(db, t1)
     r2 = client.get(f"/api/flight-risk/{e2.id}", headers=_hdr(u1))
     assert r2.status_code == 404
+
+
+# ---------------- 5. 会议纪要整理 ----------------
+
+
+def _mk_note(db, t, u, e, **kw) -> InsightNote:
+    n = InsightNote(
+        tenant_id=t.id, employee_id=e.id, kind="meeting",
+        title=kw.pop("title", "Q4 复盘会"),
+        body=kw.pop("body", "讨论上线节奏:决定双周发布;张三负责接口联调,周五前给验收报告;遗留:移动端适配待定。"),
+        author_user_id=u.id, visibility="manager_only",
+        **kw,
+    )
+    db.add(n)
+    db.commit()
+    db.refresh(n)
+    return n
+
+
+def test_meeting_minutes_draft_llm(client, db, monkeypatch):
+    t = _tenant(db)
+    u = _user(db, t)
+    import app.api.ai as ai_api
+
+    fake = (
+        '{"summary": "会议确定双周发布节奏并分配联调任务",'
+        ' "key_points": ["发布节奏", "联调分工"],'
+        ' "decisions": ["改为双周发布"],'
+        ' "action_items": [{"item": "接口联调", "owner": "张三", "due": "周五"}],'
+        ' "sentiment": "positive"}'
+    )
+    monkeypatch.setattr(ai_api, "call_llm", lambda *a, **kw: fake)
+    r = client.post("/api/ai/meeting-minutes",
+                    json={"body": "讨论上线节奏…"}, headers=_hdr(u))
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert b["summary"].startswith("会议确定")
+    assert b["decisions"] == ["改为双周发布"]
+    assert b["action_items"][0]["owner"] == "张三"
+    assert b["saved"] is False and b["degraded"] is False
+
+
+def test_meeting_minutes_persist_to_note(client, db, monkeypatch):
+    t = _tenant(db)
+    u = _user(db, t)
+    e = _emp(db, t)
+    note = _mk_note(db, t, u, e)
+    import app.api.ai as ai_api
+
+    monkeypatch.setattr(
+        ai_api, "call_llm",
+        lambda *a, **kw: '{"summary":"纪要摘要","key_points":["p1"],"decisions":[],"action_items":[],"sentiment":"neutral"}',
+    )
+    r = client.post("/api/ai/meeting-minutes",
+                    json={"note_id": note.id}, headers=_hdr(u))
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert b["saved"] is True and b["summary"] == "纪要摘要"
+    db.refresh(note)
+    assert note.source_ref["minutes"]["summary"] == "纪要摘要"
+
+
+def test_meeting_minutes_degraded(client, db, monkeypatch):
+    t = _tenant(db)
+    u = _user(db, t)
+    import app.api.ai as ai_api
+    from app.integrations.llm.provider import LLMError
+
+    def boom(*a, **kw):
+        raise LLMError("no provider")
+
+    monkeypatch.setattr(ai_api, "call_llm", boom)
+    r = client.post("/api/ai/meeting-minutes",
+                    json={"body": "第一段内容\n要点一\n要点二"}, headers=_hdr(u))
+    assert r.status_code == 200
+    b = r.json()
+    assert b["degraded"] is True and b["summary"] == "第一段内容"
+    assert "要点一" in b["key_points"]
+
+
+def test_meeting_minutes_isolation_and_empty(client, db):
+    t1, t2 = _tenant(db), _tenant(db)
+    u1 = _user(db, t1)
+    u2 = _user(db, t2)
+    e2 = _emp(db, t2)
+    note2 = _mk_note(db, t2, u2, e2)
+    # 跨租户 note 404
+    r = client.post("/api/ai/meeting-minutes",
+                    json={"note_id": note2.id}, headers=_hdr(u1))
+    assert r.status_code == 404
+    # 空 body 400
+    r2 = client.post("/api/ai/meeting-minutes", json={}, headers=_hdr(u1))
+    assert r2.status_code == 400

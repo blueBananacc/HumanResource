@@ -1049,3 +1049,124 @@ def _employee_feedback(
         trajectory=str(data.get("trajectory", "")),
         summary=str(data.get("summary", ""))[:300],
     )
+
+
+# ==================== 会议纪要整理(对标 Moka 智能纪要)====================
+
+
+class MeetingMinutesIn(BaseModel):
+    note_id: str | None = None        # 持久化模式:生成并写入 note.source_ref.minutes
+    body: str = Field("", max_length=_MAX_TEXT)  # 草稿模式:仅返回结构化纪要
+    title: str = Field("", max_length=200)
+
+
+class ActionItem(BaseModel):
+    item: str = ""
+    owner: str = ""
+    due: str = ""
+
+
+class MeetingMinutesOut(BaseModel):
+    summary: str = ""
+    key_points: list[str] = Field(default_factory=list)
+    decisions: list[str] = Field(default_factory=list)
+    action_items: list[ActionItem] = Field(default_factory=list)
+    sentiment: str = ""
+    note_id: str | None = None
+    saved: bool = False
+    degraded: bool = False
+
+
+@router.post("/meeting-minutes", response_model=MeetingMinutesOut)
+def meeting_minutes(
+    body: MeetingMinutesIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    if not has_permission(current, PERM_MANAGE_EMPLOYEES):
+        raise HTTPException(403, "没有会议纪要整理权限")
+
+    note: InsightNote | None = None
+    title, raw_body = body.title.strip(), body.body.strip()
+    if body.note_id:
+        note = db.get(InsightNote, body.note_id)
+        if not note or note.tenant_id != current.tenant_id:
+            raise HTTPException(404, "便签不存在")
+        scope = visible_employee_ids(db, current)
+        if scope is not None and note.employee_id not in scope:
+            raise HTTPException(404, "便签不存在")
+        title = title or (note.title or "")
+        raw_body = raw_body or note.body
+    if not raw_body:
+        raise HTTPException(400, "会议记录内容为空")
+
+    spec = PROMPT_REGISTRY["meeting.minutes"]
+    variables = {"title": title or "(未命名会议)", "body": raw_body[:12_000]}
+    prompt = render_prompt(
+        db, current.tenant_id, "meeting.minutes", module="performance", **variables
+    ) or render_vars(spec.content, variables)
+    try:
+        raw = call_llm(
+            "ai.meeting_minutes",
+            [{"role": "system", "content": guarded(prompt)}],
+            db=db, tenant_id=current.tenant_id,
+            prompt_key="meeting.minutes", user_id=current.id,
+        )
+    except LLMError:
+        raw = ""
+
+    data = _extract_json(raw) if raw else None
+    if data is None:
+        # 降级:首段做摘要,分号/换行切要点
+        first = raw_body.strip().split("\n")[0][:120]
+        points = [
+            ln.strip(" -•\t")[:80]
+            for ln in raw_body.split("\n")[1:8]
+            if ln.strip(" -•\t")
+        ]
+        out = MeetingMinutesOut(
+            summary=first or raw_body[:120],
+            key_points=points[:5],
+            note_id=note.id if note else None,
+            degraded=True,
+        )
+    else:
+        out = MeetingMinutesOut(
+            summary=str(data.get("summary", ""))[:400],
+            key_points=[str(p)[:120] for p in (data.get("key_points") or [])][:6],
+            decisions=[str(d)[:120] for d in (data.get("decisions") or [])][:6],
+            action_items=[
+                ActionItem(
+                    item=str(a.get("item", ""))[:120],
+                    owner=str(a.get("owner", "") or "")[:40],
+                    due=str(a.get("due", "") or "")[:40],
+                )
+                for a in (data.get("action_items") or [])[:8]
+                if isinstance(a, dict) and a.get("item")
+            ],
+            sentiment=str(data.get("sentiment", "")),
+            note_id=note.id if note else None,
+        )
+
+    saved = False
+    if note is not None:
+        ref = dict(note.source_ref or {})
+        ref["minutes"] = {
+            "summary": out.summary,
+            "key_points": out.key_points,
+            "decisions": out.decisions,
+            "action_items": [a.model_dump() for a in out.action_items],
+            "sentiment": out.sentiment,
+        }
+        note.source_ref = ref
+        saved = True
+    write_audit(
+        db, actor=current, entity_type="ai_call",
+        entity_id=note.id if note else "adhoc",
+        action="meeting_minutes",
+        detail={"title": title, "saved": saved}, request=request,
+    )
+    db.commit()
+    out.saved = saved
+    return out

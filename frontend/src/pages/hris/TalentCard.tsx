@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Briefcase,
@@ -59,8 +59,17 @@ type Card = {
     kind: string;
     title: string | null;
     body: string;
+    source_ref?: { minutes?: Minutes } | null;
     created_at: string;
   }[];
+};
+
+type Minutes = {
+  summary?: string;
+  key_points?: string[];
+  decisions?: string[];
+  action_items?: { item: string; owner?: string; due?: string }[];
+  sentiment?: string;
 };
 
 const KIND_LABEL: Record<string, string> = {
@@ -298,20 +307,11 @@ export function TalentCardSection({ employeeId }: { employeeId: string }) {
               </div>
             )}
             {card.insights.slice(0, 5).map((n) => (
-              <div
+              <InsightRow
                 key={n.id}
-                className="border-l-2 border-[var(--color-border-subtle)] pl-3 py-1"
-              >
-                <div className="text-[12px] font-body text-[var(--color-text-primary)]">
-                  <span className="text-[var(--color-text-tertiary)]">
-                    [{KIND_LABEL[n.kind] ?? n.kind}]
-                  </span>{" "}
-                  {n.title || n.body.slice(0, 30)}
-                </div>
-                <div className="text-[11px] font-body text-[var(--color-text-tertiary)]">
-                  {n.created_at}
-                </div>
-              </div>
+                note={n}
+                onDone={invalidate}
+              />
             ))}
           </div>
         </div>
@@ -328,6 +328,93 @@ export function TalentCardSection({ employeeId }: { employeeId: string }) {
         onClose={() => setInsightOpen(false)}
       />
     </section>
+  );
+}
+
+/* 单条洞察:会议纪要可展开 AI 结构化纪要,未生成过的 meeting 便签提供「生成纪要」。 */
+function InsightRow({
+  note,
+  onDone,
+}: {
+  note: Card["insights"][number];
+  onDone: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const minutes = note.source_ref?.minutes;
+  const gen = useMutation({
+    mutationFn: () =>
+      fetchJSON(`/api/ai/meeting-minutes`, {
+        method: "POST",
+        body: JSON.stringify({ note_id: note.id }),
+      }),
+    onSuccess: onDone,
+  });
+
+  return (
+    <div className="border-l-2 border-[var(--color-border-subtle)] pl-3 py-1">
+      <div className="text-[12px] font-body text-[var(--color-text-primary)] flex items-center gap-1.5 flex-wrap">
+        <span className="text-[var(--color-text-tertiary)]">
+          [{KIND_LABEL[note.kind] ?? note.kind}]
+        </span>{" "}
+        {note.title || note.body.slice(0, 30)}
+        {minutes && (
+          <button
+            className="text-[11px] text-[var(--color-accent)] font-body"
+            onClick={() => setOpen(!open)}
+          >
+            {open ? "收起纪要" : "查看纪要"}
+          </button>
+        )}
+        {!minutes && note.kind === "meeting" && (
+          <button
+            className="text-[11px] text-[var(--color-accent)] font-body disabled:opacity-50"
+            disabled={gen.isPending}
+            onClick={() => gen.mutate()}
+            title="AI 整理摘要/决议/行动项"
+          >
+            <Sparkles className="w-3 h-3 inline" />{" "}
+            {gen.isPending ? "生成中…" : "生成纪要"}
+          </button>
+        )}
+      </div>
+      <div className="text-[11px] font-body text-[var(--color-text-tertiary)]">
+        {note.created_at}
+      </div>
+      {open && minutes && (
+        <div className="mt-1.5 rounded-lg bg-[var(--color-surface)] p-3 flex flex-col gap-1.5">
+          {minutes.summary && (
+            <div className="text-[12px] font-body text-[var(--color-text-primary)]">
+              {minutes.summary}
+            </div>
+          )}
+          {(minutes.decisions?.length ?? 0) > 0 && (
+            <div className="text-[12px] font-body">
+              <span className="text-[var(--color-success)]">决议:</span>
+              <span className="text-[var(--color-text-secondary)]">
+                {" "}
+                {minutes.decisions!.join(";")}
+              </span>
+            </div>
+          )}
+          {(minutes.action_items?.length ?? 0) > 0 && (
+            <div className="text-[12px] font-body">
+              <span className="text-[var(--color-accent)]">行动项:</span>
+              <ul className="mt-0.5 text-[var(--color-text-secondary)]">
+                {minutes.action_items!.map((a, i) => {
+                  const meta = [a.owner, a.due].filter(Boolean).join(" · ");
+                  return (
+                    <li key={i}>
+                      · {a.item}
+                      {meta ? `(${meta})` : ""}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -412,6 +499,8 @@ function AddInsightModal({
   const [kind, setKind] = useState("meeting");
   const [err, setErr] = useState("");
   const [result, setResult] = useState<{ suggested?: string[] } | null>(null);
+  const [bodyText, setBodyText] = useState("");
+  const [minutes, setMinutes] = useState<Minutes | null>(null);
   const mut = useMutation<{ suggested?: string[] }, Error, Record<string, unknown>>({
     mutationFn: (body) =>
       fetchJSON(`/api/employees/${employeeId}/insights`, {
@@ -424,6 +513,20 @@ function AddInsightModal({
     },
     onError: (e) => setErr(e instanceof ApiError ? e.message : "保存失败"),
   });
+  const titleRef = useRef<HTMLInputElement>(null);
+  const minutesMut = useMutation<Minutes & { degraded?: boolean }, Error, void>({
+    mutationFn: () =>
+      fetchJSON(`/api/ai/meeting-minutes`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: titleRef.current?.value ?? "",
+          body: bodyText,
+        }),
+      }),
+    onSuccess: (m) => setMinutes(m),
+    onError: (e) =>
+      setErr(e instanceof ApiError ? e.message : "纪要生成失败"),
+  });
   function submit(ev: FormEvent<HTMLFormElement>) {
     ev.preventDefault();
     setErr("");
@@ -434,11 +537,14 @@ function AddInsightModal({
       body: String(fd.get("body") || "").trim(),
       visibility: String(fd.get("visibility") || "manager_only"),
       extract_skills: true,
+      ...(minutes ? { source_ref: { minutes } } : {}),
     });
   }
   function close() {
     setResult(null);
     setErr("");
+    setMinutes(null);
+    setBodyText("");
     onClose();
   }
   return (
@@ -505,7 +611,7 @@ function AddInsightModal({
           </div>
           <label className="flex flex-col gap-1 text-[13px] font-body">
             标题(可选)
-            <Input name="title" placeholder="如:Q4 规划评审会" />
+            <Input name="title" ref={titleRef} placeholder="如:Q4 规划评审会" />
           </label>
           <label className="flex flex-col gap-1 text-[13px] font-body">
             内容(会议纪要 / 复盘 / 评价)
@@ -513,10 +619,61 @@ function AddInsightModal({
               name="body"
               required
               rows={6}
+              value={bodyText}
+              onChange={(e) => setBodyText(e.target.value)}
               className="rounded-lg border border-[var(--color-border-subtle)] px-3 py-2 text-[13px] font-body"
               placeholder="粘贴会议纪要或写对该员工的观察…AI 会从中提取能力证据生成技能建议。"
             />
           </label>
+          {kind === "meeting" && (
+            <div className="flex flex-col gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="self-start"
+                disabled={minutesMut.isPending || !bodyText.trim()}
+                onClick={() => minutesMut.mutate()}
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                {minutesMut.isPending ? "AI 整理中…" : "AI 整理纪要"}
+              </Button>
+              {minutes && (
+                <div className="rounded-lg border border-[var(--color-accent-soft)] bg-[var(--color-accent-soft)]/40 p-3 flex flex-col gap-1.5 text-[12px] font-body">
+                  {minutes.summary && (
+                    <div className="text-[var(--color-text-primary)]">
+                      {minutes.summary}
+                    </div>
+                  )}
+                  {(minutes.decisions?.length ?? 0) > 0 && (
+                    <div>
+                      <span className="text-[var(--color-success)]">决议:</span>{" "}
+                      {minutes.decisions!.join(";")}
+                    </div>
+                  )}
+                  {(minutes.action_items?.length ?? 0) > 0 && (
+                    <div>
+                      <span className="text-[var(--color-accent)]">行动项:</span>
+                      <ul className="mt-0.5">
+                        {minutes.action_items!.map((a, i) => {
+                          const meta = [a.owner, a.due].filter(Boolean).join(" · ");
+                          return (
+                            <li key={i}>
+                              · {a.item}
+                              {meta ? `(${meta})` : ""}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  )}
+                  <div className="text-[11px] text-[var(--color-text-tertiary)]">
+                    纪要将随便签一同保存
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           {err && <div className="text-[13px] text-[var(--color-danger)]">{err}</div>}
         </form>
       )}

@@ -376,6 +376,30 @@ PROMPT_REGISTRY: dict[str, PromptSpec] = {
             "themes 最多 6 条;trajectory 看反馈情绪随时间的走向。"
         ),
     ),
+    # ===== 会议纪要整理(对标 Moka 智能纪要:要点提取→结构化纪要)=====
+    "meeting.minutes": PromptSpec(
+        name="会议纪要整理",
+        description="把会议原始记录整理成摘要+要点+决议+行动项的结构化纪要",
+        module="performance",
+        variables=[
+            {"name": "title", "desc": "会议标题(可空)"},
+            {"name": "body", "desc": "会议原始记录全文"},
+        ],
+        content=(
+            "你是专业的会议纪要助手,把下面的会议原始记录整理成结构化纪要。\n"
+            "标题:{{title}}\n原始记录:\n{{body}}\n\n"
+            "**只输出 JSON**:\n"
+            '{"summary": "一段话摘要(<=120字,议题+结论)", '
+            '"key_points": ["讨论要点1","讨论要点2"], '
+            '"decisions": ["已达成的决议1","决议2"], '
+            '"action_items": [{"item": "行动项", "owner": "负责人(文中提到才写)", '
+            '"due": "时限(文中提到才写)"}], '
+            '"sentiment": "positive|neutral|negative"}\n'
+            "要求:key_points/decisions 各最多 6 条;action_items 最多 8 条;"
+            "记录没写明的 owner/due 留空字符串;没有决议时 decisions 为空数组;"
+            "sentiment 看会议整体基调(决策顺利=positive,争议/阻塞=negative)。"
+        ),
+    ),
     "field.announcements.content.draft": PromptSpec(
         name="公告起草",
         description="按标题与要求起草公司公告正文",

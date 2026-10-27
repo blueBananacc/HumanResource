@@ -151,3 +151,26 @@
 | 前端四处 | Performance 页风险榜+定目标 AI 建议 / AppraisalCycles 评分弹窗 AI 起草+面谈要点 / Surveys 结果抽屉 AI 分析 / EmployeeDetail 风险卡+反馈分析卡 | ✅ |
 
 **有意不做**:ML 流失预测模型(数据密度撑不起,规则引擎可解释性反而更强);PIP 自动发起(流程闭环以后再说);强制分布校准(北森重型套件,我们 OKR-lite 不需要)。
+
+
+## 十三、会议纪要整理(Meeting Minutes)
+
+### 竞品调研
+
+- **Moka 智能纪要**:语音实时转写 → NLP 要点提取 → 结构化纪要(可搜索/可回顾)+ 隐私脱敏与权限管控。主战场在面试域。
+- **北森 AI 面试助手**:面试全程实时转写留痕 → 智能面试纪要总结(优劣势/匹配度)→ 基于纪要帮写/润色面试评价 → 下一轮面试建议。链条是「转写→纪要→评价」三步。
+- **大易/通用会议产品(Fireflies/飞书妙记)**:纪要四要素——摘要、讨论要点、决议、行动项(负责人+时限)。
+
+### 落地映射
+
+我们面试域已有 scorecard `ai_summary`(主题/分歧/建议);本次补的是**员工域 InsightNote meeting** 的纪要结构化:
+
+- `POST /api/ai/meeting-minutes` 双模式:`{body}` 仅返回草稿;`{note_id}` 生成后持久化到 `note.source_ref.minutes`(无需新表/迁移)。
+- 输出 = 四要素 `{summary, key_points[], decisions[], action_items[{item,owner,due}], sentiment}`;LLM 失败时降级为首行摘要+分行要点。
+- 权限 `manage_employees`;便签级授权沿用 `visible_employee_ids`;写操作审计 `meeting_minutes`;prompt `meeting.minutes` 注册表,租户可覆写。
+- 前端 `TalentCard`:AddInsightModal(kind=meeting)「AI 整理纪要」→ 结构化预览 → 保存随 `source_ref.minutes` 落库;时间线内已生成纪要的便签「查看纪要」展开、未生成的 meeting 便签「生成纪要」补算。
+
+### 有意不做
+
+- 实时语音转写(STT 管线)——Moka/北森的纪要依赖会议录音基础设施,超出当前产品边界;我们的入口是"粘贴会议记录文本"。
+- 纪要驱动的下一轮面试建议——面试域已有 interview-copilot 覆盖。
