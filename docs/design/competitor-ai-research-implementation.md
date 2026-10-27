@@ -104,3 +104,26 @@
 | 分层呈现 | `TalentDetail`「能力画像」卡:雷达图(已有 RadarChart 复用)+ 优势▲/短板▽ 徽标 + 可下钻维度列表;个人层已完成,团队上卷留给人才盘点(已在人才地图有分布视角) | ✅ |
 
 **有意不做**:73k 本体/外部知识图谱(体量不成比例);测评 vendor 级题库(北森模式需独立产品线);360° 盘点套件(依赖绩效数据,超出当前边界)。
+
+## 十一、技能图谱 + 内部人才匹配(Workday Skills Cloud / 北森人才市场)
+
+### 竞品实现要点(专项调研)
+
+| 产品 | 做法 |
+|---|---|
+| **Workday Skills Cloud** | 图谱技术维护技能间关系("会 Excel 大概率会数据分析");Skill Extract/Inference/Gap/Related REST API 族;技能向量空间化文档 |
+| **北森内部人才市场** | 三要素:结构化员工全人画像(基础/经历/成就/能力/潜力)× 工作机会(岗位+项目+任务)× 多维匹配评估;流程=发布机会→系统推荐+员工申请→学习→面试 |
+| **北森继任云** | 人才搜索+智能对比;盘点九宫格校准;梯队出入池 |
+| **Moka** | 双层标签(系统+自定义)、500w 公司/2w 职业知识图谱 |
+
+### HROnfire 落地
+
+| 竞品要素 | 落地 | 状态 |
+|---|---|---|
+| 技能图谱(本体+关系) | `skills.parent_id` 一级层级边 + `aliases` 别名归并(迁移0072);`_resolve_skill` 别名→canonical 归一;`GET /api/skills/graph` 输出节点+边+三侧引用热度;环/自引用检测 | ✅ |
+| 内部人才匹配 | `GET /api/internal-match/jobs/{id}`:JobSkill 要求 × EmployeeSkill(confirmed)——must 覆盖70 + nice 20 + level 10;**图谱双向兑现**:持子技能兑现父要求(0.8衰减,via=child)、持父技能兑现子要求(via=parent);matched/missing 证据链 | ✅ |
+| 员工侧机会推荐 | `GET /api/internal-match/employees/{id}`:员工技能 vs 全部 open 岗位;员工本人+HR/管理者(行级范围)双视角 | ✅ |
+| 校准机制 | 仅 `confirmed` 技能计入匹配(suggested 待确认不进池) | ✅ |
+| 前端 | JobDetail「内部人才推荐」卡 / EmployeeDetail「适配机会」卡 / SkillCenter「技能图谱」面板 | ✅ |
+
+**有意不做**:全量本体(73k)/外部图谱;项目制内部市场全流程(项目报名审批流);继任九宫格盘点(依赖绩效数据)。

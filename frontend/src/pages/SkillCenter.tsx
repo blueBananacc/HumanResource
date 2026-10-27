@@ -17,6 +17,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { fetchJSON } from "@/lib/api";
+import { SkillGraphPanel } from "@/components/skills/SkillGraphPanel";
 
 type Skill = {
   icon: LucideIcon;
@@ -202,6 +203,9 @@ export function SkillCenter() {
           <span className="text-[11px] text-[var(--color-text-tertiary)] font-body">中配置)</span>
         </div>
       </section>
+
+      {/* 技能图谱:词典层级+别名+引用热度 */}
+      <SkillGraphPanel />
     </main>
   );
 }

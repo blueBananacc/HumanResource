@@ -22,6 +22,7 @@ from app.api.dictionaries import kind_values
 from app.domain.models import (
     Candidate,
     CandidateSkill,
+    EmployeeSkill,
     Job,
     JobApplication,
     JobSkill,
@@ -58,6 +59,8 @@ class SkillIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
     category: str = "other"
     description: str | None = Field(None, max_length=500)
+    parent_id: str | None = None
+    aliases: list[str] | None = Field(None, max_length=20)
 
 
 class SkillOut(BaseModel):
@@ -65,6 +68,8 @@ class SkillOut(BaseModel):
     name: str
     category: str
     description: str | None
+    parent_id: str | None = None
+    aliases: list[str] = []
 
 
 class JobSkillItem(BaseModel):
@@ -153,6 +158,19 @@ def _resolve_skill(
         .with_for_update()
     ).first()
     if s is None:
+        # 别名归并:「Golang」提交时命中字典里 aliases 含 "Golang" 的「Go」,
+        # 按 canonical 词条归一 —— 图谱的同义词边(Workday related-skills 轻量版)。
+        low = name.lower()
+        s = next(
+            (
+                row for row in db.scalars(
+                    select(Skill).where(Skill.tenant_id == tenant_id).with_for_update()
+                )
+                if any(low == a.strip().lower() for a in (row.aliases or []))
+            ),
+            None,
+        )
+    if s is None:
         if not allow_create:
             raise HTTPException(
                 400, f"技能「{name[:32]}」不在字典中,需管理员先创建"
@@ -161,6 +179,42 @@ def _resolve_skill(
         db.add(s)
         db.flush()
     return s
+
+
+def _skill_out(s: Skill) -> SkillOut:
+    return SkillOut(
+        id=s.id, name=s.name, category=s.category, description=s.description,
+        parent_id=s.parent_id, aliases=list(s.aliases or []),
+    )
+
+
+def _apply_graph_fields(
+    db: Session, tenant_id: str, s: Skill, body: SkillIn
+) -> None:
+    """parent_id 自引用校验(同租户、非自身、无环)+ aliases 清洗。"""
+    if body.parent_id:
+        if body.parent_id == s.id:
+            raise HTTPException(400, "父技能不能是自身")
+        p = db.get(Skill, body.parent_id)
+        if not p or p.tenant_id != tenant_id:
+            raise HTTPException(400, "父技能不存在")
+        # 环检测:沿 parent 链向上走,撞到自己即成环
+        seen, cur = {s.id}, p
+        while cur is not None and cur.parent_id:
+            if cur.parent_id in seen:
+                raise HTTPException(400, "父技能链存在循环")
+            seen.add(cur.parent_id)
+            cur = db.get(Skill, cur.parent_id)
+        s.parent_id = body.parent_id
+    else:
+        s.parent_id = None
+    if body.aliases is not None:
+        cleaned = []
+        for a in body.aliases:
+            a = a.strip()[:64]
+            if a and a.lower() != body.name.strip().lower() and a not in cleaned:
+                cleaned.append(a)
+        s.aliases = cleaned or None
 
 
 def _job_or_404(
@@ -239,10 +293,7 @@ def list_skills(
         stmt = stmt.where(Skill.name.ilike(f"%{q.strip()}%"))
     if category:
         stmt = stmt.where(Skill.category == category)
-    return [
-        SkillOut(id=s.id, name=s.name, category=s.category, description=s.description)
-        for s in db.scalars(stmt.order_by(Skill.name).limit(limit))
-    ]
+    return [_skill_out(s) for s in db.scalars(stmt.order_by(Skill.name).limit(limit))]
 
 
 @router.post("", response_model=SkillOut, status_code=201)
@@ -267,6 +318,8 @@ def create_skill(
         category=body.category, description=body.description,
     )
     db.add(s)
+    db.flush()
+    _apply_graph_fields(db, current.tenant_id, s, body)
     try:
         db.commit()
     except IntegrityError:
@@ -277,7 +330,7 @@ def create_skill(
     write_audit(db, actor=current, entity_type="skill", entity_id=s.id,
                 action="create", detail={"name": name}, request=request)
     db.commit()
-    return SkillOut(id=s.id, name=s.name, category=s.category, description=s.description)
+    return _skill_out(s)
 
 
 @router.put("/{skill_id}", response_model=SkillOut)
@@ -306,6 +359,7 @@ def update_skill(
     s.name = name
     s.category = body.category
     s.description = body.description
+    _apply_graph_fields(db, current.tenant_id, s, body)
     write_audit(db, actor=current, entity_type="skill", entity_id=s.id,
                 action="update", detail={"name": s.name}, request=request)
     try:
@@ -313,7 +367,7 @@ def update_skill(
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "同名技能已存在")
-    return SkillOut(id=s.id, name=s.name, category=s.category, description=s.description)
+    return _skill_out(s)
 
 
 @router.delete("/{skill_id}", status_code=204)
@@ -339,6 +393,55 @@ def delete_skill(
     write_audit(db, actor=current, entity_type="skill", entity_id=skill_id,
                 action="delete", detail={"name": s.name}, request=request)
     db.commit()
+
+
+class GraphNode(BaseModel):
+    id: str
+    name: str
+    category: str
+    parent_id: str | None
+    aliases: list[str]
+    job_refs: int
+    candidate_refs: int
+    employee_refs: int
+
+
+class SkillGraphOut(BaseModel):
+    nodes: list[GraphNode]
+    edges: list[dict[str, str]]  # {from: child_id, to: parent_id}
+
+
+@router.get("/graph", response_model=SkillGraphOut)
+def skill_graph(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+    _p=Depends(require_permission(PERM_VIEW_REPORTS)),
+):
+    """技能图谱视图:节点=技能词条(带引用热度),边=parent 层级 + 别名归并。
+
+    Workday Skills Cloud 的轻量映射——不做全量本体,只暴露
+    租户自己维护的关系,供管理端图谱可视化与匹配扩展用。
+    """
+    rows = db.scalars(
+        select(Skill).where(Skill.tenant_id == current.tenant_id).order_by(Skill.name)
+    ).all()
+    cnt = lambda model, col: dict(
+        db.execute(select(col, func.count()).group_by(col)).all()
+    )
+    job_c = cnt(JobSkill, JobSkill.skill_id)
+    cand_c = cnt(CandidateSkill, CandidateSkill.skill_id)
+    emp_c = cnt(EmployeeSkill, EmployeeSkill.skill_id)
+    nodes, edges = [], []
+    for s in rows:
+        nodes.append(GraphNode(
+            id=s.id, name=s.name, category=s.category, parent_id=s.parent_id,
+            aliases=list(s.aliases or []),
+            job_refs=job_c.get(s.id, 0), candidate_refs=cand_c.get(s.id, 0),
+            employee_refs=emp_c.get(s.id, 0),
+        ))
+        if s.parent_id:
+            edges.append({"from": s.id, "to": s.parent_id})
+    return SkillGraphOut(nodes=nodes, edges=edges)
 
 
 # ============ 岗位技能 ============

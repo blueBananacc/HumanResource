@@ -2266,6 +2266,14 @@ class Skill(Base):
         String(16), nullable=False, server_default="other", index=True
     )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ---- 技能图谱(Workday Skills Cloud 轻量版)----
+    # parent_id:技能层级边(Python ⊃ Django 的"上位/下位"关系),
+    #   匹配时子技能可向上兑现父级要求(衰减兑现,非完全等价)。
+    # aliases:同义/别名归并("Golang"→"Go"),检索与匹配按 canonical 归一。
+    parent_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("skills.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    aliases: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )

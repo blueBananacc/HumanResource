@@ -27,6 +27,7 @@ import { HistoryDrawer } from "@/components/records/HistoryDrawer";
 import { SummaryCard } from "@/components/assistant/SummaryCard";
 import { DocDraftDrawer } from "@/components/assistant/DocDraftDrawer";
 import { TalentCardSection } from "./TalentCard";
+import { JobFitCard } from "@/components/talent/InternalMatch";
 
 const EMPLOYMENT_OPTIONS = Object.entries(EMPLOYMENT_TYPE_LABEL).map(
   ([value, label]) => ({ value, label }),
@@ -220,6 +221,8 @@ export function EmployeeDetail() {
       </div>
 
       <TalentCardSection employeeId={e.id} />
+
+      <JobFitCard employeeId={e.id} />
 
       <EmployeeEditModal
         emp={e}

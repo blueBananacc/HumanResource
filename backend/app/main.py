@@ -93,6 +93,7 @@ from app.api import rooms as rooms_api
 from app.api import salary_bands as salary_bands_api
 from app.api import shifts as shifts_api
 from app.api import skills as skills_api
+from app.api import internal_match as internal_match_api
 from app.api import sourcing as sourcing_api
 from app.api import smtp as smtp_api
 from app.api import sso as sso_api
@@ -500,6 +501,7 @@ def create_app() -> FastAPI:
     app.include_router(approvals_api.router, prefix="/api")
     app.include_router(datasets_api.router, prefix="/api")
     app.include_router(talent_cards_api.router, prefix="/api")
+    app.include_router(internal_match_api.router, prefix="/api")
     app.include_router(projects_api.router, prefix="/api")
 
     return app

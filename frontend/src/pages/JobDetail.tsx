@@ -24,6 +24,7 @@ import { JobFormModal, type Job } from "./Jobs";
 import { JobGovernancePanel } from "./JobGovernancePanel";
 import { JobKnowledgeCard } from "@/components/jobs/JobKnowledgeCard";
 import { JobAiProfileCard, JobJdReview } from "@/components/jobs/JobAiCards";
+import { InternalMatchCard } from "@/components/talent/InternalMatch";
 
 type JobStatus = "open" | "paused" | "closed";
 
@@ -315,6 +316,9 @@ export function JobDetail() {
 
       {/* 动态职位画像(C3):规则权重×决策学习×匹配统计 */}
       <JobAiProfileCard jobId={data.id} />
+
+      {/* 内部人才匹配:谁能接这个机会(图谱加权) */}
+      <InternalMatchCard jobId={data.id} />
 
       {/* 岗位描述 */}
       <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] p-6 flex flex-col gap-3">
