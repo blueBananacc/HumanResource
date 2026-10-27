@@ -195,6 +195,8 @@ export function MyAttendance() {
         </div>
       )}
 
+      <MonthConfirmCard month={month} hasRows={(attendance ?? []).length > 0} />
+
       <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
         {isLoading ? (
           <div className="p-12 text-center text-sm text-[var(--color-text-tertiary)] font-body">
@@ -282,8 +284,6 @@ export function MyAttendance() {
           </div>
         </section>
       )}
-
-      <MonthConfirmCard month={month} hasRows={(attendance ?? []).length > 0} />
 
       <AttRequestModal open={reqOpen} onClose={() => setReqOpen(false)} />
     </main>
