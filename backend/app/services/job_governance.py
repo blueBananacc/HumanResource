@@ -231,8 +231,17 @@ def optimize_jd(
 
     HR 自己决定是否接受;接受后通过普通 PUT 接口写回即可。
     """
+    # P2:公司级知识库注入 — JD 优化对齐公司制度/文化/职级要求,有据可依
+    from app.services.company_knowledge import company_kb_context
+
+    kb = company_kb_context(
+        db,
+        tenant_id,
+        f"{job.title} {' '.join((job.skills or [])[:5])} 岗位要求 职级",
+    )
     user_text = (
-        f"岗位标题: {job.title}\n"
+        (f"{kb}\n\n" if kb else "")
+        + f"岗位标题: {job.title}\n"
         f"等级: {job.level}\n"
         f"关键技能: {'、'.join(job.skills or []) or '(未填)'}\n"
         f"当前 JD:\n{job.description or '(JD 为空)'}\n"

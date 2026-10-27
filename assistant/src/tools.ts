@@ -289,7 +289,9 @@ function makeTools(token: string): ToolDef[] {
       name: "search_knowledge",
       label: "检索知识库",
       description:
-        "在公司知识库(制度/FAQ/福利/IT 指引)里做全文检索;回答员工政策类问题时先查这里,并引用文章标题",
+        "在公司知识库(制度/FAQ/福利/IT 指引)里做混合检索;" +
+        "回答政策类问题时先查这里,并引用命中自带的溯源字段" +
+        "(title/section/paragraph — 形如「来源:《报销制度》§发票要求·第2段」)",
       parameters: Type.Object({
         q: Type.String({ description: "检索关键词" }),
         limit: Type.Optional(Type.Number({ description: "默认 5" })),

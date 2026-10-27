@@ -102,6 +102,11 @@ class SearchHit(BaseModel):
     tags: list[str]
     snippet: str
     score: float | None = None
+    # P2 引用溯源:命中定位到正文偏移/段落/最近小节标题,便于「有据可依」呈现
+    match_field: str | None = None  # title / content / semantic
+    char_offset: int | None = None
+    paragraph: int | None = None
+    section: str | None = None
 
 
 # ============ 管理端 ============
@@ -306,16 +311,55 @@ def _hybrid_search(
     return scored[:limit]
 
 
+def _locate(content: str, q: str) -> tuple[int | None, int | None, str | None]:
+    """P2 命中定位:(char_offset, paragraph_idx, 最近的 markdown 小节标题)。
+
+    段落按空行切分(无空行则退化为按行);section 取命中位置之前
+    最后一个 `#` 开头标题行 — 让「引用」可回溯到文章具体小节。
+    """
+    if not q:
+        return None, None, None
+    idx = content.lower().find(q.lower())
+    if idx < 0:
+        return None, None, None
+    before = content[:idx]
+    para = before.count("\n\n") + 1
+    if para == 1 and "\n" in before:
+        para = before.count("\n") + 1
+    section: str | None = None
+    for line in before.splitlines():
+        ls = line.strip()
+        if ls.startswith("#"):
+            section = ls.lstrip("#").strip() or None
+    return idx, para, section
+
+
 def _hit(a: KnowledgeArticle, q: str, score: float | None = None) -> SearchHit:
-    idx = a.content.lower().find(q.lower())
+    idx = a.content.lower().find(q.lower()) if q else -1
     if idx >= 0:
         start = max(0, idx - 40)
         snippet = a.content[start : idx + len(q) + 120].strip()
         if start > 0:
             snippet = "…" + snippet
+        match_field = "content"
     else:
         snippet = a.content[:160].strip()
-    return SearchHit(id=a.id, title=a.title, category=a.category, tags=a.tags, snippet=snippet, score=score)
+        match_field = (
+            "title" if q and q.lower() in a.title.lower() else ("semantic" if q else None)
+        )
+    char_off, para, section = _locate(a.content, q)
+    return SearchHit(
+        id=a.id,
+        title=a.title,
+        category=a.category,
+        tags=a.tags,
+        snippet=snippet,
+        score=score,
+        match_field=match_field,
+        char_offset=char_off,
+        paragraph=para,
+        section=section,
+    )
 
 
 @router.post("/search", response_model=list[SearchHit])

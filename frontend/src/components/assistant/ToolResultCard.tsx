@@ -503,6 +503,16 @@ export function ToolResultCard({
                     {str(it.snippet)}
                   </div>
                 )}
+                {(it.section != null || it.paragraph != null) && (
+                  <div className="mt-0.5 flex items-center gap-1 text-[9px] text-[var(--color-text-tertiary)]">
+                    <BookOpen className="w-2.5 h-2.5" />
+                    来源:{str(it.title)}
+                    {it.section != null && ` · §${str(it.section)}`}
+                    {it.paragraph != null && ` · 第${str(it.paragraph)}段`}
+                    {it.match_field === "title" && " · 标题命中"}
+                    {it.match_field === "semantic" && " · 语义相关"}
+                  </div>
+                )}
               </div>
             )}
           />

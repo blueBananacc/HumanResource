@@ -238,6 +238,26 @@ def _generate_for_library(
         if job
         else (f"岗位方向: {category}\n" if category else "通用面试题。\n")
     )
+    # P2:岗位知识源 + 公司知识库注入 — 出题对齐岗位要求与公司制度,有据可依
+    knowledge_parts: list[str] = []
+    if job is not None:
+        from app.services.job_knowledge import knowledge_context_text
+
+        kc = knowledge_context_text(
+            db, job, query=f"{job.title} {' '.join(job.skills or [])}", limit=3
+        )
+        if kc:
+            knowledge_parts.append(kc)
+    from app.services.company_knowledge import company_kb_context
+
+    kb = company_kb_context(
+        db,
+        tenant_id,
+        f"{job.title if job else category} {' '.join((job.skills or [])[:5]) if job else ''} 要求",
+    )
+    if kb:
+        knowledge_parts.append(kb)
+    knowledge = "\n\n".join(knowledge_parts)
     system = (
         f"你是资深招聘面试官,请生成 {count} 道【{kind_label}】类型的面试题。\n"
         f"{job_clause}"
@@ -252,9 +272,12 @@ def _generate_for_library(
         "]}\n"
         "约束: answer_points 至少 2 个,每条<=30字;禁止输出 JSON 之外的文字。"
     )
+    user_text = (
+        (f"{knowledge}\n\n" if knowledge else "") + f"请生成 {count} 道题。"
+    )
     messages: list[Message] = [
         {"role": "system", "content": system},
-        {"role": "user", "content": f"请生成 {count} 道题。"},
+        {"role": "user", "content": user_text},
     ]
     try:
         parsed = call_llm_json(

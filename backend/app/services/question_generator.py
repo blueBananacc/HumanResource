@@ -135,8 +135,17 @@ def generate_questions(
             query=f"{job.title} {' '.join(job.skills or [])}",
             limit=4,
         )
+    # P2:公司级知识库(制度/文化/代码规范)也注入 — 出题有据可依
+    from app.services.company_knowledge import company_kb_context
+
+    kb = company_kb_context(
+        db,
+        resume.tenant_id,
+        f"{job.title if job else ''} {' '.join((job.skills or [])[:5]) if job else '面试'}",
+    )
     user_msg = (
         (f"{knowledge}\n\n" if knowledge else "")
+        + (f"{kb}\n\n" if kb else "")
         + f"候选人简历摘录{DATA_LABEL}:\n{_resume_excerpt(resume)}\n\n请按要求出 {count} 道题。"
     )
 

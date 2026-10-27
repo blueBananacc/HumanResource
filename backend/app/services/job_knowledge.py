@@ -40,30 +40,64 @@ _EXTRACTION_METHODS = {
 }
 
 
-def split_chunks(text: str, size: int = _CHUNK_SIZE, cap: int = _CHUNK_CAP) -> list[str]:
-    """移植 recruit splitKnowledgeChunks:规范化→空行分段→贪心装箱→超长硬切。"""
+_HEADING_RE = re.compile(r"^#{1,6}\s")
+
+
+def split_chunks_meta(
+    text: str, size: int = _CHUNK_SIZE, cap: int = _CHUNK_CAP
+) -> list[dict[str, Any]]:
+    """结构感知分块(P2):返回 [{content, section}]。
+
+    - markdown 标题行(#...)开新块,标题与其正文粘在同一块里;
+    - 每块携带所在小节的标题文本(最近一个上游标题),写入 chunk meta,
+      检索命中时可回溯「哪份文档的哪一节」;
+    - 其余规则同旧版:规范化→空行分段→贪心装箱→超长硬切。
+    """
     normalized = re.sub(r"[\x00]", " ", text or "")
     normalized = re.sub(r"[ \t]+", " ", normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
     if not normalized:
         return []
     paragraphs = [p.strip() for p in normalized.split("\n\n") if p.strip()]
-    chunks: list[str] = []
+    chunks: list[dict[str, Any]] = []
     current = ""
+    cur_section: str | None = None  # 最近见到的标题(文本)
+    chunk_section: str | None = None  # 当前块所属小节
+
+    def _flush() -> None:
+        nonlocal current
+        if current:
+            chunks.append({"content": current, "section": chunk_section})
+            current = ""
+
     for para in paragraphs or [normalized]:
-        if not current:
+        first_line = para.split("\n", 1)[0].strip()
+        is_heading = _HEADING_RE.match(first_line) is not None
+        if is_heading:
+            _flush()
+            cur_section = first_line.lstrip("#").strip() or None
+            chunk_section = cur_section
             current = para
+        elif not current:
+            current = para
+            chunk_section = cur_section
         elif len(current) + len(para) + 2 <= size:
             current = f"{current}\n\n{para}"
         else:
-            chunks.append(current)
+            _flush()
             current = para
+            chunk_section = cur_section
         while len(current) > size:
-            chunks.append(current[:size])
+            chunks.append({"content": current[:size], "section": chunk_section})
             current = current[size:]
-    if current:
-        chunks.append(current)
+    _flush()
     return chunks[:cap]
+
+
+def split_chunks(text: str, size: int = _CHUNK_SIZE, cap: int = _CHUNK_CAP) -> list[str]:
+    """移植 recruit splitKnowledgeChunks:规范化→空行分段→贪心装箱→超长硬切。
+    P2 起底层走结构感知分块,本签名保留以兼容调用方/测试。"""
+    return [c["content"] for c in split_chunks_meta(text, size, cap)]
 
 
 def _extract_source_text(
@@ -103,7 +137,8 @@ def index_source(
 ) -> JobKnowledgeSource:
     """索引一个知识源:抽取→切块→写 chunks→更新状态。幂等(删旧插新)。"""
     text, ext_status, ext_method = _extract_source_text(source, file_bytes)
-    chunks = split_chunks(text)
+    chunk_objs = split_chunks_meta(text)
+    chunks = [c["content"] for c in chunk_objs]
     ready = bool(chunks) and (
         source.kind == "text" or (ext_status == "ok" and text)
     )
@@ -116,16 +151,17 @@ def index_source(
     )
     if ready:
         embeddings = embed_texts(db, source.tenant_id, chunks) or []
-        for idx, content in enumerate(chunks):
+        for idx, c in enumerate(chunk_objs):
             db.add(
                 JobKnowledgeChunk(
                     tenant_id=source.tenant_id,
                     job_id=source.job_id,
                     source_id=source.id,
                     chunk_index=idx,
-                    content=content,
+                    content=c["content"],
                     meta={
                         "source_name": source.name,
+                        "section": c.get("section"),
                         "extraction_status": ext_status,
                         "extraction_method": ext_method,
                     },
