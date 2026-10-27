@@ -1,6 +1,14 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ClipboardCheck, Lock, Play, Plus, Star } from "lucide-react";
+import {
+  Brain,
+  ClipboardCheck,
+  Lightbulb,
+  Lock,
+  Play,
+  Plus,
+  Star,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
@@ -393,6 +401,17 @@ function AssignModal({
   );
 }
 
+type AssistOut = {
+  suggested_rating: number | null;
+  review_draft: string;
+  strengths: string[];
+  improvements: string[];
+  calibration_note: string;
+  talking_points: string[];
+  evidence: Record<string, number | null>;
+  degraded: boolean;
+};
+
 function ReviewModal({
   a,
   onClose,
@@ -402,6 +421,8 @@ function ReviewModal({
 }) {
   const qc = useQueryClient();
   const [rating, setRating] = useState("4");
+  const [review, setReview] = useState("");
+  const [assist, setAssist] = useState<AssistOut | null>(null);
   const [err, setErr] = useState("");
   const mut = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
@@ -414,6 +435,20 @@ function ReviewModal({
       onClose();
     },
     onError: (e) => setErr(e instanceof ApiError ? e.message : "提交失败"),
+  });
+  const assistMut = useMutation({
+    mutationFn: () =>
+      fetchJSON<AssistOut>("/api/ai/appraisal-assist", {
+        method: "POST",
+        body: JSON.stringify({ appraisal_id: a.id }),
+      }),
+    onSuccess: (d) => {
+      setAssist(d);
+      if (d.review_draft) setReview(d.review_draft);
+      if (d.suggested_rating != null) setRating(String(d.suggested_rating));
+    },
+    onError: (e) =>
+      setErr(e instanceof ApiError ? e.message : "AI 起草失败"),
   });
 
   return (
@@ -437,9 +472,8 @@ function ReviewModal({
         className="flex flex-col gap-4"
         onSubmit={(e) => {
           e.preventDefault();
-          const fd = new FormData(e.currentTarget);
           mut.mutate({
-            manager_review: String(fd.get("manager_review") || "").trim(),
+            manager_review: review.trim(),
             manager_rating: Number(rating),
           });
         }}
@@ -449,6 +483,71 @@ function ReviewModal({
             员工自评({a.self_rating}/5): {a.self_review}
           </div>
         )}
+
+        <div className="flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={() => assistMut.mutate()}
+            disabled={assistMut.isPending}
+            className="self-start flex items-center gap-1.5 text-[12px] text-[var(--color-accent)] font-body disabled:opacity-50"
+          >
+            <Brain className="w-3.5 h-3.5" />
+            {assistMut.isPending
+              ? "AI 分析目标与过程记录中…"
+              : "AI 起草评语(目标达成+过程记录)"}
+          </button>
+          {assist && (
+            <div className="border border-[var(--color-border-subtle)] rounded-lg p-3 flex flex-col gap-2 bg-[var(--color-bg-subtle)]">
+              {assist.degraded && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-warning-soft)] text-[var(--color-warning-text)] self-start">
+                  AI 暂不可用 · 模板草稿
+                </span>
+              )}
+              {assist.calibration_note && (
+                <div className="text-[12px] font-body text-[var(--color-warning-text)]">
+                  校准: {assist.calibration_note}
+                </div>
+              )}
+              {(assist.strengths.length > 0 || assist.improvements.length > 0) && (
+                <div className="flex flex-wrap gap-1.5">
+                  {assist.strengths.filter(Boolean).map((s, i) => (
+                    <span
+                      key={`s${i}`}
+                      className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-success-soft)] text-[var(--color-success)] font-body"
+                    >
+                      ▲ {s}
+                    </span>
+                  ))}
+                  {assist.improvements.filter(Boolean).map((s, i) => (
+                    <span
+                      key={`i${i}`}
+                      className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-warning-soft)] text-[var(--color-warning-text)] font-body"
+                    >
+                      ▽ {s}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {assist.talking_points.length > 0 && (
+                <div className="flex flex-col gap-1">
+                  <span className="text-[11px] font-medium text-[var(--color-text-secondary)] font-body">
+                    面谈切入点
+                  </span>
+                  {assist.talking_points.map((t, i) => (
+                    <div
+                      key={i}
+                      className="flex items-start gap-1.5 text-[12px] font-body text-[var(--color-text-secondary)]"
+                    >
+                      <Lightbulb className="w-3.5 h-3.5 mt-0.5 shrink-0 text-[var(--color-accent)]" />
+                      {t}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         <Field label="评分" required>
           <Select
             value={rating}
@@ -460,7 +559,15 @@ function ReviewModal({
           />
         </Field>
         <Field label="评语" required>
-          <Input name="manager_review" required placeholder="表现点评" />
+          <textarea
+            name="manager_review"
+            required
+            placeholder="表现点评"
+            rows={3}
+            value={review}
+            onChange={(e) => setReview(e.target.value)}
+            className="rounded-lg border border-[var(--color-border-subtle)] p-3 text-sm font-body focus:outline-none focus:border-[var(--color-accent)] resize-y"
+          />
         </Field>
         {err && (
           <div className="text-[13px] text-[var(--color-danger)] font-body">

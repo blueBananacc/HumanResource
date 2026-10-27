@@ -17,6 +17,7 @@ import { ApiError, fetchJSON } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/lib/auth";
 import { PERM } from "@/lib/roles";
+import { SurveyInsights } from "@/components/people/PeopleInsights";
 
 /**
  * 问卷管理(T2-3)。
@@ -530,6 +531,7 @@ function ResultsDrawer({
               </span>
             )}
           </div>
+          {data.response_count > 0 && <SurveyInsights surveyId={surveyId} />}
           {data.respondents.length > 0 && (
             <div className="flex flex-col gap-1.5">
               <span className="text-[12px] font-medium text-[var(--color-text-secondary)] font-body">

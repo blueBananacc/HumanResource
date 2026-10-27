@@ -14,6 +14,8 @@ import { useAuth } from "@/lib/auth";
 import { PERM } from "@/lib/roles";
 import { StatusPill, type Goal } from "@/lib/hris";
 import { Field, useEmployeeOptions } from "./Employees";
+import { FlightRiskBoard } from "@/components/people/PeopleInsights";
+import { Sparkles } from "lucide-react";
 
 const STATUS_OPTIONS = [
   { value: "", label: "全部状态" },
@@ -163,6 +165,8 @@ export function Performance() {
         )}
       </div>
 
+      <FlightRiskBoard />
+
       <Pagination
         page={page}
         pageCount={pageCount}
@@ -176,6 +180,8 @@ export function Performance() {
   );
 }
 
+type GoalSuggestion = { title: string; description: string };
+
 function GoalCreateModal({
   open,
   onClose,
@@ -187,6 +193,10 @@ function GoalCreateModal({
   // 打开弹窗时才拉员工列表 — 该页面 view_reports 可看,无 manage 权限的用户不应触发 /api/employees
   const empOptions = useEmployeeOptions(open);
   const [empId, setEmpId] = useState("");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [suggestions, setSuggestions] = useState<GoalSuggestion[] | null>(null);
+  const [suggestErr, setSuggestErr] = useState("");
   const [err, setErr] = useState("");
   const mut = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
@@ -200,6 +210,19 @@ function GoalCreateModal({
     },
     onError: (e) => setErr(e instanceof ApiError ? e.message : "创建失败"),
   });
+  const suggest = useMutation({
+    mutationFn: () =>
+      fetchJSON<{ goals: GoalSuggestion[]; degraded: boolean }>(
+        "/api/ai/goal-suggest",
+        { method: "POST", body: JSON.stringify({ employee_id: empId }) },
+      ),
+    onSuccess: (d) => {
+      setSuggestions(d.goals);
+      setSuggestErr(d.degraded ? "AI 暂不可用,已给出通用骨架建议" : "");
+    },
+    onError: (e) =>
+      setSuggestErr(e instanceof ApiError ? e.message : "建议生成失败"),
+  });
 
   function submit(ev: FormEvent<HTMLFormElement>) {
     ev.preventDefault();
@@ -210,8 +233,8 @@ function GoalCreateModal({
     const fd = new FormData(ev.currentTarget);
     mut.mutate({
       employee_id: empId,
-      title: String(fd.get("title") || "").trim(),
-      description: String(fd.get("description") || "").trim(),
+      title: title.trim(),
+      description: description.trim(),
       due_date: String(fd.get("due_date") || "") || null,
     });
   }
@@ -236,16 +259,70 @@ function GoalCreateModal({
         <Field label="员工" required>
           <Select
             value={empId}
-            onChange={setEmpId}
+            onChange={(v) => {
+              setEmpId(v);
+              setSuggestions(null);
+            }}
             options={empOptions}
             placeholder="选择员工"
           />
         </Field>
+        {empId && (
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => suggest.mutate()}
+              disabled={suggest.isPending}
+              className="self-start flex items-center gap-1.5 text-[12px] text-[var(--color-accent)] font-body disabled:opacity-50"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              {suggest.isPending ? "生成建议中…" : "AI 建议目标(SMART)"}
+            </button>
+            {suggestErr && (
+              <div className="text-[11px] text-[var(--color-warning-text)] font-body">
+                {suggestErr}
+              </div>
+            )}
+            {suggestions && (
+              <div className="flex flex-col gap-1.5">
+                {suggestions.map((g, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => {
+                      setTitle(g.title);
+                      setDescription(g.description);
+                    }}
+                    className="text-left border border-[var(--color-border-subtle)] rounded-md px-3 py-2 hover:border-[var(--color-accent)] transition-colors"
+                  >
+                    <div className="text-[12px] font-medium text-[var(--color-text-primary)] font-body">
+                      {g.title}
+                    </div>
+                    <div className="text-[11px] text-[var(--color-text-secondary)] font-body">
+                      {g.description}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <Field label="目标" required>
-          <Input name="title" required placeholder="Q3 完成新版官网上线" />
+          <Input
+            name="title"
+            required
+            placeholder="Q3 完成新版官网上线"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
         </Field>
         <Field label="描述">
-          <Input name="description" placeholder="衡量标准 / 里程碑" />
+          <Input
+            name="description"
+            placeholder="衡量标准 / 里程碑"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
         </Field>
         <Field label="截止日期">
           <Input name="due_date" type="date" />

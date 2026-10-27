@@ -287,6 +287,95 @@ PROMPT_REGISTRY: dict[str, PromptSpec] = {
             "followups 最多 3 条,优先补未覆盖维度;问题要行为化(要事例、要数据)。"
         ),
     ),
+    # ===== AI 绩效助手(对标北森:目标生成/评价起草/面谈话术)=====
+    "goal.suggest": PromptSpec(
+        name="目标设定建议",
+        description="按岗位/技能/在途目标,建议符合 SMART 原则的员工目标",
+        module="performance",
+        variables=[
+            {"name": "employee", "desc": "员工岗位/部门/司龄信息(JSON)"},
+            {"name": "skills", "desc": "已确认技能清单"},
+            {"name": "existing_goals", "desc": "在途目标标题(避免重复)"},
+            {"name": "instruction", "desc": "主管补充要求(可空)"},
+        ],
+        content=(
+            "你是绩效管理专家,为员工建议下一周期的工作目标。\n"
+            "员工信息:{{employee}}\n已确认技能:{{skills}}\n"
+            "在途目标(不要重复):{{existing_goals}}\n主管要求:{{instruction}}\n\n"
+            "**只输出 JSON**:\n"
+            '{"goals": [{"title": "目标标题(<=30字,具体可衡量)", '
+            '"description": "衡量标准/里程碑(<=80字)"}]}\n'
+            "要求:\n"
+            "- 4 条以内,符合 SMART(具体/可衡量/有时限感)\n"
+            "- 结合岗位职责与技能发展方向,兼顾业务产出与能力成长\n"
+            "- 不与在途目标重复;描述里给出可核查的衡量口径"
+        ),
+    ),
+    "appraisal.assist": PromptSpec(
+        name="绩效评语起草",
+        description="按目标达成/技能/过程记录,起草上级评语并给出校准与面谈建议",
+        module="performance",
+        variables=[
+            {"name": "employee", "desc": "员工岗位/部门信息(JSON)"},
+            {"name": "goals", "desc": "周期内目标达成(JSON)"},
+            {"name": "skills", "desc": "已确认技能"},
+            {"name": "notes", "desc": "周期内管理便签摘要"},
+            {"name": "self_review", "desc": "员工自评原文"},
+            {"name": "self_rating", "desc": "员工自评分"},
+        ],
+        content=(
+            "你是资深 HRBP,协助上级写绩效评语。员工:{{employee}}\n\n"
+            "周期目标达成:{{goals}}\n已确认技能:{{skills}}\n"
+            "周期内过程记录:{{notes}}\n员工自评({{self_rating}}/5):{{self_review}}\n\n"
+            "**只输出 JSON**:\n"
+            '{"suggested_rating": 1-5, '
+            '"review_draft": "上级评语草稿(<=150字,先业绩后能力,客观有据)", '
+            '"strengths": ["亮点1","亮点2"], '
+            '"improvements": ["待改进1","待改进2"], '
+            '"calibration_note": "校准提示(如自评与事实差距)", '
+            '"talking_points": ["面谈切入点1","面谈切入点2","面谈切入点3"]}\n'
+            "要求:评语引用目标/记录事实,不空泛;自评明显偏离事实时校准提示要点明。"
+        ),
+    ),
+    "feedback.survey": PromptSpec(
+        name="问卷反馈分析",
+        description="聚合问卷结果,提炼情绪/主题/风险/行动建议",
+        module="performance",
+        variables=[
+            {"name": "title", "desc": "问卷标题"},
+            {"name": "stats", "desc": "题目统计(JSON:选项分布/评分均值/文本样本)"},
+        ],
+        content=(
+            "你是组织发展顾问,分析这份员工/候选人问卷的回收结果。\n"
+            "问卷:{{title}}\n统计:{{stats}}\n\n"
+            "**只输出 JSON**:\n"
+            '{"sentiment": "positive|mixed|negative", '
+            '"themes": [{"theme": "主题", "support": "high|medium|low", "quote": "代表性原文"}], '
+            '"risks": ["需关注的风险信号"], '
+            '"actions": ["建议行动1","建议行动2","建议行动3"]}\n'
+            "themes 最多 5 条按提及度排序;risks 指出低分题/负面文本背后的实质问题。"
+        ),
+    ),
+    "feedback.employee": PromptSpec(
+        name="员工反馈分析",
+        description="聚合员工管理便签/复盘/里程碑,分析反馈主题与趋势",
+        module="performance",
+        variables=[
+            {"name": "employee", "desc": "员工岗位信息(JSON)"},
+            {"name": "notes", "desc": "便签列表(JSON:kind/时间/摘要)"},
+        ],
+        content=(
+            "你是组织发展顾问,分析这名员工近一段时间收到的过程反馈。\n"
+            "员工:{{employee}}\n反馈记录:{{notes}}\n\n"
+            "**只输出 JSON**:\n"
+            '{"sentiment": "positive|mixed|negative", '
+            '"themes": [{"theme": "反复出现的主题", "count": 次数, "polarity": "pos|neg"}], '
+            '"trajectory": "up|flat|down", '
+            '"summary": "一段综合判断(<=120字)", '
+            '"actions": ["管理建议1","管理建议2"]}\n'
+            "themes 最多 6 条;trajectory 看反馈情绪随时间的走向。"
+        ),
+    ),
     "field.announcements.content.draft": PromptSpec(
         name="公告起草",
         description="按标题与要求起草公司公告正文",

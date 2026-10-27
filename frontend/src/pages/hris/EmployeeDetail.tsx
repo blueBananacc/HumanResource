@@ -28,6 +28,7 @@ import { SummaryCard } from "@/components/assistant/SummaryCard";
 import { DocDraftDrawer } from "@/components/assistant/DocDraftDrawer";
 import { TalentCardSection } from "./TalentCard";
 import { JobFitCard } from "@/components/talent/InternalMatch";
+import { FeedbackPanel, FlightRiskCard } from "@/components/people/PeopleInsights";
 
 const EMPLOYMENT_OPTIONS = Object.entries(EMPLOYMENT_TYPE_LABEL).map(
   ([value, label]) => ({ value, label }),
@@ -223,6 +224,10 @@ export function EmployeeDetail() {
       <TalentCardSection employeeId={e.id} />
 
       <JobFitCard employeeId={e.id} />
+
+      <FlightRiskCard employeeId={e.id} />
+
+      <FeedbackPanel employeeId={e.id} />
 
       <EmployeeEditModal
         emp={e}

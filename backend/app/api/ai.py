@@ -30,11 +30,13 @@ from app.services.audit import write_audit
 from app.services.doc_templates import DOC_SPECS, build_doc_vars
 from app.services.permissions import (
     PERM_MANAGE_EMPLOYEES,
+    PERM_MANAGE_PERFORMANCE,
     PERM_VIEW_REPORTS,
     PERM_WRITE_JOBS,
     PERM_WRITE_RESUMES,
     get_org_scope,
     has_permission,
+    visible_employee_ids,
 )
 from app.services.prompting import (
     PROMPT_REGISTRY, guarded, render_prompt, render_vars,
@@ -510,4 +512,540 @@ def interview_copilot(
         missing=llm_missing or missing,
         followups=followups,
         note=str(data.get("note", ""))[:500],
+    )
+
+
+# ==================== AI 绩效助手(对标北森 AI 绩效助手三段式)====================
+# 目标建议 → 评语起草(+校准/面谈) → 反馈分析;信号源全部走库内聚合。
+
+from datetime import date  # noqa: E402
+
+from app.domain.models import (  # noqa: E402
+    Appraisal,
+    AppraisalCycle,
+    Employee,
+    EmployeeSkill,
+    Goal,
+    InsightNote,
+    OrgUnit,
+    Skill,
+    Survey,
+    SurveyQuestion,
+    SurveyResponse,
+    SurveyResponseAnswer,
+)
+
+
+def _employee_brief(db: Session, tenant_id: str, emp: Employee) -> dict:
+    org = db.get(OrgUnit, emp.org_unit_id) if emp.org_unit_id else None
+    tenure = (
+        round((date.today() - emp.hire_date).days / 365.25, 1)
+        if emp.hire_date else None
+    )
+    return {
+        "name": emp.name,
+        "designation": emp.designation or "",
+        "org_unit": org.name if org else "",
+        "tenure_years": tenure,
+    }
+
+
+def _confirmed_skills(db: Session, tenant_id: str, employee_id: str) -> list[str]:
+    rows = db.execute(
+        select(EmployeeSkill, Skill)
+        .join(Skill, Skill.id == EmployeeSkill.skill_id)
+        .where(
+            EmployeeSkill.tenant_id == tenant_id,
+            EmployeeSkill.employee_id == employee_id,
+            EmployeeSkill.status == "confirmed",
+        )
+    ).all()
+    return [f"{s.name}(L{es.level})" for es, s in rows][:12]
+
+
+class GoalSuggestIn(BaseModel):
+    employee_id: str = Field(..., min_length=1, max_length=36)
+    instruction: str = Field("", max_length=500)
+    count: int = Field(4, ge=1, le=6)
+
+
+class GoalSuggestion(BaseModel):
+    title: str = ""
+    description: str = ""
+
+
+class GoalSuggestOut(BaseModel):
+    goals: list[GoalSuggestion] = Field(default_factory=list)
+    degraded: bool = False
+
+
+@router.post("/goal-suggest", response_model=GoalSuggestOut)
+def goal_suggest(
+    body: GoalSuggestIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    if not has_permission(current, PERM_MANAGE_PERFORMANCE):
+        raise HTTPException(403, "没有目标管理权限")
+    emp = db.get(Employee, body.employee_id)
+    if not emp or emp.tenant_id != current.tenant_id:
+        raise HTTPException(404, "员工不存在")
+
+    existing = [
+        g.title
+        for g in db.scalars(
+            select(Goal).where(
+                Goal.tenant_id == current.tenant_id,
+                Goal.employee_id == emp.id,
+                Goal.status == "active",
+            )
+        ).all()
+    ][:8]
+    variables = {
+        "employee": json.dumps(_employee_brief(db, current.tenant_id, emp), ensure_ascii=False),
+        "skills": "、".join(_confirmed_skills(db, current.tenant_id, emp.id)) or "暂无技能档案",
+        "existing_goals": "、".join(existing) or "无",
+        "instruction": body.instruction or "(无)",
+    }
+    spec = PROMPT_REGISTRY["goal.suggest"]
+    prompt = render_prompt(
+        db, current.tenant_id, "goal.suggest", module="performance", **variables
+    ) or render_vars(spec.content, variables)
+
+    try:
+        raw = call_llm(
+            "ai.goal_suggest",
+            [{"role": "system", "content": guarded(prompt)}],
+            db=db, tenant_id=current.tenant_id,
+            prompt_key="goal.suggest", user_id=current.id,
+        )
+    except LLMError:
+        raw = ""
+
+    write_audit(
+        db, actor=current, entity_type="ai_call", entity_id=emp.id,
+        action="goal_suggest", detail={"employee": emp.name}, request=request,
+    )
+    db.commit()
+
+    data = _extract_json(raw) if raw else None
+    goals = [
+        GoalSuggestion(
+            title=str(g.get("title", ""))[:60],
+            description=str(g.get("description", ""))[:200],
+        )
+        for g in ((data or {}).get("goals") or [])[: body.count]
+        if isinstance(g, dict) and g.get("title")
+    ]
+    if not goals:
+        # 降级:按岗位给通用 SMART 骨架
+        title_hint = emp.designation or "本岗位"
+        goals = [
+            GoalSuggestion(
+                title=f"提升{title_hint}核心交付质量",
+                description="本周期内关键交付物零返工;按时完成率 ≥95%。",
+            ),
+            GoalSuggestion(
+                title="沉淀一项可复用的工作方法",
+                description="产出 1 份文档/SOP 并在团队内分享一次。",
+            ),
+            GoalSuggestion(
+                title="补强一项岗位相关技能",
+                description="结合技能档案短板,完成学习并在实际任务中应用一次。",
+            ),
+        ]
+    return GoalSuggestOut(goals=goals, degraded=data is None)
+
+
+class AppraisalAssistIn(BaseModel):
+    appraisal_id: str = Field(..., min_length=1, max_length=36)
+
+
+class AppraisalAssistOut(BaseModel):
+    suggested_rating: int | None = None
+    review_draft: str = ""
+    strengths: list[str] = Field(default_factory=list)
+    improvements: list[str] = Field(default_factory=list)
+    calibration_note: str = ""
+    talking_points: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    degraded: bool = False
+
+
+@router.post("/appraisal-assist", response_model=AppraisalAssistOut)
+def appraisal_assist(
+    body: AppraisalAssistIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    if not has_permission(current, PERM_MANAGE_PERFORMANCE):
+        raise HTTPException(403, "没有绩效评价权限")
+    a = db.get(Appraisal, body.appraisal_id)
+    if not a or a.tenant_id != current.tenant_id:
+        raise HTTPException(404, "考核表不存在")
+    cycle = db.get(AppraisalCycle, a.cycle_id)
+    emp = db.get(Employee, a.employee_id)
+    if not cycle or not emp:
+        raise HTTPException(404, "考核上下文缺失")
+
+    # 周期内目标达成
+    goals = db.scalars(
+        select(Goal).where(
+            Goal.tenant_id == current.tenant_id,
+            Goal.employee_id == emp.id,
+        )
+    ).all()
+    in_cycle = [
+        {
+            "title": g.title,
+            "progress": g.progress,
+            "status": g.status,
+            "due": str(g.due_date) if g.due_date else None,
+        }
+        for g in goals
+        if g.due_date is None
+        or (cycle.period_start <= g.due_date <= cycle.period_end)
+        or g.status == "active"
+    ][:10]
+    # 周期内过程记录
+    notes = [
+        {
+            "kind": n.kind,
+            "title": n.title or "",
+            "date": n.created_at.date().isoformat() if n.created_at else "",
+            "excerpt": (n.body or "")[:120],
+        }
+        for n in db.scalars(
+            select(InsightNote)
+            .where(
+                InsightNote.tenant_id == current.tenant_id,
+                InsightNote.employee_id == emp.id,
+            )
+            .order_by(InsightNote.created_at.desc())
+        ).all()
+        if n.created_at and n.created_at.date() <= cycle.period_end
+    ][:8]
+
+    variables = {
+        "employee": json.dumps(_employee_brief(db, current.tenant_id, emp), ensure_ascii=False),
+        "goals": json.dumps(in_cycle, ensure_ascii=False) or "[]",
+        "skills": "、".join(_confirmed_skills(db, current.tenant_id, emp.id)) or "暂无",
+        "notes": json.dumps(notes, ensure_ascii=False) or "[]",
+        "self_review": (a.self_review or "(未填写)")[:2000],
+        "self_rating": a.self_rating if a.self_rating is not None else "未评",
+    }
+    spec = PROMPT_REGISTRY["appraisal.assist"]
+    prompt = render_prompt(
+        db, current.tenant_id, "appraisal.assist", module="performance", **variables
+    ) or render_vars(spec.content, variables)
+
+    try:
+        raw = call_llm(
+            "ai.appraisal_assist",
+            [{"role": "system", "content": guarded(prompt)}],
+            db=db, tenant_id=current.tenant_id,
+            prompt_key="appraisal.assist", user_id=current.id,
+        )
+    except LLMError:
+        raw = ""
+
+    write_audit(
+        db, actor=current, entity_type="ai_call", entity_id=a.id,
+        action="appraisal_assist", detail={"employee": emp.name, "cycle": cycle.name},
+        request=request,
+    )
+    db.commit()
+
+    evidence = {
+        "goal_count": len(in_cycle),
+        "note_count": len(notes),
+        "avg_progress": (
+            round(sum(g["progress"] for g in in_cycle) / len(in_cycle))
+            if in_cycle else None
+        ),
+    }
+    data = _extract_json(raw) if raw else None
+    if data is None:
+        # 降级:按目标达成模板化草稿
+        done = [g for g in in_cycle if g["status"] == "done" or g["progress"] >= 80]
+        draft = (
+            f"本周期 {len(in_cycle)} 项目标中 {len(done)} 项达成/接近达成"
+            f"(平均进度 {evidence['avg_progress'] or 0}%)。"
+            + ("自评较积极,建议面谈中核对关键交付物。" if a.self_rating and a.self_rating >= 4 else "")
+        )
+        return AppraisalAssistOut(
+            suggested_rating=None,
+            review_draft=draft,
+            strengths=[g["title"] for g in done[:2]],
+            improvements=["过程记录不足,建议补充事实依据" if not notes else ""],
+            calibration_note="AI 暂不可用,以上为按目标数据生成的模板草稿,请人工修订。",
+            talking_points=["核对目标完成口径", "确认下周期目标"],
+            evidence=evidence,
+            degraded=True,
+        )
+
+    try:
+        rating = int(data.get("suggested_rating"))
+        rating = rating if 1 <= rating <= 5 else None
+    except (TypeError, ValueError):
+        rating = None
+    return AppraisalAssistOut(
+        suggested_rating=rating,
+        review_draft=str(data.get("review_draft", ""))[:800],
+        strengths=[str(s)[:80] for s in (data.get("strengths") or [])][:4],
+        improvements=[str(s)[:80] for s in (data.get("improvements") or [])][:4],
+        calibration_note=str(data.get("calibration_note", ""))[:300],
+        talking_points=[str(t)[:120] for t in (data.get("talking_points") or [])][:4],
+        evidence=evidence,
+    )
+
+
+# ==================== 反馈分析(对标北森/Moka 的员工域反馈洞察)====================
+
+
+class FeedbackAnalyzeIn(BaseModel):
+    target: str = Field(..., pattern="^(survey|employee)$")
+    survey_id: str | None = None
+    employee_id: str | None = None
+
+
+class FeedbackTheme(BaseModel):
+    theme: str = ""
+    support: str = ""
+    quote: str = ""
+    count: int | None = None
+    polarity: str = ""
+
+
+class FeedbackAnalyzeOut(BaseModel):
+    target: str
+    sentiment: str = ""
+    themes: list[FeedbackTheme] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    actions: list[str] = Field(default_factory=list)
+    trajectory: str = ""
+    summary: str = ""
+    response_count: int | None = None
+    degraded: bool = False
+
+
+@router.post("/feedback-analyze", response_model=FeedbackAnalyzeOut)
+def feedback_analyze(
+    body: FeedbackAnalyzeIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    if body.target == "survey":
+        return _survey_feedback(body, request, db, current)
+    return _employee_feedback(body, request, db, current)
+
+
+def _survey_feedback(
+    body: FeedbackAnalyzeIn, request: Request, db: Session, current: User
+) -> FeedbackAnalyzeOut:
+    if not has_permission(current, PERM_VIEW_REPORTS):
+        raise HTTPException(403, "没有问卷分析权限")
+    if not body.survey_id:
+        raise HTTPException(400, "缺少 survey_id")
+    s = db.get(Survey, body.survey_id)
+    if not s or s.tenant_id != current.tenant_id:
+        raise HTTPException(404, "问卷不存在")
+
+    questions = db.scalars(
+        select(SurveyQuestion)
+        .where(SurveyQuestion.survey_id == s.id)
+        .order_by(SurveyQuestion.order)
+    ).all()
+    responses = db.scalars(
+        select(SurveyResponse).where(SurveyResponse.survey_id == s.id)
+    ).all()
+    answers = db.execute(
+        select(SurveyResponseAnswer, SurveyResponse)
+        .join(SurveyResponse, SurveyResponse.id == SurveyResponseAnswer.response_id)
+        .where(
+            SurveyResponseAnswer.tenant_id == current.tenant_id,
+            SurveyResponse.survey_id == s.id,
+        )
+    ).all()
+    by_q: dict[str, list] = {}
+    for ans, _r in answers:
+        by_q.setdefault(ans.question_id, []).append(ans)
+
+    stats: list[dict] = []
+    text_samples: list[str] = []
+    for q in questions:
+        qans = by_q.get(q.id, [])
+        item: dict[str, Any] = {"q": q.text, "type": q.type, "answered": len(qans)}
+        if q.type in ("single_choice", "multi_choice"):
+            counts: dict[str, int] = {}
+            for a in qans:
+                vals = a.value if isinstance(a.value, list) else [a.value]
+                for v in vals:
+                    counts[str(v)] = counts.get(str(v), 0) + 1
+            item["options"] = counts
+        elif q.type == "rating":
+            nums = [a.value for a in qans if isinstance(a.value, int | float)]
+            if nums:
+                item["avg"] = round(sum(nums) / len(nums), 2)
+        else:
+            samples = [str(a.value) for a in qans if a.value][:6]
+            item["samples"] = samples
+            text_samples.extend(samples)
+        stats.append(item)
+
+    happy = [r.happiness for r in responses if r.happiness is not None]
+    stats.append({
+        "q": "整体幸福感(0-10)", "type": "rating",
+        "answered": len(happy),
+        "avg": round(sum(happy) / len(happy), 2) if happy else None,
+    })
+
+    spec = PROMPT_REGISTRY["feedback.survey"]
+    variables = {
+        "title": s.title,
+        "stats": json.dumps(stats, ensure_ascii=False)[:8000],
+    }
+    prompt = render_prompt(
+        db, current.tenant_id, "feedback.survey", module="performance", **variables
+    ) or render_vars(spec.content, variables)
+    try:
+        raw = call_llm(
+            "ai.feedback_survey",
+            [{"role": "system", "content": guarded(prompt)}],
+            db=db, tenant_id=current.tenant_id,
+            prompt_key="feedback.survey", user_id=current.id,
+        )
+    except LLMError:
+        raw = ""
+
+    write_audit(
+        db, actor=current, entity_type="ai_call", entity_id=s.id,
+        action="feedback_analyze", detail={"survey": s.title}, request=request,
+    )
+    db.commit()
+
+    data = _extract_json(raw) if raw else None
+    if data is None:
+        # 降级:低分题即风险
+        low = [
+            i["q"] for i in stats
+            if i.get("type") == "rating" and i.get("avg") is not None and i["avg"] < 3
+        ]
+        return FeedbackAnalyzeOut(
+            target="survey",
+            sentiment="mixed",
+            themes=[],
+            risks=[f"低分题:{q}" for q in low[:3]],
+            actions=["AI 暂不可用;建议人工查看文本回答原文"],
+            summary=f"共 {len(responses)} 份回收;评分均值偏低题目 {len(low)} 个。",
+            response_count=len(responses),
+            degraded=True,
+        )
+    themes = [
+        FeedbackTheme(
+            theme=str(t.get("theme", ""))[:60],
+            support=str(t.get("support", "")),
+            quote=str(t.get("quote", ""))[:200],
+        )
+        for t in (data.get("themes") or [])[:6]
+        if isinstance(t, dict) and t.get("theme")
+    ]
+    return FeedbackAnalyzeOut(
+        target="survey",
+        sentiment=str(data.get("sentiment", "")),
+        themes=themes,
+        risks=[str(r)[:120] for r in (data.get("risks") or [])][:5],
+        actions=[str(a)[:120] for a in (data.get("actions") or [])][:5],
+        response_count=len(responses),
+    )
+
+
+def _employee_feedback(
+    body: FeedbackAnalyzeIn, request: Request, db: Session, current: User
+) -> FeedbackAnalyzeOut:
+    if not has_permission(current, PERM_MANAGE_EMPLOYEES):
+        raise HTTPException(403, "没有员工反馈分析权限")
+    if not body.employee_id:
+        raise HTTPException(400, "缺少 employee_id")
+    scope = visible_employee_ids(db, current)
+    emp = db.get(Employee, body.employee_id)
+    if not emp or emp.tenant_id != current.tenant_id:
+        raise HTTPException(404, "员工不存在")
+    if scope is not None and emp.id not in scope:
+        raise HTTPException(404, "员工不存在")
+
+    notes = db.scalars(
+        select(InsightNote)
+        .where(
+            InsightNote.tenant_id == current.tenant_id,
+            InsightNote.employee_id == emp.id,
+        )
+        .order_by(InsightNote.created_at.desc())
+    ).all()[:30]
+    if not notes:
+        return FeedbackAnalyzeOut(
+            target="employee",
+            summary="该员工暂无过程反馈记录(便签/复盘/里程碑)。",
+            degraded=True,
+        )
+
+    note_items = [
+        {
+            "kind": n.kind,
+            "date": n.created_at.date().isoformat() if n.created_at else "",
+            "excerpt": (n.body or "")[:200],
+        }
+        for n in notes
+    ]
+    spec = PROMPT_REGISTRY["feedback.employee"]
+    variables = {
+        "employee": json.dumps(_employee_brief(db, current.tenant_id, emp), ensure_ascii=False),
+        "notes": json.dumps(note_items, ensure_ascii=False)[:8000],
+    }
+    prompt = render_prompt(
+        db, current.tenant_id, "feedback.employee", module="performance", **variables
+    ) or render_vars(spec.content, variables)
+    try:
+        raw = call_llm(
+            "ai.feedback_employee",
+            [{"role": "system", "content": guarded(prompt)}],
+            db=db, tenant_id=current.tenant_id,
+            prompt_key="feedback.employee", user_id=current.id,
+        )
+    except LLMError:
+        raw = ""
+
+    write_audit(
+        db, actor=current, entity_type="ai_call", entity_id=emp.id,
+        action="feedback_analyze", detail={"employee": emp.name, "notes": len(notes)},
+        request=request,
+    )
+    db.commit()
+
+    data = _extract_json(raw) if raw else None
+    if data is None:
+        return FeedbackAnalyzeOut(
+            target="employee",
+            summary=f"共 {len(notes)} 条过程记录;AI 暂不可用,请人工查阅明细。",
+            degraded=True,
+        )
+    themes = [
+        FeedbackTheme(
+            theme=str(t.get("theme", ""))[:60],
+            count=t.get("count") if isinstance(t.get("count"), int) else None,
+            polarity=str(t.get("polarity", "")),
+        )
+        for t in (data.get("themes") or [])[:6]
+        if isinstance(t, dict) and t.get("theme")
+    ]
+    return FeedbackAnalyzeOut(
+        target="employee",
+        sentiment=str(data.get("sentiment", "")),
+        themes=themes,
+        actions=[str(a)[:120] for a in (data.get("actions") or [])][:4],
+        trajectory=str(data.get("trajectory", "")),
+        summary=str(data.get("summary", ""))[:300],
     )
