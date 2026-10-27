@@ -159,9 +159,11 @@ def test_position_frozen_and_closed(client, db):
                  json={"status": "open"}, headers=_hdr(u))
     client.post(f"/api/positions/{pos['id']}/fill",
                 json={"employee_id": e.id}, headers=_hdr(u))
-    c = client.patch(f"/api/positions/{pos['id']}",
-                     json={"status": "closed"}, headers=_hdr(u))
-    assert c.status_code == 400
+    # 在编职位:open/frozen/closed 一律拒绝,只能 vacate
+    for s in ("open", "frozen", "closed"):
+        c = client.patch(f"/api/positions/{pos['id']}",
+                         json={"status": s}, headers=_hdr(u))
+        assert c.status_code == 400, s
 
 
 # ---------------- 调薪矩阵 ----------------

@@ -197,10 +197,8 @@ def update_position(
     if body.status is not None:
         if body.status not in POSITION_STATUSES:
             raise HTTPException(400, "无效状态")
-        if body.status == "closed" and p.incumbent_id:
-            raise HTTPException(400, "职位有人在编,请先释放")
-        if body.status == "open" and p.status == "filled":
-            raise HTTPException(400, "在编职位不能直接改 open,请用 vacate")
+        if p.incumbent_id and body.status != "filled":
+            raise HTTPException(400, "职位有人在编,请先释放(vacate)")
         if body.status == "closed":
             p.closed_at = datetime.now()
         p.status = body.status
