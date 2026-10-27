@@ -309,6 +309,7 @@ export const bottomModules: NavModule[] = [
         label: "AI 与语音",
         items: [
           { to: "/settings/llm", label: "LLM 配置", icon: Plug, permission: PERM.MANAGE_SETTINGS, keywords: "大模型 模型 key ai" },
+          { to: "/settings/embedding", label: "语义检索 Embedding", icon: Network, permission: PERM.MANAGE_SETTINGS, keywords: "embedding 向量 语义 检索 知识库 bge" },
           { to: "/settings/voice", label: "语音 STT/TTS", icon: Mic, permission: PERM.MANAGE_SETTINGS, keywords: "语音识别 合成" },
           { to: "/settings/prompts", label: "AI 提示词", icon: Sparkles, permission: PERM.MANAGE_SETTINGS, keywords: "prompt 提示词 模板" },
           { to: "/settings/mcp", label: "MCP 接入", icon: Plug, feature: "assistant.agent", keywords: "mcp token 令牌 外部 ai" },

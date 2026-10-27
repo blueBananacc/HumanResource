@@ -148,8 +148,14 @@ def update_provider(
     p.name = body.name.strip()
     p.base_url = body.base_url or None
     p.model = body.model.strip()
-    p.embedding_model = body.embedding_model.strip() if body.embedding_model else None
-    p.embedding_base_url = body.embedding_base_url or None
+    # embedding 三字段仅在显式传参时更新 — 未出现在请求体里视为"不动",
+    # 这样 provider 编辑表单(不再含 embedding 区)保存时不会误清语义检索配置;
+    # 显式传 null 仍可清空(独立 Embedding 设置页走此路径)。
+    fs = body.model_fields_set
+    if "embedding_model" in fs:
+        p.embedding_model = body.embedding_model.strip() if body.embedding_model else None
+    if "embedding_base_url" in fs:
+        p.embedding_base_url = body.embedding_base_url or None
     if body.embedding_api_key:  # 非空才覆盖,空字符串保留旧 key
         p.embedding_api_key_encrypted = encrypt(body.embedding_api_key)
     if body.api_key:  # 非空才覆盖,空字符串保留旧 key
@@ -158,6 +164,97 @@ def update_provider(
     db.commit()
     db.refresh(p)
     return _to_out(p)
+
+
+# ---------- 语义检索(Embedding)独立配置 ----------
+
+_EMBED_DEFAULT_BASE = "https://api.openai.com/v1"
+
+
+class EmbeddingCfgIn(BaseModel):
+    embedding_model: str | None = Field(
+        None, description="语义检索模型;置空则关闭向量召回,退化为纯 BM25"
+    )
+    embedding_base_url: str | None = Field(
+        None, description="embedding 服务地址,留空依次兜底 chat base_url/OpenAI"
+    )
+    embedding_api_key: str | None = Field(
+        None, description="embedding 服务 key,留空保留原值;清空请走重置"
+    )
+    reset: bool = Field(False, description="为 true 时清除全部 embedding 配置")
+
+
+class EmbeddingCfgOut(BaseModel):
+    configured: bool  # 语义检索是否实际生效(有 model + 可用 key)
+    provider_id: str | None
+    provider_name: str | None
+    embedding_model: str | None
+    embedding_base_url: str | None
+    embedding_api_key_masked: str | None
+    effective_base_url: str | None  # 兜底后的实际请求地址
+    api_key_source: str | None  # dedicated / chat / none
+
+
+def _active_provider(db: Session, tenant_id: str) -> LLMProvider:
+    p = db.scalars(
+        select(LLMProvider)
+        .where(LLMProvider.tenant_id == tenant_id, LLMProvider.is_active.is_(True))
+        .limit(1)
+    ).first()
+    if not p:
+        raise HTTPException(404, "尚无激活的 LLM Provider — 请先到「LLM 配置」激活一个")
+    return p
+
+
+def _embedding_out(p: LLMProvider) -> EmbeddingCfgOut:
+    emb_key = (
+        decrypt(p.embedding_api_key_encrypted) if p.embedding_api_key_encrypted else None
+    )
+    chat_key = decrypt(p.api_key_encrypted) if p.api_key_encrypted else None
+    effective_base = (p.embedding_base_url or p.base_url or _EMBED_DEFAULT_BASE).rstrip("/")
+    key_source = "dedicated" if emb_key else ("chat" if chat_key else "none")
+    return EmbeddingCfgOut(
+        configured=bool(p.embedding_model and (emb_key or chat_key)),
+        provider_id=p.id,
+        provider_name=p.name,
+        embedding_model=p.embedding_model,
+        embedding_base_url=p.embedding_base_url,
+        embedding_api_key_masked=mask_secret(emb_key) if emb_key else None,
+        effective_base_url=effective_base,
+        api_key_source=key_source,
+    )
+
+
+@router.get("/embedding", response_model=EmbeddingCfgOut)
+def get_embedding_cfg(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> EmbeddingCfgOut:
+    _require_admin(current)
+    return _embedding_out(_active_provider(db, current.tenant_id))
+
+
+@router.put("/embedding", response_model=EmbeddingCfgOut)
+def put_embedding_cfg(
+    body: EmbeddingCfgIn,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> EmbeddingCfgOut:
+    _require_admin(current)
+    p = _active_provider(db, current.tenant_id)
+    if body.reset:
+        p.embedding_model = None
+        p.embedding_base_url = None
+        p.embedding_api_key_encrypted = None
+    else:
+        p.embedding_model = body.embedding_model.strip() if body.embedding_model else None
+        p.embedding_base_url = body.embedding_base_url or None
+        if body.embedding_api_key:  # 非空才覆盖,空字符串保留旧 key
+            p.embedding_api_key_encrypted = encrypt(body.embedding_api_key)
+    p.updated_at = datetime.now(UTC).replace(tzinfo=None)
+    db.commit()
+    db.refresh(p)
+    return _embedding_out(p)
 
 
 @router.delete("/providers/{provider_id}", status_code=status.HTTP_204_NO_CONTENT)

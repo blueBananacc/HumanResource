@@ -16,6 +16,7 @@ os.environ.setdefault("MACHINE_FINGERPRINT_OVERRIDE", "test-machine-id-bm25")
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import select  # noqa: E402
 
 from app.domain.models import (  # noqa: E402
     Base,
@@ -282,3 +283,119 @@ def test_embed_texts_falls_back_gracefully(client, db, monkeypatch):
 
     monkeypatch.setattr(emb_svc.httpx, "post", boom)
     assert emb_svc.embed_texts(db, t.id, ["x"]) is None
+
+
+# ---------------- /api/llm/embedding 独立配置端点 ----------------
+
+
+def _mk_active_provider(client, db, u) -> str:
+    r = client.post(
+        "/api/llm/providers",
+        json={
+            "name": "active-llm",
+            "api_key": "sk-chat-key-1",
+            "base_url": "https://api.deepseek.com",
+            "model": "deepseek/deepseek-chat",
+        },
+        headers=_hdr(u),
+    )
+    assert r.status_code == 201, r.text
+    pid = r.json()["id"]
+    client.post(f"/api/llm/providers/{pid}/activate", headers=_hdr(u))
+    return pid
+
+
+def test_embedding_cfg_get_put_roundtrip(client, db):
+    t = _tenant(db)
+    u = _user(db, t)
+    _mk_active_provider(client, db, u)
+
+    # 未配置:configured=false,key 来源 chat
+    r = client.get("/api/llm/embedding", headers=_hdr(u))
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["configured"] is False
+    assert out["provider_name"] == "active-llm"
+    assert out["api_key_source"] == "chat"  # 无独立 key 时复用对话 key
+    assert out["effective_base_url"] == "https://api.deepseek.com"  # 兜底 chat base
+
+    # PUT 写独立三件套
+    r2 = client.put(
+        "/api/llm/embedding",
+        json={
+            "embedding_model": "BAAI/bge-m3",
+            "embedding_base_url": "https://api.siliconflow.cn/v1",
+            "embedding_api_key": "sk-silicon-abc",
+        },
+        headers=_hdr(u),
+    )
+    assert r2.status_code == 200
+    out2 = r2.json()
+    assert out2["configured"] is True
+    assert out2["embedding_model"] == "BAAI/bge-m3"
+    assert out2["effective_base_url"] == "https://api.siliconflow.cn/v1"
+    assert out2["api_key_source"] == "dedicated"
+    assert out2["embedding_api_key_masked"] == "sk-***...-abc"
+    assert "sk-silicon-abc" not in r2.text
+
+    # 留空 key 再存 → 原 key 保留
+    r3 = client.put(
+        "/api/llm/embedding",
+        json={"embedding_model": "BAAI/bge-m3", "embedding_api_key": None},
+        headers=_hdr(u),
+    )
+    from app.infra.crypto import decrypt
+
+    row = db.scalar(
+        select(LLMProvider).where(LLMProvider.tenant_id == t.id, LLMProvider.is_active.is_(True))
+    )
+    assert decrypt(row.embedding_api_key_encrypted) == "sk-silicon-abc"
+    assert r3.json()["api_key_source"] == "dedicated"
+
+
+def test_embedding_cfg_reset(client, db):
+    t = _tenant(db)
+    u = _user(db, t)
+    _mk_active_provider(client, db, u)
+    client.put(
+        "/api/llm/embedding",
+        json={"embedding_model": "m", "embedding_api_key": "k123"},
+        headers=_hdr(u),
+    )
+    r = client.put("/api/llm/embedding", json={"reset": True}, headers=_hdr(u))
+    assert r.status_code == 200
+    out = r.json()
+    assert out["configured"] is False
+    assert out["embedding_model"] is None
+    assert out["embedding_api_key_masked"] is None
+
+
+def test_provider_edit_preserves_embedding(client, db):
+    """provider 编辑表单不再带 embedding 字段 — 保存不得清掉已配语义检索。"""
+    t = _tenant(db)
+    u = _user(db, t)
+    pid = _mk_active_provider(client, db, u)
+    client.put(
+        "/api/llm/embedding",
+        json={"embedding_model": "BAAI/bge-m3", "embedding_base_url": "https://api.siliconflow.cn/v1"},
+        headers=_hdr(u),
+    )
+    # 模拟新表单提交:只含 name/base_url/model,无 embedding_* 键
+    r = client.put(
+        f"/api/llm/providers/{pid}",
+        json={"name": "renamed", "model": "deepseek/deepseek-chat", "base_url": "https://api.deepseek.com"},
+        headers=_hdr(u),
+    )
+    assert r.status_code == 200
+    out = client.get("/api/llm/embedding", headers=_hdr(u)).json()
+    assert out["embedding_model"] == "BAAI/bge-m3"
+    assert out["embedding_base_url"] == "https://api.siliconflow.cn/v1"
+
+
+def test_embedding_cfg_requires_admin(client, db):
+    t = _tenant(db)
+    u = _user(db, t)
+    u.role = "employee"
+    db.commit()
+    r = client.get("/api/llm/embedding", headers=_hdr(u))
+    assert r.status_code == 403

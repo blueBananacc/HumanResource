@@ -3,6 +3,7 @@ import { Login } from "@/pages/Login";
 import { Dashboard } from "@/pages/Dashboard";
 import { LicenseSettings } from "@/pages/LicenseSettings";
 import { LLMSettings } from "@/pages/LLMSettings";
+import { EmbeddingSettings } from "@/pages/EmbeddingSettings";
 import { EmailSettings } from "@/pages/EmailSettings";
 import { Jobs } from "@/pages/Jobs";
 import { JobDetail } from "@/pages/JobDetail";
@@ -187,6 +188,7 @@ export const router = createBrowserRouter([
       { path: "reports/interview-quality", element: <InterviewQuality /> },
       { path: "analytics", element: <Analytics /> },
       { path: "settings/llm", element: <LLMSettings /> },
+      { path: "settings/embedding", element: <EmbeddingSettings /> },
       { path: "settings/email", element: <EmailSettings /> },
       { path: "settings/smtp", element: <SmtpSettings /> },
       { path: "settings/voice", element: <VoiceSettings /> },

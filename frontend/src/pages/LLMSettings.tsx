@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Empty } from "@/components/ui/empty";
 import { useConfirm } from "@/components/ui/confirm";
+import { Link } from "react-router-dom";
 import { ApiError, fetchJSON } from "@/lib/api";
 import { formatRelative } from "@/lib/format";
 
@@ -213,16 +214,16 @@ function ProviderRow({
         </div>
         <div className="text-[11px] font-body">
           {provider.embedding_model ? (
-            <span className="text-[var(--color-success)]">
+            <Link to="/settings/embedding" className="text-[var(--color-success)] hover:underline">
               语义检索:{provider.embedding_model}
               {provider.embedding_base_url && (
                 <span className="text-[var(--color-text-tertiary)]"> @ {provider.embedding_base_url}</span>
               )}
-            </span>
+            </Link>
           ) : (
-            <span className="text-[var(--color-text-tertiary)]">
-              语义检索:未配置(纯 BM25)— 点「编辑」可在表单下方配置 Embedding
-            </span>
+            <Link to="/settings/embedding" className="text-[var(--color-text-tertiary)] hover:underline">
+              语义检索:未配置(纯 BM25)— 到「语义检索 Embedding」设置页开启
+            </Link>
           )}
         </div>
         {testing && (
@@ -311,9 +312,6 @@ function ProviderModal({
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
-  const [embeddingModel, setEmbeddingModel] = useState("");
-  const [embBaseUrl, setEmbBaseUrl] = useState("");
-  const [embApiKey, setEmbApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showModelHelp, setShowModelHelp] = useState(false);
 
@@ -324,17 +322,11 @@ function ProviderModal({
         setBaseUrl(provider.base_url ?? "");
         setApiKey("");
         setModel(provider.model);
-        setEmbeddingModel(provider.embedding_model ?? "");
-        setEmbBaseUrl(provider.embedding_base_url ?? "");
-        setEmbApiKey("");
       } else {
         setName("");
         setBaseUrl("");
         setApiKey("");
         setModel("");
-        setEmbeddingModel("");
-        setEmbBaseUrl("");
-        setEmbApiKey("");
       }
       setError(null);
       setShowModelHelp(false);
@@ -353,9 +345,6 @@ function ProviderModal({
         base_url: baseUrl.trim() || null,
         api_key: apiKey.trim() || null,
         model: model.trim(),
-        embedding_model: embeddingModel.trim() || null,
-        embedding_base_url: embBaseUrl.trim() || null,
-        embedding_api_key: embApiKey.trim() || null,
       };
       const url = isEdit
         ? `/api/llm/providers/${provider!.id}`
@@ -467,39 +456,12 @@ function ProviderModal({
           />
           {showModelHelp && <ModelHelp />}
         </div>
-        <div className="rounded-md border border-[var(--color-border-subtle)] bg-[var(--color-bg-subtle)] px-3 py-2.5 flex flex-col gap-2">
-          <div className="text-[12px] font-medium font-body text-[var(--color-text-secondary)]">
-            语义检索(Embedding,可选)— 配好后知识库走「BM25 词面 +
-            向量语义」混合召回;留空退化为纯 BM25,功能不受影响。
-          </div>
-          <Input
-            label="Embedding 模型"
-            value={embeddingModel}
-            onChange={(e) => setEmbeddingModel(e.target.value)}
-            placeholder="Qwen/Qwen3-Embedding-0.6B / bge-m3 / text-embedding-3-small"
-          />
-          <Input
-            label="Embedding Base URL"
-            value={embBaseUrl}
-            onChange={(e) => setEmbBaseUrl(e.target.value)}
-            placeholder="https://api.siliconflow.cn/v1(可与对话模型不同家)"
-          />
-          <Input
-            label={
-              isEdit
-                ? "Embedding API key(留空则不变;留空+无旧值则复用上方对话 key)"
-                : "Embedding API key(留空则复用上方对话 key)"
-            }
-            type="password"
-            value={embApiKey}
-            onChange={(e) => setEmbApiKey(e.target.value)}
-            placeholder={
-              isEdit
-                ? provider?.embedding_api_key_masked || "sk-..."
-                : "sk-...(SiliconFlow bge-m3 免费可用)"
-            }
-            autoComplete="off"
-          />
+        <div className="rounded-md border border-[var(--color-border-subtle)] bg-[var(--color-bg-subtle)] px-3 py-2.5 text-[12px] font-body text-[var(--color-text-secondary)]">
+          语义检索(Embedding)已移到独立设置页 —{" "}
+          <Link to="/settings/embedding" className="underline text-[var(--color-text-primary)]">
+            前往「语义检索 Embedding」配置
+          </Link>
+          ,保存 provider 不会改动现有 embedding 设置。
         </div>
         <Input
           label={isEdit ? "API key (留空则不变)" : "API key"}
