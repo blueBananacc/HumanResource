@@ -59,10 +59,15 @@ def candidate_report(db: Session, tenant_id: str, candidate_id: str) -> bytes:
         select(Resume).where(Resume.candidate_id == c.id).order_by(Resume.created_at.desc())
     ).all()
     resume_ids = [r.id for r in resumes]
-    skills = next(
+    raw_skills = next(
         ((r.parsed_data or {}).get("skills") for r in resumes if (r.parsed_data or {}).get("skills")),
         [],
     )
+    # parsed_data.skills 兼容 [{name:..}] 与 ["Python"] 两种形态
+    skills = [
+        (s.get("name") or s.get("skill") or str(s)) if isinstance(s, dict) else str(s)
+        for s in raw_skills
+    ]
     matches = db.execute(
         select(ResumeJobMatch, Job)
         .join(Job, Job.id == ResumeJobMatch.job_id)
