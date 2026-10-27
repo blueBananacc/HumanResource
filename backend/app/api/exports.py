@@ -6,6 +6,7 @@ POST 端点生成二进制文档落对象存储并登记 generated_documents;
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -116,7 +117,9 @@ async def _emit(
 
 
 class PayrollIn(BaseModel):
-    period: str = Field(pattern=r"^\d{4}-\d{2}$", description="YYYY-MM")
+    period: str | None = Field(
+        default=None, pattern=r"^\d{4}-\d{2}$", description="YYYY-MM,缺省取当前月"
+    )
 
 
 @router.post("/payroll.xlsx", response_model=DocOut)
@@ -126,12 +129,13 @@ async def gen_payroll(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    data = xlsx_docs.payroll_sheet(db, current.tenant_id, body.period)
+    period = body.period or datetime.now(UTC).strftime("%Y-%m")
+    data = xlsx_docs.payroll_sheet(db, current.tenant_id, period)
     return await _emit(
         db, request, current,
-        kind="payroll_sheet", title=f"{body.period} 薪酬底表",
-        file_name=f"payroll_{body.period}.xlsx", data=data,
-        params={"period": body.period},
+        kind="payroll_sheet", title=f"{period} 薪酬底表",
+        file_name=f"payroll_{period}.xlsx", data=data,
+        params={"period": period},
     )
 
 
