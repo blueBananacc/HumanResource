@@ -23,7 +23,8 @@ from app.domain.models import (
     LifecycleTemplate, Notification, OrgUnit, OvertimeRequest, Project,
     ProjectMember, QuestionLibraryItem, ReportSubscription, SalaryBand,
     SalarySlip, SavedFilter, Shift, ShiftAssignment, Skill, TalentCampaign,
-    User, Job, Candidate,
+    User, Job, Candidate, DecisionFeedback, KnowledgeArticle, RecruitRun,
+    RecruitRunStep, ScoringRule,
 )
 from app.services.approvals import route_request
 
@@ -621,6 +622,112 @@ emp_user = db.scalars(select(User).where(User.email == "emp-uie2e@example.com"))
 if emp_user:
     notif(emp_user.id, "announcement", "11 月团建活动报名", "本周五前群内接龙报名。", "/me")
 print("14. automation/filters/subs/notifs ok")
+
+# ============ 15. P0-P3 演示数据:知识库 / 评分规则 / 决策反馈 / 任务链 ============
+# 知识文章(发布后供 AI 助手 RAG 引用,P2 溯源演示)
+KB = [
+    ("请假制度", "policy", "# 年假\n正式员工每年 10 天年假,入职满一年后生效,可分次使用。\n\n# 病假\n每年 15 天带薪病假,连续 3 天以上需附医院证明。\n\n# 事假\n无薪,单次不超过 5 天,需提前 3 个工作日申请。", ["请假", "假期"]),
+    ("报销制度", "policy", "# 差旅\n高铁二等座/经济舱实报实销,住宿一线城市上限 500 元/晚。\n\n# 餐饮\n出差餐补 100 元/天,市内招待需事前审批。\n\n# 发票\n所有报销需附增值税发票,抬头为公司全称。", ["报销", "费用"]),
+    ("考勤与弹性工作", "policy", "# 工时\n标准工时 9:00-18:00,弹性带宽 ±1 小时。\n\n# 远程\n每周可申请 1 天远程办公,需提前一天在系统登记。\n\n# 补卡\n每月可补卡 3 次,漏打卡需 48 小时内申请。", ["考勤", "远程"]),
+    ("新人入职 FAQ", "onboarding", "# 入职首日\n携带身份证原件,9:30 到前台领取工卡与设备。\n\n# 账号\n企业邮箱与 VPN 账号入职当天自动开通。\n\n# 试用期\n试用期 3 个月,第 2 个月末进行中期面谈。", ["入职", "FAQ"]),
+    ("AI 招聘官 SOP", "other", "# 标准招聘任务链\n1. 明确 JD 与评分规则\n2. 解析人才库候选人技能\n3. 按技能+语义检索扩源\n4. 评分规则批量打分\n5. 高分候选人发起面试\n6. 汇总报告并输出招聘汇报\n\n每步均由对应工具落地,状态在任务链卡片实时可见。",
+     ["SOP", "招聘"], True),
+]
+for title, cat, content, tags, *pb in KB:
+    ensure(KnowledgeArticle, title=title,
+           defaults=dict(category=cat, content=content, tags=tags,
+                         status="published", is_playbook=bool(pb and pb[0]),
+                         updated_by=ADMIN_UID))
+print("15a. knowledge articles ok")
+
+# 评分规则(P3「学到了什么」需要一条带权重的规则)
+rule_seed = ensure(ScoringRule, name="通用技术岗评分",
+                   defaults=dict(
+                       description="技术岗通用评分维度,权重来自历史校准",
+                       dimensions=[
+                           {"id": "tech", "name": "技术深度", "weight": 40,
+                            "evaluator": {"method": "ai"}},
+                           {"id": "proj", "name": "项目经验", "weight": 30,
+                            "evaluator": {"method": "ai"}},
+                           {"id": "comm", "name": "沟通协作", "weight": 30,
+                            "evaluator": {"method": "ai"}},
+                       ],
+                       version=2, created_by=ADMIN_UID))
+print("15b. scoring rule ok")
+
+# 决策反馈:人为构造「沟通强的人被推进、项目经验高的反而被淘汰」的信号,
+# 让「学到了什么」给出 提权沟通协作 / 降权项目经验 的可解释建议。
+def snap(tech, proj, comm):
+    return [
+        {"key": "tech", "name": "技术深度", "weight": 40, "level": tech},
+        {"key": "proj", "name": "项目经验", "weight": 30, "level": proj},
+        {"key": "comm", "name": "沟通协作", "weight": 30, "level": comm},
+    ]
+
+FEEDBACK = [  # (decision, to_stage, tech, proj, comm, score)
+    ("advanced", "interview", 4, 2, 4, 82),
+    ("advanced", "interview", 3, 2, 4, 76),
+    ("offered", "offer", 4, 3, 4, 88),
+    ("advanced", "screening", 3, 2, 3, 71),
+    ("offered", "offer", 4, 2, 4, 85),
+    ("hired", "hired", 4, 3, 4, 90),
+    ("rejected", "rejected", 3, 4, 1, 62),
+    ("rejected", "rejected", 4, 4, 2, 68),
+    ("rejected", "rejected", 3, 3, 1, 55),
+    ("rejected", "rejected", 3, 4, 2, 64),
+]
+if job_any:
+    fb_cands = db.scalars(
+        select(Candidate).where(Candidate.tenant_id == T).limit(12)).all()
+    fb_made = 0
+    for i, (dec, to_st, t_lv, p_lv, c_lv, sc) in enumerate(FEEDBACK):
+        if i >= len(fb_cands):
+            break
+        c = fb_cands[i]
+        app_row = q(JobApplication, candidate_id=c.id, job_id=job_any.id)
+        if not app_row:
+            app_row = add(JobApplication(
+                tenant_id=T, candidate_id=c.id, job_id=job_any.id,
+                stage=("rejected" if dec == "rejected" else "interview"),
+                source="talent_pool", owner_user_id=ADMIN_UID,
+                stage_changed_at=datetime(2026, 10, 24)))
+            db.flush()
+        if not q(DecisionFeedback, application_id=app_row.id, to_stage=to_st):
+            add(DecisionFeedback(
+                tenant_id=T, job_id=job_any.id, candidate_id=c.id,
+                application_id=app_row.id, decision=dec,
+                from_stage="applied", to_stage=to_st, match_score=sc,
+                criteria_snapshot=snap(t_lv, p_lv, c_lv),
+                decided_by=ADMIN_UID,
+                created_at=datetime(2026, 10, 24, 14, i)))
+            fb_made += 1
+    print(f"15c. decision feedback ok (+{fb_made})")
+
+# 一条已完成的招聘任务链,作为 P1 历史示例
+if not q(RecruitRun, title="高级前端 · 全流程招聘"):
+    run = add(RecruitRun(tenant_id=T, user_id=ADMIN_UID, kind="full_pipeline",
+                         title="高级前端 · 全流程招聘", status="done",
+                         context={"job": job_any.title if job_any else ""},
+                         created_at=datetime(2026, 10, 22, 9, 30),
+                         finished_at=datetime(2026, 10, 22, 9, 41)))
+    db.flush()
+    DEMO_STEPS = [
+        ("jd", "确认 JD 与评分规则", "Planner", "/jobs"),
+        ("parse", "解析人才库技能标签", "Screener", "/talents"),
+        ("source", "内外部渠道扩源", "Sourcer", "/talents"),
+        ("score", "批量匹配打分", "Evaluator", "/scoring-rules"),
+        ("shortlist", "产出高分候选人清单", "Screener", "/pipeline"),
+        ("interview", "发起首轮面试", "Coordinator", "/interviews"),
+        ("report", "生成招聘汇报", "Reporter", "/reports"),
+    ]
+    for seq, (k, lb, ag, lk) in enumerate(DEMO_STEPS, start=1):
+        add(RecruitRunStep(
+            run_id=run.id, seq=seq, key=k, label=lb, agent_label=ag,
+            status="done", link=lk,
+            detail={"note": "演示数据"},
+            started_at=datetime(2026, 10, 22, 9, 30 + seq),
+            finished_at=datetime(2026, 10, 22, 9, 31 + seq)))
+print("15d. recruit run demo ok")
 
 db.commit()
 print(f"\nDONE — 新增 {made['n']} 行演示数据")
