@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Sparkles, Trash2, Wand2 } from "lucide-react";
+import { Brain, Plus, Sparkles, Trash2, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -73,6 +73,8 @@ export function ScoringRules() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<Rule | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // P3:当前展开「学到了什么」的规则 id
+  const [learnedFor, setLearnedFor] = useState<string | null>(null);
 
   const { data: rules } = useQuery({
     queryKey: ["scoring-rules"],
@@ -120,45 +122,53 @@ export function ScoringRules() {
 
       <ul className="space-y-2">
         {(rules ?? []).map((r) => (
-          <li
-            key={r.id}
-            className="flex items-center justify-between rounded-2xl border border-[var(--color-border-subtle)] bg-white px-4 py-3 shadow-[var(--shadow-card)]"
-          >
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-[var(--color-text)]">{r.name}</span>
-                <span className="rounded-full bg-[var(--color-bg-muted)] px-2 py-0.5 text-[10px] text-[var(--color-text-muted)]">
-                  v{r.version}
-                </span>
-                <span
-                  className={`rounded-full px-2 py-0.5 text-[10px] ${
-                    r.weight_total === 100
-                      ? "bg-emerald-50 text-emerald-700"
-                      : "bg-amber-50 text-amber-700"
-                  }`}
-                >
-                  权重 {r.weight_total}
-                </span>
+          <li key={r.id} className="rounded-2xl border border-[var(--color-border-subtle)] bg-white shadow-[var(--shadow-card)]">
+            <div className="flex items-center justify-between px-4 py-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-[var(--color-text)]">{r.name}</span>
+                  <span className="rounded-full bg-[var(--color-bg-muted)] px-2 py-0.5 text-[10px] text-[var(--color-text-muted)]">
+                    v{r.version}
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] ${
+                      r.weight_total === 100
+                        ? "bg-emerald-50 text-emerald-700"
+                        : "bg-amber-50 text-amber-700"
+                    }`}
+                  >
+                    权重 {r.weight_total}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-xs text-[var(--color-text-muted)]">
+                  {r.dimensions.length} 维 ·{" "}
+                  {r.dimensions.map((d) => METHOD_LABEL[d.evaluator.method]).join("/")} · 挂{" "}
+                  {r.job_count} 岗位
+                </p>
               </div>
-              <p className="mt-0.5 text-xs text-[var(--color-text-muted)]">
-                {r.dimensions.length} 维 ·{" "}
-                {r.dimensions.map((d) => METHOD_LABEL[d.evaluator.method]).join("/")} · 挂{" "}
-                {r.job_count} 岗位
-              </p>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="secondary"
+                  onClick={() => setLearnedFor(learnedFor === r.id ? null : r.id)}
+                  title="从你的通过/淘汰决策里学到的维度偏好"
+                >
+                  <Brain className="mr-1 h-3.5 w-3.5" />
+                  学到了什么
+                </Button>
+                <Button variant="secondary" onClick={() => { setError(null); setEditing(structuredClone(r)); }}>
+                  编辑
+                </Button>
+                <button
+                  type="button"
+                  className="p-1.5 text-[var(--color-text-muted)] hover:text-red-600"
+                  onClick={() => del.mutate(r.id)}
+                  aria-label="删除规则"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
             </div>
-            <div className="flex items-center gap-1">
-              <Button variant="secondary" onClick={() => { setError(null); setEditing(structuredClone(r)); }}>
-                编辑
-              </Button>
-              <button
-                type="button"
-                className="p-1.5 text-[var(--color-text-muted)] hover:text-red-600"
-                onClick={() => del.mutate(r.id)}
-                aria-label="删除规则"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
-            </div>
+            {learnedFor === r.id && <LearnedPanel ruleId={r.id} />}
           </li>
         ))}
         {(rules ?? []).length === 0 && (
@@ -494,5 +504,107 @@ function DimParams({ d, onEv }: { d: Dimension; onEv: (p: Partial<Evaluator>) =>
       placeholder="AI 评估要点(如:评估项目深度、领域契合)"
       onChange={(e) => onEv({ aiPrompt: e.target.value })}
     />
+  );
+}
+
+type LearnedDim = {
+  key: string;
+  name: string;
+  current_weight: number | null;
+  suggested_weight: number | null;
+  pos_avg_level: number | null;
+  neg_avg_level: number | null;
+  gap: number | null;
+  samples_pos: number;
+  samples_neg: number;
+  in_rule: boolean;
+};
+
+type LearnedOut = {
+  decisions_total: number;
+  positive: number;
+  negative: number;
+  days: number;
+  rule: { id: string; name: string; version: number };
+  dimensions: LearnedDim[];
+};
+
+/** P3「我从你的选择里学到了什么」:决策反馈 → 维度权重建议(只读展示)。 */
+function LearnedPanel({ ruleId }: { ruleId: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["scoring-rule-learned", ruleId],
+    queryFn: () => fetchJSON<LearnedOut>(`/api/scoring-rules/${ruleId}/learned?days=90`),
+    staleTime: 30_000,
+  });
+  return (
+    <div className="border-t border-[var(--color-border-subtle)] bg-[var(--color-bg-canvas)] px-4 py-3">
+      <div className="mb-2 flex items-center gap-2 text-xs font-medium text-[var(--color-text)]">
+        <Brain className="h-3.5 w-3.5 text-[var(--color-accent)]" />
+        我从你的选择里学到了什么
+        {data && (
+          <span className="text-[var(--color-text-muted)]">
+            近 {data.days} 天 {data.decisions_total} 条决策(推进 {data.positive} / 淘汰 {data.negative})
+          </span>
+        )}
+      </div>
+      {isLoading || !data ? (
+        <p className="text-xs text-[var(--color-text-muted)]">分析中…</p>
+      ) : data.decisions_total === 0 ? (
+        <p className="text-xs text-[var(--color-text-muted)]">
+          还没有可学习的决策 — 在招聘管道里推进/淘汰候选人后,这里会给出维度权重建议。
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {data.dimensions.slice(0, 6).map((d) => {
+            const pos = d.pos_avg_level ?? 0;
+            const neg = d.neg_avg_level ?? 0;
+            const suggest = d.suggested_weight;
+            const delta =
+              suggest != null && d.current_weight != null
+                ? suggest - d.current_weight
+                : null;
+            return (
+              <div key={d.key} className="flex items-center gap-2 text-[11px]">
+                <span className="w-28 shrink-0 truncate text-[var(--color-text)]">
+                  {d.name}
+                  {!d.in_rule && (
+                    <span className="ml-1 text-[var(--color-text-muted)]">(规则外)</span>
+                  )}
+                </span>
+                {/* pos/neg 对比条:绿=通过者均值,红=淘汰者均值,0-4 级 */}
+                <div className="flex flex-1 items-center gap-1">
+                  <div className="h-1.5 flex-1 overflow-hidden rounded bg-[var(--color-bg-muted)]" title={`通过者均级 ${pos}`}>
+                    <div className="h-full rounded bg-emerald-500" style={{ width: `${(pos / 4) * 100}%` }} />
+                  </div>
+                  <div className="h-1.5 flex-1 overflow-hidden rounded bg-[var(--color-bg-muted)]" title={`淘汰者均级 ${neg}`}>
+                    <div className="h-full rounded bg-red-400" style={{ width: `${(neg / 4) * 100}%` }} />
+                  </div>
+                </div>
+                <span className="w-14 shrink-0 text-right text-[var(--color-text-muted)]">
+                  {pos.toFixed(1)} / {neg.toFixed(1)}
+                </span>
+                {delta != null && Math.abs(delta) >= 0.005 ? (
+                  <span
+                    className={`w-20 shrink-0 rounded-full px-1.5 py-0.5 text-center text-[10px] ${
+                      delta > 0 ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
+                    }`}
+                    title={`当前权重 ${d.current_weight} → 建议 ${suggest}`}
+                  >
+                    {delta > 0 ? "↑ 提权" : "↓ 降权"} {d.current_weight}→{suggest}
+                  </span>
+                ) : (
+                  <span className="w-20 shrink-0 text-center text-[10px] text-[var(--color-text-muted)]">
+                    保持不变
+                  </span>
+                )}
+              </div>
+            );
+          })}
+          <p className="pt-1 text-[10px] text-[var(--color-text-muted)]">
+            绿条=通过者该维均级,红条=淘汰者均级;差距越大说明该维越能区分好坏。建议仅供参考,调整需人工编辑规则。
+          </p>
+        </div>
+      )}
+    </div>
   );
 }

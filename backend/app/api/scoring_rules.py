@@ -159,6 +159,36 @@ def get_rule(
     }
 
 
+@router.get("/{rule_id}/learned", response_model=dict)
+def learned_insights(
+    rule_id: str,
+    days: int = 90,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> dict:
+    """P3「我从你的选择里学到了什么」:按维度聚合近期决策反馈,
+    给出权重调整建议(建议仅展示,不自动改规则)。"""
+    from app.services.decision_learning import weight_suggestions
+
+    r = _get_rule(db, rule_id, current)
+    raw = weight_suggestions(db, current.tenant_id, days=days)
+    rule_dims = {str(d.get("id") or d.get("name")): d for d in (r.dimensions or [])}
+    name_to_id = {
+        str(d.get("name")): str(d.get("id") or d.get("name"))
+        for d in (r.dimensions or [])
+    }
+    dims = []
+    for d in raw["dimensions"]:
+        rd = rule_dims.get(d["key"]) or rule_dims.get(name_to_id.get(d["key"], ""))
+        dims.append({**d, "in_rule": rd is not None,
+                     "current_weight": rd.get("weight", d["current_weight"]) if rd else d["current_weight"]})
+    return {
+        **raw,
+        "rule": {"id": r.id, "name": r.name, "version": r.version},
+        "dimensions": dims,
+    }
+
+
 @router.put(
     "/{rule_id}",
     response_model=RuleOut,

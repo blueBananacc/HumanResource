@@ -32,6 +32,7 @@ from app.domain.models import (
 from app.infra.db import get_db
 from app.services.applications import STAGE_ORDER, record_event
 from app.services.audit import write_audit
+from app.services.decision_learning import record_decision
 from app.services.permissions import (
     PERM_VIEW_REPORTS,
     PERM_WRITE_JOBS,
@@ -390,6 +391,15 @@ def transition(
 
     from_stage = app.stage
     record_event(db, app, body.to_stage, actor_user_id=current.id, note=body.note)
+    # P3 记忆中枢:决策埋点 — 快照当时 AI 匹配评分与逐维 level
+    record_decision(
+        db,
+        tenant_id=current.tenant_id,
+        application=app,
+        from_stage=from_stage,
+        to_stage=body.to_stage,
+        actor_id=current.id,
+    )
     if body.to_stage == "rejected":
         app.rejected_reason = body.rejected_reason
     elif app.rejected_reason is not None:

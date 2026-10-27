@@ -3958,3 +3958,42 @@ class RecruitRunStep(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     run: Mapped[RecruitRun] = relationship("RecruitRun", back_populates="steps")
+
+
+class DecisionFeedback(Base):
+    """P3 记忆中枢:管道决策埋点 — 从每次通过/淘汰/录用决策中学习。
+
+    JobApplication stage 流转时记录:快照当时的 AI 匹配分(score)与
+    逐维评分(criteria_snapshot),供「从你的选择里学到了什么」的
+    维度权重建议计算 — 用得越多,建议越贴近真实用人偏好。
+    """
+
+    __tablename__ = "decision_feedback"
+
+    DECISIONS = ("advanced", "offered", "hired", "rejected")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    candidate_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    application_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("job_applications.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    decision: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    from_stage: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    to_stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    # 决策时快照:AI 匹配总分 + 逐维锚定评分 [{key,name,weight,level}]
+    match_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    criteria_snapshot: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    decided_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), index=True
+    )
