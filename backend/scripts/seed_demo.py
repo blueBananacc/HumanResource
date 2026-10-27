@@ -680,6 +680,15 @@ FEEDBACK = [  # (decision, to_stage, tech, proj, comm, score)
 if job_any:
     fb_cands = db.scalars(
         select(Candidate).where(Candidate.tenant_id == T).limit(12)).all()
+    # 远程/空库没有候选人时,补建轻量行(决策反馈只需 candidate 行存在)
+    FB_NAMES = ["陈亦然", "林舒", "高梓航", "苏曼", "周启铭", "吴倩",
+                "郑皓", "马思远", "郭晓彤", "何俊熙"]
+    while len(fb_cands) < len(FEEDBACK) and len(fb_cands) < len(FB_NAMES):
+        c = add(Candidate(tenant_id=T, name=FB_NAMES[len(fb_cands)],
+                          display_email=f"demo-cand-{len(fb_cands)}@example.com",
+                          status="active", owner_user_id=ADMIN_UID))
+        db.flush()
+        fb_cands.append(c)
     fb_made = 0
     for i, (dec, to_st, t_lv, p_lv, c_lv, sc) in enumerate(FEEDBACK):
         if i >= len(fb_cands):
