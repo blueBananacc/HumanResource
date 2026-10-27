@@ -142,16 +142,25 @@ def test_dedup_ingest_hook_and_dismiss(db, client):
     assert c2.dedup_flag == "suspect"
     assert c2.dedup_peer_id is not None
 
-    # dismiss → 摘标 + 审计
+    # dismiss → 标 dismissed(保留 peer 记忆)+ 审计
     r = client.post(f"/api/talents/{c2.id}/dedup-dismiss", headers=_hdr(u))
     assert r.status_code == 200, r.text
     db.refresh(c2)
-    assert c2.dedup_flag is None
+    assert c2.dedup_flag == "dismissed"
+    assert c2.dedup_peer_id is not None
 
-    # 再扫不重复挂标(对端仍在,scan 会重新挂 — 这是"待审队列"语义)
+    # 重扫不复活 — 「确认非重复」是持久判定(Moka 语义)
     r = client.post("/api/talents/dedup-scan", headers=_hdr(u))
     assert r.status_code == 200
-    assert r.json()["suspect"] >= 1
+    db.refresh(c2)
+    assert c2.dedup_flag == "dismissed"
+    # 且该对不再出现在队列里
+    r = client.get("/api/talents/dedup-queue", headers=_hdr(u))
+    pairs = r.json()["exact"] + r.json()["suspect"]
+    assert not any(
+        {p["candidate"]["id"], p["peer"]["id"]} == {c2.id, c2.dedup_peer_id}
+        for p in pairs
+    )
 
 
 def test_dedup_queue_scan_tenant_isolation(db, client):

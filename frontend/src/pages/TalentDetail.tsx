@@ -249,14 +249,14 @@ export function TalentDetail() {
                   活跃
                 </span>
               )}
-              {c.dedup_flag && (
+              {c.dedup_flag === "suspect" && (
                 <Link
                   to="/talents/dedupe"
-                  title={`与「${c.dedup_peer_name ?? "?"}」${c.dedup_flag === "exact" ? "精准重复" : "疑似重复"},点击去查重页处理`}
+                  title={`与「${c.dedup_peer_name ?? "?"}」疑似重复,点击去查重页处理`}
                   className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-[var(--color-warning-soft,var(--color-bg-subtle))] text-[var(--color-warning-text,var(--color-text-secondary))] hover:underline font-body"
                 >
                   <GitMerge className="w-3 h-3" />
-                  {c.dedup_flag === "exact" ? "重复" : "疑重复"}
+                  疑重复
                 </Link>
               )}
               {c.locked && (
@@ -332,14 +332,13 @@ export function TalentDetail() {
           {lockErr}
         </div>
       )}
-      {c.dedup_flag && (
+      {c.dedup_flag === "suspect" && (
         <Link
           to="/talents/dedupe"
           className="flex items-center gap-2 rounded-xl border border-[var(--color-warning-text,var(--color-border-subtle))] bg-[var(--color-warning-soft,var(--color-bg-subtle))] px-5 py-3 text-[13px] font-body text-[var(--color-text-primary)] hover:underline"
         >
           <GitMerge className="w-4 h-4 shrink-0" />
-          该候选人与「{c.dedup_peer_name ?? "另一位候选人"}」
-          {c.dedup_flag === "exact" ? "精准重复" : "疑似重复"}
+          该候选人与「{c.dedup_peer_name ?? "另一位候选人"}」疑似重复
           — 点击前往查重页处理
         </Link>
       )}

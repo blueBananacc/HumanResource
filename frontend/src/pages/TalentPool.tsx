@@ -347,7 +347,7 @@ export function TalentPool() {
                             活跃
                           </span>
                         )}
-                        {t.dedup_flag && (
+                        {t.dedup_flag === "suspect" && (
                           <Link
                             to="/talents/dedupe"
                             title={`与「${t.dedup_peer_name ?? "?"}」疑似重复,点击去处理`}

@@ -26,6 +26,18 @@ from app.domain.models import Candidate
 logger = logging.getLogger(__name__)
 
 FLAG_SUSPECT = "suspect"
+FLAG_DISMISSED = "dismissed"
+
+
+def _is_dismissed_pair(c: Candidate, peer: Candidate) -> bool:
+    """任一侧已对另一侧做过「确认非重复」→ 不再挂标。"""
+    return (
+        c.dedup_flag == FLAG_DISMISSED
+        and c.dedup_peer_id == peer.id
+    ) or (
+        peer.dedup_flag == FLAG_DISMISSED
+        and peer.dedup_peer_id == c.id
+    )
 
 
 def _now() -> datetime:
@@ -92,12 +104,17 @@ def flag_suspects(db: Session, c: Candidate) -> None:
     已合并源(dedup_flag 手动摘除后)不重复挂标,除非是新命中的对端。
     """
     peers = find_dup_peers(db, c)
-    if not peers:
-        if c.dedup_flag == FLAG_SUSPECT:
+    live = [p for p in peers if not _is_dismissed_pair(c, p[0])]
+    if not live:
+        if peers and c.dedup_flag != FLAG_DISMISSED:
+            # 对端全被确认非重复:维持 dismissed 记忆
+            c.dedup_flag = FLAG_DISMISSED
+            c.dedup_peer_id = peers[0][0].id
+        elif not peers and c.dedup_flag == FLAG_SUSPECT:
             c.dedup_flag = None
             c.dedup_peer_id = None
         return
-    peer, tier, _ch = peers[0]
+    peer, tier, _ch = live[0]
     if c.dedup_flag == FLAG_SUSPECT and c.dedup_peer_id == peer.id:
         return
     c.dedup_flag = FLAG_SUSPECT
@@ -105,9 +122,8 @@ def flag_suspects(db: Session, c: Candidate) -> None:
 
 
 def dismiss_suspect(db: Session, c: Candidate) -> None:
-    """HR 确认非重复 → 摘标。"""
-    c.dedup_flag = None
-    c.dedup_peer_id = None
+    """HR 确认非重复 → 标 dismissed(保留 peer 指向,重扫不再挂标)。"""
+    c.dedup_flag = FLAG_DISMISSED
 
 
 def scan_tenant(
@@ -130,20 +146,25 @@ def scan_tenant(
     flagged = 0
     for c in cands:
         peers = find_dup_peers(db, c)
-        if peers:
-            peer, tier, ch = peers[0]
-            key = frozenset({c.id, peer.id})
-            if key not in seen:
-                seen.add(key)
-                row = {"candidate": c, "peer": peer, "channels": ch}
-                (exact if tier == "exact" else suspect).append(row)
-            if c.dedup_flag != FLAG_SUSPECT:
-                c.dedup_flag = FLAG_SUSPECT
-                c.dedup_peer_id = peer.id
-                flagged += 1
-        elif c.dedup_flag == FLAG_SUSPECT:
-            c.dedup_flag = None
-            c.dedup_peer_id = None
+        live = [p for p in peers if not _is_dismissed_pair(c, p[0])]
+        if not live:
+            if peers:
+                c.dedup_flag = FLAG_DISMISSED
+                c.dedup_peer_id = peers[0][0].id
+            elif c.dedup_flag == FLAG_SUSPECT:
+                c.dedup_flag = None
+                c.dedup_peer_id = None
+            continue
+        peer, tier, ch = live[0]
+        key = frozenset({c.id, peer.id})
+        if key not in seen:
+            seen.add(key)
+            row = {"candidate": c, "peer": peer, "channels": ch}
+            (exact if tier == "exact" else suspect).append(row)
+        if c.dedup_flag != FLAG_SUSPECT or c.dedup_peer_id != peer.id:
+            c.dedup_flag = FLAG_SUSPECT
+            c.dedup_peer_id = peer.id
+            flagged += 1
     db.flush()
     return {
         "exact": exact,
