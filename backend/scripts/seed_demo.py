@@ -665,6 +665,19 @@ def snap(tech, proj, comm):
         {"key": "comm", "name": "沟通协作", "weight": 30, "level": comm},
     ]
 
+# 空库兜底:没有岗位时建一条演示岗位,并把评分规则挂上
+if not job_any:
+    job_any = ensure(Job, title="高级前端工程师",
+                     defaults=dict(level="advanced", status="open",
+                                   publish_status="published",
+                                   description="负责平台前端架构与核心业务模块,React/TS 技术栈。",
+                                   skills=["React", "TypeScript", "前端工程化"],
+                                   scoring_rule_id=rule_seed.id,
+                                   org_unit_id=org_eng.id if 'org_eng' in dir() else None))
+if job_any and job_any.scoring_rule_id != rule_seed.id:
+    job_any.scoring_rule_id = rule_seed.id
+print("15b2. demo job ok" if job_any else "15b2. no job, feedback skipped")
+
 FEEDBACK = [  # (decision, to_stage, tech, proj, comm, score)
     ("advanced", "interview", 4, 2, 4, 82),
     ("advanced", "interview", 3, 2, 4, 76),
