@@ -41,12 +41,15 @@ from app.domain.models import (
     CandidateNote,
     CandidateSkill,
     Interview,
+    InterviewFeedback,
+    InterviewScorecard,
     Job,
     JobApplication,
     JobOffer,
     OrgUnit,
     Resume,
     ResumeJobMatch,
+    Skill,
     TalentCampaignSend,
     User,
 )
@@ -1319,3 +1322,184 @@ async def import_talents(
     )
     db.commit()
     return {"created": created, "skipped": skipped, "total": len(rows[:2000])}
+
+
+# ---------- 职业能力画像(Workday skill-level 模式:多源聚合+来源分解) ----------
+
+
+class CapabilitySource(BaseModel):
+    kind: str  # match | interview | declared
+    label: str
+    score5: float  # 归一化到 0-5
+    detail: str | None = None  # evidence / comment
+    at: str | None = None
+
+
+class CapabilityDim(BaseModel):
+    name: str
+    avg: float
+    min: float
+    max: float
+    count: int
+    sources: list[CapabilitySource]
+
+
+class CapabilityProfileOut(BaseModel):
+    candidate_id: str
+    evaluations_total: int
+    sources_count: dict[str, int]
+    dimensions: list[CapabilityDim]
+    skills: list[str]
+    strengths: list[str]
+    gaps: list[str]
+
+
+@router.get(
+    "/{candidate_id}/capability-profile",
+    response_model=CapabilityProfileOut,
+    dependencies=[Depends(require_permission(PERM_VIEW_REPORTS))],
+)
+def capability_profile(
+    candidate_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> CapabilityProfileOut:
+    """人级能力画像:聚合该候选人全部评估数据为稳定维度画像。
+
+    三源(对标 Workday skill level 多源算分):
+    - match:     人岗匹配逐维 level(0-4 → 归一 0-5)+ 证据
+    - interview: 评分卡逐维 score(1-5)+ 评语
+    - declared:  候选人技能自评/简历提取 level(1-5)
+    """
+    c = _get_candidate(db, candidate_id=candidate_id, current=current)
+    buckets: dict[str, list[CapabilitySource]] = {}
+    counts = {"match": 0, "interview": 0, "declared": 0}
+
+    def put(name: str, src: CapabilitySource) -> None:
+        name = (name or "").strip()[:64]
+        if name:
+            buckets.setdefault(name, []).append(src)
+
+    # 源一:人岗匹配逐维
+    rows = db.execute(
+        select(ResumeJobMatch, Job.title)
+        .join(Resume, ResumeJobMatch.resume_id == Resume.id)
+        .outerjoin(Job, ResumeJobMatch.job_id == Job.id)
+        .where(Resume.candidate_id == c.id, ResumeJobMatch.tenant_id == current.tenant_id)
+        .order_by(ResumeJobMatch.created_at.desc())
+        .limit(50)
+    ).all()
+    for m, job_title in rows:
+        crits = m.criteria if isinstance(m.criteria, list) else []
+        for cr in crits:
+            if not isinstance(cr, dict):
+                continue
+            lvl = cr.get("level")
+            if not isinstance(lvl, (int, float)):
+                continue
+            counts["match"] += 1
+            put(
+                str(cr.get("name") or cr.get("key") or "未命名维度"),
+                CapabilitySource(
+                    kind="match",
+                    label=f"人岗匹配 · {job_title or '岗位'}",
+                    score5=round(float(lvl) / 4 * 5, 2),
+                    detail=(str(cr.get("evidence"))[:200] or None),
+                    at=m.created_at.isoformat() if m.created_at else None,
+                ),
+            )
+
+    # 源二:评分卡逐维反馈
+    fb_rows = db.execute(
+        select(InterviewFeedback, InterviewScorecard)
+        .join(InterviewScorecard, InterviewFeedback.scorecard_id == InterviewScorecard.id)
+        .where(
+            InterviewScorecard.candidate_id == c.id,
+            InterviewFeedback.tenant_id == current.tenant_id,
+        )
+        .order_by(InterviewFeedback.submitted_at.desc())
+        .limit(100)
+    ).all()
+    if fb_rows:
+        from app.services import scorecards as sc_svc
+
+        uids = list({f.interviewer_user_id for f, _ in fb_rows})
+        names = sc_svc.user_display_names(db, current.tenant_id, uids)
+        for f, sc in fb_rows:
+            name_map = {
+                cr.get("key"): cr.get("name")
+                for cr in (sc.criteria or [])
+                if isinstance(cr, dict)
+            }
+            for s in (f.scores or []):
+                if not isinstance(s, dict) or not isinstance(s.get("score"), (int, float)):
+                    continue
+                counts["interview"] += 1
+                put(
+                    str(name_map.get(s.get("criterion")) or s.get("criterion") or "未命名维度"),
+                    CapabilitySource(
+                        kind="interview",
+                        label=f"{sc.title} · {names.get(f.interviewer_user_id, '面试官')}",
+                        score5=round(float(s["score"]), 2),
+                        detail=(str(s.get("comment"))[:200] or None),
+                        at=f.submitted_at.isoformat() if f.submitted_at else None,
+                    ),
+                )
+
+    # 源三:声明技能(manual/resume 自评)
+    skill_rows = db.execute(
+        select(CandidateSkill, Skill.name)
+        .join(Skill, CandidateSkill.skill_id == Skill.id)
+        .where(CandidateSkill.candidate_id == c.id)
+    ).all()
+    for cs, sname in skill_rows:
+        counts["declared"] += 1
+        put(
+            sname,
+            CapabilitySource(
+                kind="declared",
+                label="技能档案" + ("(简历提取)" if cs.source == "resume" else "(人工标注)"),
+                score5=float(cs.level or 3),
+                at=cs.created_at.isoformat() if cs.created_at else None,
+            ),
+        )
+
+    dims = [
+        CapabilityDim(
+            name=n,
+            avg=round(sum(s.score5 for s in srcs) / len(srcs), 2),
+            min=min(s.score5 for s in srcs),
+            max=max(s.score5 for s in srcs),
+            count=len(srcs),
+            sources=sorted(srcs, key=lambda s: s.at or "", reverse=True),
+        )
+        for n, srcs in buckets.items()
+    ]
+    dims.sort(key=lambda d: (-d.count, -d.avg))
+
+    skill_names = [n for _, n in skill_rows]
+    tag_names = list(c.tags or [])
+    latest_skills: list[str] = []
+    res = db.scalars(
+        select(Resume)
+        .where(Resume.candidate_id == c.id)
+        .order_by(Resume.created_at.desc())
+        .limit(3)
+    ).all()
+    for r in res:
+        latest_skills += [str(s) for s in (r.parsed_data or {}).get("skills") or []][:10]
+    skills = list(dict.fromkeys(skill_names + tag_names + latest_skills))[:30]
+
+    multi = [d for d in dims if d.count > 0]
+    strengths = [d.name for d in sorted(multi, key=lambda d: -d.avg)[:3]]
+    gaps = [d.name for d in sorted(multi, key=lambda d: d.avg)[:3] if d.avg < 3.5]
+
+    return CapabilityProfileOut(
+        candidate_id=c.id,
+        evaluations_total=sum(counts.values()),
+        sources_count=counts,
+        dimensions=dims,
+        skills=skills,
+        strengths=strengths,
+        gaps=gaps,
+    )

@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
 import { Modal } from "@/components/ui/modal";
 import { CandidateSkillsCard } from "@/components/skills/SkillWidgets";
+import { CapabilityProfile } from "@/components/talent/CapabilityProfile";
 import { ScorecardSection } from "@/components/scorecards/ScorecardSection";
 import { FavoriteStar } from "@/components/records/FavoriteStar";
 import { HistoryDrawer } from "@/components/records/HistoryDrawer";
@@ -279,6 +280,7 @@ export function TalentDetail() {
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
         <div className="flex flex-col gap-6 min-w-0">
           <SummaryCard entity="candidates" id={c.id} title="AI 候选人摘要" />
+          <CapabilityProfile candidateId={c.id} />
           <TagsCard
             tags={c.tags}
             candidateId={c.id}
