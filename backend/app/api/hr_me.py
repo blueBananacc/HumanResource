@@ -42,6 +42,7 @@ from app.domain.models import (
     Appraisal,
     AppraisalCycle,
     Attendance,
+    AttendanceConfirmation,
     AttendanceFlag,
     AttendanceRequest,
     Employee,
@@ -723,6 +724,129 @@ def me_attendance_summary(
 
     rows = monthly_summary_rows(db, current.tenant_id, month, [e.id])
     return rows[0] if rows else None
+
+
+# ============ 考勤结果在线确认(Moka 同款)============
+
+
+def _valid_month(month: str) -> str:
+    try:
+        y, m = month.split("-")
+        date(int(y), int(m), 1)
+    except (ValueError, AttributeError):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "month 格式应为 YYYY-MM")
+    return month
+
+
+class MeAttConfirmOut(BaseModel):
+    month: str
+    status: str | None  # None=未确认 | confirmed | disputed | resolved
+    note: str | None = None
+    resolved_note: str | None = None
+    updated_at: datetime | None = None
+
+
+def _get_confirmation(db: Session, employee_id: str, month: str) -> AttendanceConfirmation | None:
+    return db.scalars(
+        select(AttendanceConfirmation).where(
+            AttendanceConfirmation.employee_id == employee_id,
+            AttendanceConfirmation.month == month,
+        )
+    ).first()
+
+
+def _confirm_out(c: AttendanceConfirmation | None, month: str) -> MeAttConfirmOut:
+    if c is None:
+        return MeAttConfirmOut(month=month, status=None)
+    return MeAttConfirmOut(
+        month=c.month, status=c.status, note=c.note,
+        resolved_note=c.resolved_note, updated_at=c.updated_at,
+    )
+
+
+@router.get("/attendance-confirmation", response_model=MeAttConfirmOut)
+def me_attendance_confirmation(
+    month: str = Query(..., description="YYYY-MM"),
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    e = _me(db, current)
+    return _confirm_out(_get_confirmation(db, e.id, _valid_month(month)), month)
+
+
+class AttConfirmIn(BaseModel):
+    month: str
+
+
+class AttDisputeIn(BaseModel):
+    month: str
+    note: str = Field(min_length=1, max_length=500)
+
+
+def _upsert_confirmation(
+    db: Session, e: Employee, month: str, status_: str, note: str | None, user_id: str
+) -> AttendanceConfirmation:
+    c = _get_confirmation(db, e.id, month)
+    if c is None:
+        c = AttendanceConfirmation(
+            tenant_id=e.tenant_id, employee_id=e.id, month=month, status=status_,
+        )
+        db.add(c)
+    c.status = status_
+    c.note = note
+    c.confirmed_by_id = user_id
+    if status_ != "resolved":
+        c.resolved_by_id = None
+        c.resolved_note = None
+    db.flush()
+    return c
+
+
+@router.post("/attendance/confirm", response_model=MeAttConfirmOut)
+def me_attendance_confirm(
+    body: AttConfirmIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """员工确认本月考勤无误(Moka:封账前员工在线确认)。"""
+    e = _me(db, current)
+    month = _valid_month(body.month)
+    c = _upsert_confirmation(db, e, month, "confirmed", None, current.id)
+    db.commit()
+    return _confirm_out(c, month)
+
+
+@router.post("/attendance/dispute", response_model=MeAttConfirmOut)
+def me_attendance_dispute(
+    body: AttDisputeIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """员工对本月考勤提异议 → HR 侧考勤确认列表标红 + 通知 HR。"""
+    e = _me(db, current)
+    month = _valid_month(body.month)
+    c = _upsert_confirmation(db, e, month, "disputed", body.note.strip(), current.id)
+    # 通知 hr 角色活跃用户(与审批兜底同口径)
+    from app.domain.models import Notification, User as _U
+
+    for u in db.scalars(
+        select(_U).where(
+            _U.tenant_id == current.tenant_id,
+            _U.role == "hr",
+            _U.status == "active",
+        )
+    ):
+        db.add(Notification(
+            tenant_id=current.tenant_id, user_id=u.id,
+            kind="attendance.dispute",
+            title=f"{e.name} 对 {month} 考勤提出异议",
+            body=body.note.strip()[:200],
+            link="/attendance/confirmations",
+        ))
+    db.commit()
+    return _confirm_out(c, month)
 
 
 # ============ attendance requests(补卡申请)============

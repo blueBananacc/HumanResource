@@ -119,13 +119,13 @@ export const mainModules: NavModule[] = [
           { to: "/talents", label: "人才库", keywords: "候选人 简历 上传 talent resume" },
           { to: "/talent-map", label: "人才地图", permission: PERM.VIEW_REPORTS, keywords: "地图 分布 mapping 技能 结构" },
           { to: "/campaigns", label: "人才再激活", permission: PERM.VIEW_REPORTS, feature: "hr.suite", keywords: "外联 触达 campaign 批量邮件" },
+          { to: "/talents/dedupe", label: "简历查重", permission: PERM.WRITE_RESUMES, keywords: "重复 查重 合并 dedup 疑似" },
         ],
       },
       {
         label: "规划中",
         items: [
           { to: "/talents/tags", label: "人才标签", soon: true },
-          { to: "/talents/dedupe", label: "重复候选人合并", soon: true },
         ],
       },
     ],
@@ -216,6 +216,7 @@ export const mainModules: NavModule[] = [
           { to: "/attendance/checkins", label: "打卡流水", permission: PERM.VIEW_REPORTS, keywords: "打卡 签到 checkin" },
           { to: "/attendance/requests", label: "补卡审批", permission: PERM.APPROVE_LEAVE, keywords: "补卡 漏打卡 申诉" },
           { to: "/attendance/flags", label: "考勤异常", permission: PERM.APPROVE_LEAVE, keywords: "迟到 早退 异常 工时 汇总" },
+          { to: "/attendance/confirmations", label: "考勤确认", permission: PERM.MANAGE_ATTENDANCE, keywords: "考勤确认 在线确认 异议" },
           { to: "/overtime", label: "加班审批", permission: PERM.APPROVE_LEAVE, keywords: "加班 调休 overtime" },
           { to: "/attendance/calendar", label: "节假日历", permission: PERM.MANAGE_ATTENDANCE, keywords: "节假日 工作日历 调休" },
           { to: "/attendance/shifts", label: "排班", permission: PERM.MANAGE_ATTENDANCE, keywords: "排班 班次 替班 schedule shift" },

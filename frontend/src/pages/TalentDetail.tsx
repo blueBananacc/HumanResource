@@ -11,6 +11,8 @@ import {
   GitMerge,
   History,
   ListChecks,
+  Lock,
+  LockOpen,
   MessageCircle,
   Plus,
   Sparkles,
@@ -53,6 +55,13 @@ type TalentDetail = {
   tags: string[];
   status: string;
   is_blacklisted: boolean;
+  dedup_flag: string | null;
+  dedup_peer_id: string | null;
+  dedup_peer_name: string | null;
+  locked: boolean;
+  locked_by_id: string | null;
+  locked_by_name: string | null;
+  locked_until: string | null;
   blacklist_reason: string | null;
   blacklisted_at: string | null;
   blacklisted_by: string | null;
@@ -148,6 +157,21 @@ export function TalentDetail() {
   const [mergeOpen, setMergeOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [docOpen, setDocOpen] = useState(false);
+  const [lockErr, setLockErr] = useState("");
+
+  const lockMut = useMutation({
+    mutationFn: (action: "lock" | "unlock") =>
+      fetchJSON(`/api/talents/${id}/${action}`, {
+        method: "POST",
+        body: JSON.stringify(action === "lock" ? { days: 7 } : {}),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["talent", id] });
+      setLockErr("");
+    },
+    onError: (e) =>
+      setLockErr(e instanceof ApiError ? e.message : "操作失败"),
+  });
 
   const { data, isLoading, error } = useQuery<TalentDetail>({
     queryKey: ["talent", id],
@@ -191,6 +215,7 @@ export function TalentDetail() {
 
   const c = data;
   const inGroupIds = new Set(c.groups.map((g) => g.id));
+  const lockedByMe = c.locked && c.locked_by_id === user?.id;
 
   return (
     <main className="p-8 flex flex-col gap-6 max-w-[1200px] mx-auto w-full">
@@ -224,6 +249,25 @@ export function TalentDetail() {
                   活跃
                 </span>
               )}
+              {c.dedup_flag && (
+                <Link
+                  to="/talents/dedupe"
+                  title={`与「${c.dedup_peer_name ?? "?"}」${c.dedup_flag === "exact" ? "精准重复" : "疑似重复"},点击去查重页处理`}
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-[var(--color-warning-soft,var(--color-bg-subtle))] text-[var(--color-warning-text,var(--color-text-secondary))] hover:underline font-body"
+                >
+                  <GitMerge className="w-3 h-3" />
+                  {c.dedup_flag === "exact" ? "重复" : "疑重复"}
+                </Link>
+              )}
+              {c.locked && (
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-[var(--color-bg-subtle)] text-[var(--color-text-secondary)] font-body"
+                  title={`由 ${c.locked_by_name ?? "?"} 锁定${c.locked_until ? `,至 ${c.locked_until.slice(0, 10)}` : ""}`}
+                >
+                  <Lock className="w-3 h-3" />
+                  {lockedByMe ? "我锁定中" : `${c.locked_by_name ?? "?"} 锁定`}
+                </span>
+              )}
             </div>
             <span className="text-[13px] text-[var(--color-text-secondary)] font-body">
               {c.display_email ?? "—"}
@@ -250,6 +294,27 @@ export function TalentDetail() {
             <Sparkles className="w-4 h-4" />
             AI 起草
           </Button>
+          {canWrite && !c.locked && (
+            <Button
+              variant="secondary"
+              onClick={() => lockMut.mutate("lock")}
+              disabled={lockMut.isPending}
+              title="锁定候选人:其他成员无法对其做编辑/流转/删除等操作"
+            >
+              <Lock className="w-4 h-4" />
+              锁定
+            </Button>
+          )}
+          {canWrite && lockedByMe && (
+            <Button
+              variant="secondary"
+              onClick={() => lockMut.mutate("unlock")}
+              disabled={lockMut.isPending}
+            >
+              <LockOpen className="w-4 h-4" />
+              解除锁定
+            </Button>
+          )}
           {canWrite && (
             <Button variant="secondary" onClick={() => setMergeOpen(true)}>
               <GitMerge className="w-4 h-4" />
@@ -262,6 +327,30 @@ export function TalentDetail() {
           </Button>
         </div>
       </div>
+      {lockErr && (
+        <div className="text-[13px] text-[var(--color-danger)] font-body">
+          {lockErr}
+        </div>
+      )}
+      {c.dedup_flag && (
+        <Link
+          to="/talents/dedupe"
+          className="flex items-center gap-2 rounded-xl border border-[var(--color-warning-text,var(--color-border-subtle))] bg-[var(--color-warning-soft,var(--color-bg-subtle))] px-5 py-3 text-[13px] font-body text-[var(--color-text-primary)] hover:underline"
+        >
+          <GitMerge className="w-4 h-4 shrink-0" />
+          该候选人与「{c.dedup_peer_name ?? "另一位候选人"}」
+          {c.dedup_flag === "exact" ? "精准重复" : "疑似重复"}
+          — 点击前往查重页处理
+        </Link>
+      )}
+      {c.locked && !lockedByMe && (
+        <div className="flex items-center gap-2 rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-muted)] px-5 py-3 text-[13px] font-body text-[var(--color-text-secondary)]">
+          <Lock className="w-4 h-4 shrink-0" />
+          由 {c.locked_by_name ?? "?"} 锁定中
+          {c.locked_until && `,至 ${c.locked_until.slice(0, 10)}`}
+          — 锁定期间你的编辑/流转/删除等操作将被拒绝;到期自动释放。
+        </div>
+      )}
       <DocDraftDrawer
         open={docOpen}
         onClose={() => setDocOpen(false)}

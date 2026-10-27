@@ -268,6 +268,20 @@ class Candidate(Base):
     )
     owner_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
+    # ---- 两级查重(Moka 精准/疑似同款)----
+    # ``dedup_flag`` = "suspect":与其他候选人存在疑似重复,进入待审队列;
+    # 合并 / 手动确认非重复后清除。``dedup_peer_id`` 记录命中的对端候选,
+    # 供队列页直接展示"与谁重复"。
+    dedup_flag: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    dedup_peer_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    # ---- 候选人锁定(Moka 锁定/释放同款)----
+    # 锁定期间其他 HR 不可对该候选人做流转/编辑/合并等变更,防止内部抢人;
+    # ``locked_until`` 过期视为自动释放(懒释放,无需后台任务)。
+    locked_by_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -1367,6 +1381,45 @@ class Attendance(Base):
 
     __table_args__ = (
         UniqueConstraint("employee_id", "day", name="uq_attendance_emp_day"),
+    )
+
+
+class AttendanceConfirmation(Base):
+    """员工对月度考勤结果的在线确认(Moka"考勤结果在线确认"同款)。
+
+    员工在「我的考勤」核对当月汇总后确认或提出异议,封账前给 HR 一个
+    确认信号;异议由 HR 在考勤管理侧处理(resolve)。
+
+    status: confirmed 员工已确认 / disputed 员工提了异议(带 note) /
+            resolved   HR 已处理异议。
+    """
+
+    __tablename__ = "attendance_confirmations"
+
+    STATUSES = ("confirmed", "disputed", "resolved")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    month: Mapped[str] = mapped_column(String(7), nullable=False)  # "YYYY-MM"
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confirmed_by_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    resolved_by_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    resolved_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("employee_id", "month", name="uq_attconfirm_emp_month"),
     )
 
 

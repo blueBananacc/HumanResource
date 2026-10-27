@@ -21,6 +21,7 @@ from app.api._pagination import PageOut, count_total, paginate_params
 from app.api.license import require_feature
 from app.domain.models import (
     Attendance,
+    AttendanceConfirmation,
     AttendanceFlag,
     AttendancePolicy,
     AttendanceRequest,
@@ -941,6 +942,113 @@ def monthly_summary(
             )
         ]
     return monthly_summary_rows(db, current.tenant_id, month, emp_ids)
+
+
+# ============ 考勤结果在线确认(HR 侧,Moka 同款) ============
+
+
+class ConfirmationRow(BaseModel):
+    employee_id: str
+    employee_name: str
+    org_unit_name: str | None
+    status: str | None  # None=未确认
+    note: str | None
+    resolved_note: str | None
+    updated_at: datetime | None
+
+
+@router.get("/confirmations", response_model=list[ConfirmationRow])
+def attendance_confirmations(
+    month: str = Query(..., description="YYYY-MM"),
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_ATTENDANCE)),
+):
+    """全员月度考勤确认状态:确认/异议/未确认,异议排最前。"""
+    emp_ids = visible_employee_ids(db, current)
+    stmt = select(Employee).where(
+        Employee.tenant_id == current.tenant_id,
+        Employee.status == "active",
+    )
+    if emp_ids is not None:
+        stmt = stmt.where(Employee.id.in_(emp_ids))
+    emps = db.scalars(stmt.order_by(Employee.name)).all()
+    if not emps:
+        return []
+    confs = {
+        c.employee_id: c
+        for c in db.scalars(
+            select(AttendanceConfirmation).where(
+                AttendanceConfirmation.tenant_id == current.tenant_id,
+                AttendanceConfirmation.month == month,
+                AttendanceConfirmation.employee_id.in_([e.id for e in emps]),
+            )
+        )
+    }
+    orgs = {
+        o.id: o.name
+        for o in db.scalars(select(OrgUnit).where(OrgUnit.tenant_id == current.tenant_id))
+    }
+    rows = [
+        ConfirmationRow(
+            employee_id=e.id,
+            employee_name=e.name,
+            org_unit_name=orgs.get(e.org_unit_id) if e.org_unit_id else None,
+            status=confs[e.id].status if e.id in confs else None,
+            note=confs[e.id].note if e.id in confs else None,
+            resolved_note=confs[e.id].resolved_note if e.id in confs else None,
+            updated_at=confs[e.id].updated_at if e.id in confs else None,
+        )
+        for e in emps
+    ]
+    order = {"disputed": 0, "resolved": 1, "confirmed": 2}
+    rows.sort(key=lambda r: (order.get(r.status or "", 3), r.employee_name))
+    return rows
+
+
+class ResolveIn(BaseModel):
+    month: str
+    note: str | None = None
+
+
+@router.post("/confirmations/{employee_id}/resolve", response_model=ConfirmationRow)
+def resolve_confirmation(
+    employee_id: str,
+    body: ResolveIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_ATTENDANCE)),
+):
+    """HR 处理考勤异议 → status=resolved;处理人可对考勤记录另行修正。"""
+    e = db.get(Employee, employee_id)
+    if not e or e.tenant_id != current.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "员工不存在")
+    c = db.scalars(
+        select(AttendanceConfirmation).where(
+            AttendanceConfirmation.employee_id == employee_id,
+            AttendanceConfirmation.month == body.month,
+        )
+    ).first()
+    if c is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "该员工本月没有确认记录")
+    if c.status != "disputed":
+        raise HTTPException(409, f"当前状态 {c.status} 无需处理(仅 disputed 可解决)")
+    c.status = "resolved"
+    c.resolved_by_id = current.id
+    c.resolved_note = (body.note or "").strip() or None
+    write_audit(
+        db, actor=current, entity_type="attendance_confirmation", entity_id=c.id,
+        action="resolve",
+        detail={"employee_id": employee_id, "month": body.month, "note": body.note},
+        request=request,
+    )
+    db.commit()
+    org = db.get(OrgUnit, e.org_unit_id) if e.org_unit_id else None
+    return ConfirmationRow(
+        employee_id=e.id, employee_name=e.name,
+        org_unit_name=org.name if org else None,
+        status=c.status, note=c.note, resolved_note=c.resolved_note,
+        updated_at=c.updated_at,
+    )
 
 
 # 参数路由沉底 —— 若放在 /policy 等字面量路由之前,PUT /policy 会被

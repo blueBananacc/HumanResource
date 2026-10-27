@@ -31,6 +31,7 @@ import { Automations } from "@/pages/Automations";
 import { ImportWizard } from "@/pages/ImportWizard";
 import { TalentPool } from "@/pages/TalentPool";
 import { TalentDetail } from "@/pages/TalentDetail";
+import { TalentDedupe } from "@/pages/TalentDedupe";
 import { LegacyQuestionSetRedirect, QuestionSetDetail } from "@/pages/QuestionSetDetail";
 import { QuestionLibrary } from "@/pages/QuestionLibrary";
 import { CategorySetDetail } from "@/pages/CategorySetDetail";
@@ -62,6 +63,7 @@ import { AttendanceAdmin } from "@/pages/hris/AttendanceAdmin";
 import { Checkins } from "@/pages/hris/Checkins";
 import { AttendanceRequests } from "@/pages/hris/AttendanceRequests";
 import { AttendanceFlagsPage } from "@/pages/hris/AttendanceFlags";
+import { AttendanceConfirmations } from "@/pages/hris/AttendanceConfirmations";
 import { WorkCalendarPage } from "@/pages/hris/WorkCalendarPage";
 import { ShiftsPage } from "@/pages/hris/Shifts";
 import { Requisitions } from "@/pages/hris/Requisitions";
@@ -136,6 +138,7 @@ export const router = createBrowserRouter([
       { path: "attendance/checkins", element: <Checkins /> },
       { path: "attendance/requests", element: <AttendanceRequests /> },
       { path: "attendance/flags", element: <AttendanceFlagsPage /> },
+      { path: "attendance/confirmations", element: <AttendanceConfirmations /> },
       { path: "attendance/calendar", element: <WorkCalendarPage /> },
       { path: "attendance/shifts", element: <ShiftsPage /> },
       { path: "overtime", element: <OvertimeRequests /> },
@@ -172,6 +175,7 @@ export const router = createBrowserRouter([
       { path: "me/profile", element: <MeGuard><MyProfile /></MeGuard> },
       // ── 招聘 ──
       { path: "talents", element: <TalentPool /> },
+      { path: "talents/dedupe", element: <TalentDedupe /> },
       { path: "talents/:id", element: <TalentDetail /> },
       { path: "talents/:id/resumes/:resumeId", element: <ResumeDetail /> },
       { path: "jobs", element: <Jobs /> },

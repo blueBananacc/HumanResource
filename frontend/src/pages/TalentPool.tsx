@@ -6,7 +6,9 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Copy,
   Folder,
+  Lock,
   MailCheck,
   Play,
   Plus,
@@ -45,6 +47,10 @@ type TalentItem = {
   status: string;
   is_blacklisted: boolean;
   blacklist_reason: string | null;
+  dedup_flag: string | null;
+  dedup_peer_name: string | null;
+  locked_by_name: string | null;
+  locked_until: string | null;
   last_active_at: string | null;
   created_at: string;
   resume_count: number;
@@ -329,17 +335,38 @@ export function TalentPool() {
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      {t.is_blacklisted ? (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-[var(--color-danger-soft)] text-[var(--color-danger)]">
-                          <Ban className="w-3 h-3" />
-                          黑名单
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-[var(--color-success-soft)] text-[var(--color-success)]">
-                          <CheckCircle2 className="w-3 h-3" />
-                          活跃
-                        </span>
-                      )}
+                      <div className="flex flex-col items-start gap-1">
+                        {t.is_blacklisted ? (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-[var(--color-danger-soft)] text-[var(--color-danger)]">
+                            <Ban className="w-3 h-3" />
+                            黑名单
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-[var(--color-success-soft)] text-[var(--color-success)]">
+                            <CheckCircle2 className="w-3 h-3" />
+                            活跃
+                          </span>
+                        )}
+                        {t.dedup_flag && (
+                          <Link
+                            to="/talents/dedupe"
+                            title={`与「${t.dedup_peer_name ?? "?"}」疑似重复,点击去处理`}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-[var(--color-warning-soft,var(--color-bg-subtle))] text-[var(--color-warning-text,var(--color-text-secondary))] hover:underline"
+                          >
+                            <Copy className="w-3 h-3" />
+                            疑重复
+                          </Link>
+                        )}
+                        {t.locked_by_name && (
+                          <span
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-[var(--color-bg-subtle)] text-[var(--color-text-secondary)]"
+                            title={`${t.locked_by_name} 锁定${t.locked_until ? ` 至 ${t.locked_until.slice(0, 10)}` : ""}`}
+                          >
+                            <Lock className="w-3 h-3" />
+                            {t.locked_by_name}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-right">
                       <button

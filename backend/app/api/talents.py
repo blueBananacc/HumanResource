@@ -56,6 +56,7 @@ from app.domain.models import (
 from app.infra.db import get_db
 from app.services.audit import write_audit
 from app.services.candidates import _hash as _contact_hash
+from app.services import dedup as dedup_svc
 from app.services.permissions import (
     PERM_DELETE_RESUMES,
     PERM_VIEW_REPORTS,
@@ -78,6 +79,32 @@ def _utcnow_naive() -> datetime:
 
 def _touch_last_active(c: Candidate) -> None:
     c.last_active_at = _utcnow_naive()
+
+
+def _user_label(db: Session, user_id: str | None) -> str | None:
+    """持锁人展示名:优先员工档案名,兜底 email。"""
+    return _user_labels(db, [user_id] if user_id else []).get(user_id or "")
+
+
+def _user_labels(db: Session, user_ids: list[str]) -> dict[str, str]:
+    """批量解析展示名(列表页防 N+1)。"""
+    if not user_ids:
+        return {}
+    from app.domain.models import Employee
+
+    emp_map = {
+        e.user_id: e.name
+        for e in db.scalars(
+            select(Employee).where(Employee.user_id.in_(user_ids))
+        )
+    }
+    user_map = {
+        u.id: u.email
+        for u in db.scalars(select(User).where(User.id.in_(user_ids)))
+    }
+    return {
+        uid: emp_map.get(uid) or user_map.get(uid) or "?" for uid in user_ids
+    }
 
 
 # ============ schemas ============
@@ -143,6 +170,12 @@ class TalentListItem(BaseModel):
     last_interview_at: datetime | None
     top_match_job_title: str | None
     top_match_score: int | None
+    dedup_flag: str | None = None
+    dedup_peer_name: str | None = None
+    locked_by_id: str | None = None
+    locked_by_name: str | None = None
+    locked_until: datetime | None = None
+    locked: bool = False
 
 
 class TalentDetail(BaseModel):
@@ -159,6 +192,13 @@ class TalentDetail(BaseModel):
     blacklisted_by: str | None
     last_active_at: datetime | None
     created_at: datetime
+    dedup_flag: str | None = None
+    dedup_peer_id: str | None = None
+    dedup_peer_name: str | None = None
+    locked_by_id: str | None = None
+    locked_by_name: str | None = None
+    locked_until: datetime | None = None
+    locked: bool = False
     resumes: list[dict[str, Any]]
     interviews: list[dict[str, Any]]
     matches: list[dict[str, Any]]
@@ -398,6 +438,18 @@ def list_talents(
         top_match_map[cid] = (jid, int(score))
     job_titles = _bulk_job_titles(db, {jid for jid, _ in top_match_map.values()})
 
+    lock_names = _user_labels(
+        db, [r.locked_by_id for r in rows if r.locked_by_id]
+    )
+    peer_names = {
+        c.id: c.name
+        for c in db.scalars(
+            select(Candidate).where(
+                Candidate.id.in_([r.dedup_peer_id for r in rows if r.dedup_peer_id])
+            )
+        )
+    } if any(r.dedup_peer_id for r in rows) else {}
+
     items = [
         TalentListItem(
             id=r.id,
@@ -421,6 +473,12 @@ def list_talents(
                 else None
             ),
             top_match_score=top_match_map[r.id][1] if r.id in top_match_map else None,
+            dedup_flag=r.dedup_flag,
+            dedup_peer_name=peer_names.get(r.dedup_peer_id or ""),
+            locked_by_id=r.locked_by_id,
+            locked_by_name=lock_names.get(r.locked_by_id or ""),
+            locked_until=r.locked_until,
+            locked=dedup_svc.is_locked(r),
         )
         for r in rows
     ]
@@ -429,6 +487,79 @@ def list_talents(
     return PageOut[TalentListItem](
         items=items, total=total, limit=limit, offset=offset
     )
+
+
+# ---- 静态子路径必须在 /{candidate_id} 之前注册,否则被详情路由捕获 ----
+
+
+@router.get(
+    "/dedup-queue",
+    dependencies=[Depends(require_permission(PERM_WRITE_RESUMES))],
+)
+def dedup_queue(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """待审重复队列:精准对(两通道命中)+ 疑似对(单通道命中)。
+
+    队列 = 当前 dedup_flag='suspect' 的候选人与对端的配对 + 存量扫描中
+    的精准对(精准对不一定挂标,它们更接近"同一人",优先合并)。
+    """
+    result = dedup_svc.scan_tenant(db, current.tenant_id)
+    db.commit()  # scan 挂标落库
+    return {
+        "scanned": result["scanned"],
+        "exact": [
+            {
+                "candidate": _dup_person(p["candidate"]),
+                "peer": _dup_person(p["peer"]),
+                "channels": p["channels"],
+            }
+            for p in result["exact"]
+        ],
+        "suspect": [
+            {
+                "candidate": _dup_person(p["candidate"]),
+                "peer": _dup_person(p["peer"]),
+                "channels": p["channels"],
+            }
+            for p in result["suspect"]
+        ],
+    }
+
+
+@router.post(
+    "/dedup-scan",
+    dependencies=[Depends(require_permission(PERM_WRITE_RESUMES))],
+)
+def dedup_scan(
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """手动全量重扫:给疑似候选挂标,返回各级计数。幂等。"""
+    result = dedup_svc.scan_tenant(db, current.tenant_id)
+    write_audit(
+        db,
+        actor=current,
+        entity_type="candidate",
+        entity_id="bulk",
+        action="dedup_scan",
+        detail={
+            "scanned": result["scanned"],
+            "exact": len(result["exact"]),
+            "suspect": len(result["suspect"]),
+            "flagged": result["flagged"],
+        },
+        request=request,
+    )
+    db.commit()
+    return {
+        "scanned": result["scanned"],
+        "exact": len(result["exact"]),
+        "suspect": len(result["suspect"]),
+        "flagged": result["flagged"],
+    }
 
 
 # ============ 详情 ============
@@ -527,6 +658,17 @@ def get_talent(
             for g in group_rows
         ],
         recent_notes=[_serialize_note(n) for n in notes],
+        dedup_flag=c.dedup_flag,
+        dedup_peer_id=c.dedup_peer_id,
+        dedup_peer_name=(
+            db.get(Candidate, c.dedup_peer_id).name
+            if c.dedup_peer_id and db.get(Candidate, c.dedup_peer_id)
+            else None
+        ),
+        locked_by_id=c.locked_by_id,
+        locked_by_name=_user_label(db, c.locked_by_id),
+        locked_until=c.locked_until,
+        locked=dedup_svc.is_locked(c),
     )
 
 
@@ -552,6 +694,7 @@ async def delete_talent(
     ``app.api.resumes.delete_candidate_with_dependents`` 尽力清理。
     """
     c = _get_candidate(db, candidate_id=candidate_id, current=current)
+    dedup_svc.assert_unlocked(c, current.id)
     await delete_candidate_with_dependents(
         db, c, actor=current, request=request, reason="manual_delete"
     )
@@ -704,6 +847,7 @@ def set_tags(
     current: User = Depends(get_current_user),
 ) -> dict[str, list[str]]:
     c = _get_candidate(db, candidate_id=candidate_id, current=current)
+    dedup_svc.assert_unlocked(c, current.id)
     before = list(c.tags or [])
     c.tags = body.tags
     _touch_last_active(c)
@@ -741,6 +885,7 @@ def add_blacklist(
     current: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     c = _get_candidate(db, candidate_id=candidate_id, current=current)
+    dedup_svc.assert_unlocked(c, current.id)
     c.is_blacklisted = True
     c.blacklist_reason = body.reason or None
     c.blacklisted_at = _utcnow_naive()
@@ -774,6 +919,7 @@ def remove_blacklist(
     current: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     c = _get_candidate(db, candidate_id=candidate_id, current=current)
+    dedup_svc.assert_unlocked(c, current.id)
     prev_reason = c.blacklist_reason
     c.is_blacklisted = False
     c.blacklist_reason = None
@@ -1302,6 +1448,8 @@ async def merge_talent(
     drop = _get_candidate(db, candidate_id=body.drop_id, current=current)
     if keep.id == drop.id:
         raise HTTPException(400, "不能与自己合并")
+    dedup_svc.assert_unlocked(keep, current.id)
+    dedup_svc.assert_unlocked(drop, current.id)
     unknown = set(body.field_choices) - set(_MERGEABLE_FIELDS)
     if unknown:
         raise HTTPException(
@@ -1376,6 +1524,115 @@ async def merge_talent(
     )
     db.commit()
     return {"ok": True, "keep_id": keep.id}
+
+
+# ============ 两级查重队列 + 候选人锁定(Moka 同款) ============
+
+
+def _dup_person(c: Candidate) -> dict[str, Any]:
+    return {
+        "id": c.id,
+        "name": c.name,
+        "display_email": c.display_email,
+        "display_phone": c.display_phone,
+        "status": c.status,
+        "created_at": c.created_at,
+        "dedup_flag": c.dedup_flag,
+    }
+
+
+@router.post(
+    "/{candidate_id}/dedup-dismiss",
+    dependencies=[Depends(require_permission(PERM_WRITE_RESUMES))],
+)
+def dedup_dismiss(
+    candidate_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """确认非重复:摘除疑标(对端不受影响)。"""
+    c = _get_candidate(db, candidate_id=candidate_id, current=current)
+    dedup_svc.assert_unlocked(c, current.id)
+    peer_id = c.dedup_peer_id
+    dedup_svc.dismiss_suspect(db, c)
+    write_audit(
+        db,
+        actor=current,
+        entity_type="candidate",
+        entity_id=c.id,
+        action="dedup_dismiss",
+        detail={"peer_id": peer_id},
+        request=request,
+    )
+    db.commit()
+    return {"ok": True}
+
+
+class LockIn(BaseModel):
+    days: int = Field(default=7, ge=1, le=90)
+
+
+@router.post(
+    "/{candidate_id}/lock",
+    dependencies=[Depends(require_permission(PERM_WRITE_RESUMES))],
+)
+def lock_talent(
+    candidate_id: str,
+    body: LockIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """锁定候选人:防止其他 HR 拉入流程/编辑,超期自动释放。"""
+    c = _get_candidate(db, candidate_id=candidate_id, current=current)
+    if dedup_svc.is_locked(c) and c.locked_by_id != current.id:
+        raise HTTPException(
+            409,
+            f"候选人已被 {_user_label(db, c.locked_by_id) or '其他同事'} 锁定至 {c.locked_until:%Y-%m-%d}",
+        )
+    dedup_svc.lock_candidate(db, c, current.id, days=body.days)
+    write_audit(
+        db,
+        actor=current,
+        entity_type="candidate",
+        entity_id=c.id,
+        action="lock",
+        detail={"days": body.days, "until": c.locked_until.isoformat()},
+        request=request,
+    )
+    db.commit()
+    return {"locked": True, "locked_by_id": c.locked_by_id, "locked_until": c.locked_until}
+
+
+@router.post(
+    "/{candidate_id}/unlock",
+    dependencies=[Depends(require_permission(PERM_WRITE_RESUMES))],
+)
+def unlock_talent(
+    candidate_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """释放锁:持锁人本人可解;过期锁任何人可接管(先 lock 再操作)。"""
+    c = _get_candidate(db, candidate_id=candidate_id, current=current)
+    if dedup_svc.is_locked(c) and c.locked_by_id != current.id:
+        raise HTTPException(
+            403, f"仅持锁人({_user_label(db, c.locked_by_id) or '?'})可释放"
+        )
+    dedup_svc.unlock_candidate(db, c)
+    write_audit(
+        db,
+        actor=current,
+        entity_type="candidate",
+        entity_id=c.id,
+        action="unlock",
+        detail={},
+        request=request,
+    )
+    db.commit()
+    return {"locked": False}
 
 
 _CSV_LIMIT = 5 * 1024 * 1024
@@ -1466,6 +1723,11 @@ async def import_talents(
             last_active_at=_utcnow_naive(),
         )
         db.add(c)
+        db.flush()
+        try:
+            dedup_svc.flag_suspects(db, c)
+        except Exception:  # noqa: BLE001
+            logger.exception("dedup flag 失败 candidate=%s", c.id)
         seen_hashes |= row_hashes
         created += 1
     write_audit(

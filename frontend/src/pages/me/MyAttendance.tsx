@@ -1,6 +1,15 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Clock, ClipboardPlus, LogIn, LogOut, Undo2 } from "lucide-react";
+import {
+  CheckCircle2,
+  Clock,
+  ClipboardCheck,
+  ClipboardPlus,
+  LogIn,
+  LogOut,
+  MessageSquareWarning,
+  Undo2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
@@ -274,8 +283,152 @@ export function MyAttendance() {
         </section>
       )}
 
+      <MonthConfirmCard month={month} hasRows={(attendance ?? []).length > 0} />
+
       <AttRequestModal open={reqOpen} onClose={() => setReqOpen(false)} />
     </main>
+  );
+}
+
+type AttConfirmation = {
+  month: string;
+  status: string | null; // null=未确认 | confirmed | disputed | resolved
+  note: string | null;
+  resolved_note: string | null;
+  updated_at: string | null;
+};
+
+/** 月度考勤在线确认 — 员工核对当月记录后确认或提出异议(Moka 同款) */
+function MonthConfirmCard({
+  month,
+  hasRows,
+}: {
+  month: string;
+  hasRows: boolean;
+}) {
+  const qc = useQueryClient();
+  const [disputeOpen, setDisputeOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const [err, setErr] = useState("");
+
+  const { data: conf } = useQuery<AttConfirmation>({
+    queryKey: ["me-att-confirm", month],
+    queryFn: () =>
+      fetchJSON(`/api/me/attendance-confirmation?month=${month}`),
+  });
+
+  const act = useMutation({
+    mutationFn: (v: { action: "confirm" | "dispute"; note?: string }) =>
+      fetchJSON(
+        v.action === "confirm"
+          ? "/api/me/attendance/confirm"
+          : "/api/me/attendance/dispute",
+        {
+          method: "POST",
+          body: JSON.stringify(
+            v.action === "confirm"
+              ? { month }
+              : { month, note: v.note ?? "" },
+          ),
+        },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["me-att-confirm", month] });
+      setDisputeOpen(false);
+      setNote("");
+      setErr("");
+    },
+    onError: (e) =>
+      setErr(e instanceof ApiError ? e.message : "操作失败"),
+  });
+
+  if (!hasRows && !conf) return null;
+
+  const st = conf?.status ?? null;
+
+  return (
+    <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] px-6 py-4 flex items-center gap-4">
+      <ClipboardCheck className="w-5 h-5 text-[var(--color-text-secondary)] shrink-0" />
+      <div className="flex flex-col gap-0.5 min-w-0">
+        <span className="text-[13px] font-medium text-[var(--color-text-primary)] font-body">
+          {month} 考勤结果确认
+        </span>
+        <span className="text-[12px] text-[var(--color-text-tertiary)] font-body">
+          {st === "confirmed" &&
+            `已确认${conf?.updated_at ? ` · ${conf.updated_at.slice(0, 16).replace("T", " ")}` : ""}`}
+          {st === "disputed" &&
+            `异议已提交,待 HR 处理${conf?.note ? `:${conf.note}` : ""}`}
+          {st === "resolved" &&
+            `HR 已处理${conf?.resolved_note ? `:${conf.resolved_note}` : ""} — 请核对后再次确认`}
+          {st === null &&
+            "请核对上方每日记录,确认无误后点击确认;有问题可提出异议。"}
+        </span>
+      </div>
+      <div className="flex-1" />
+      {err && (
+        <span className="text-[12px] text-[var(--color-danger)] font-body">
+          {err}
+        </span>
+      )}
+      {st === "confirmed" ? (
+        <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[12px] font-medium bg-[var(--color-success-soft)] text-[var(--color-success)] font-body">
+          <CheckCircle2 className="w-3.5 h-3.5" />
+          已确认
+        </span>
+      ) : st === "disputed" ? (
+        <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[12px] font-medium bg-[var(--color-danger-soft)] text-[var(--color-danger)] font-body">
+          <MessageSquareWarning className="w-3.5 h-3.5" />
+          异议处理中
+        </span>
+      ) : (
+        <>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setDisputeOpen(true)}
+          >
+            <MessageSquareWarning className="w-3.5 h-3.5" />
+            {st === "resolved" ? "仍有异议" : "提出异议"}
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => act.mutate({ action: "confirm" })}
+            disabled={act.isPending}
+          >
+            <CheckCircle2 className="w-4 h-4" />
+            {st === "resolved" ? "再次确认" : "确认无误"}
+          </Button>
+        </>
+      )}
+
+      <Modal
+        open={disputeOpen}
+        onClose={() => setDisputeOpen(false)}
+        title="对考勤结果提出异议"
+        description="说明哪一天的记录有误(如缺卡/时长不对),HR 处理后会通知你再次确认。"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDisputeOpen(false)}>
+              取消
+            </Button>
+            <Button
+              onClick={() =>
+                act.mutate({ action: "dispute", note: note.trim() })
+              }
+              disabled={act.isPending || !note.trim()}
+            >
+              {act.isPending ? "提交中…" : "提交异议"}
+            </Button>
+          </>
+        }
+      >
+        <Input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="例如:10/12 实际加班到 21 点,只有上班卡"
+        />
+      </Modal>
+    </div>
   );
 }
 

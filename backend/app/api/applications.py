@@ -293,6 +293,9 @@ def create_application(
     if not cand or cand.tenant_id != current.tenant_id:
         raise HTTPException(404, "候选人不存在")
     _check_scope(db, current, job, cand)
+    from app.services.dedup import assert_unlocked
+
+    assert_unlocked(cand, current.id)
 
     app = JobApplication(
         tenant_id=current.tenant_id,
@@ -388,6 +391,11 @@ def transition(
         raise HTTPException(400, f"to_stage 必须是 {ALL_STAGES} 之一")
     if body.to_stage == app.stage:
         raise HTTPException(409, f"已在 {body.to_stage} 阶段")
+    from app.services.dedup import assert_unlocked
+
+    _cand = db.get(Candidate, app.candidate_id)
+    if _cand is not None:
+        assert_unlocked(_cand, current.id)
 
     from_stage = app.stage
     record_event(db, app, body.to_stage, actor_user_id=current.id, note=body.note)

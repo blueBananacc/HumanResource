@@ -71,6 +71,7 @@ def upsert_candidate(
         db.add(candidate)
         db.flush()
         _try_auto_enroll(db, candidate)
+        _try_flag_dup(db, candidate)
         return candidate
 
     # 合并:用最新一次解析的 name / email / phone 覆盖展示信息。
@@ -86,7 +87,19 @@ def upsert_candidate(
         candidate.display_phone = phone
     db.flush()
     _try_auto_enroll(db, candidate)
+    _try_flag_dup(db, candidate)
     return candidate
+
+
+def _try_flag_dup(db: Session, candidate: Candidate) -> None:
+    """两级查重钩子:疑似重复 → 挂 dedup_flag;失败只记日志。"""
+    try:
+        from app.services.dedup import flag_suspects
+
+        flag_suspects(db, candidate)
+        db.flush()
+    except Exception:  # noqa: BLE001
+        logger.exception("dedup flag 失败 candidate=%s", candidate.id)
 
 
 def update_candidate_contact(
@@ -121,4 +134,5 @@ def update_candidate_contact(
         candidate.display_phone = p or None
         candidate.phone_hash = _hash(p, candidate.tenant_id) if p else None
     db.flush()
+    _try_flag_dup(db, candidate)
     return candidate
