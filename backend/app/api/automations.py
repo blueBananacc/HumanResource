@@ -205,6 +205,35 @@ def update_rule(
     return _out(r)
 
 
+@router.post("/{rule_id}/run-now")
+def run_now(
+    rule_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_SETTINGS)),
+):
+    """手动立即执行一条 date_field 规则 —— 对应 Rippling 的测试运行。
+
+    事件(audit)规则由业务动作驱动不能手动触发;幂等仍由
+    ``s:{emp}:{today}`` event_key 保证,重复调用不产生重复动作。
+    """
+    r = _get_rule(db, current.tenant_id, rule_id)
+    try:
+        fired = svc.run_rule_now(db, r)
+    except ValueError:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "仅「日期到达」规则支持手动执行;业务事件规则由写操作自动触发")
+    write_audit(
+        db, actor=current, entity_type="automation_rule", entity_id=r.id,
+        action="run_now", detail={"name": r.name, "fired": fired},
+        request=request,
+    )
+    db.commit()
+    db.refresh(r)
+    return {"fired": fired, "rule": _out(r)}
+
+
 @router.delete("/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_rule(
     rule_id: str,

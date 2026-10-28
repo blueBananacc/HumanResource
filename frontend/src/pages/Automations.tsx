@@ -157,6 +157,21 @@ export function Automations() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["automations"] }),
     onError: (e) => setErr(e instanceof ApiError ? e.message : "删除失败"),
   });
+  const runNow = useMutation({
+    mutationFn: (id: string) =>
+      fetchJSON(`/api/automations/${id}/run-now`, {
+        method: "POST",
+      }) as Promise<{ fired: number }>,
+    onSuccess: (d: { fired: number }) => {
+      setErr(
+        d.fired > 0
+          ? `已执行,触发 ${d.fired} 次(见执行记录)`
+          : "已执行:今天没有员工命中该规则的日期窗口",
+      );
+      qc.invalidateQueries({ queryKey: ["automations"] });
+    },
+    onError: (e) => setErr(e instanceof ApiError ? e.message : "执行失败"),
+  });
 
   async function onDelete(r: Rule) {
     const ok = await confirm({
@@ -263,6 +278,17 @@ export function Automations() {
                     ? `上次触发 ${formatRelative(r.last_fired_at)}`
                     : "未触发过"}
                 </span>
+                {r.trigger_kind === "date_field" && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => runNow.mutate(r.id)}
+                    disabled={runNow.isPending}
+                    title="立即执行一次(测试运行)"
+                  >
+                    <Zap className="w-3.5 h-3.5" />
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
                   size="sm"

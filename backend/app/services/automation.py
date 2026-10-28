@@ -670,13 +670,62 @@ def _rule_date_value(emp: Employee, field: str) -> date | None:
         return None
 
 
+def _run_rule_today(db: Session, rule: AutomationRule, today: date) -> int:
+    """单条 date_field 规则对全租户员工评估执行,返回触发次数。"""
+    spec = ENTITY_REGISTRY["employee"]
+    sched = rule.schedule or {}
+    field, offset = sched.get("field"), sched.get("offset_days") or 0
+    if field not in DATE_FIELDS:
+        return 0
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        return 0
+    recurring = bool(sched.get("recurring"))
+    fired = 0
+    for emp in db.scalars(
+        select(Employee).where(
+            Employee.tenant_id == rule.tenant_id,
+            Employee.status != "terminated",
+        )
+    ).all():
+        base = _rule_date_value(emp, field)
+        if base is None:
+            continue
+        if recurring:
+            try:
+                base = base.replace(year=today.year)
+            except ValueError:  # 2/29 → 平年 2/28
+                base = base.replace(year=today.year, day=28)
+        if base + timedelta(days=offset) != today:
+            continue
+        snap = _snapshot(emp, spec["fields"])
+        extra = spec.get("extras")
+        if extra is not None:
+            snap.update(extra(emp))
+        try:
+            if _fire(
+                db, rule, spec, emp, snap, None,
+                # event_key 与 rule_id 联合唯一,本身只需区分「谁哪天」
+                event_key=f"s:{emp.id}:{today.isoformat()}",
+                entity_type="employee", entity_id=emp.id,
+                trigger_label="date_field",
+            ):
+                fired += 1
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "定时规则 %s(%s)对员工 %s 执行失败",
+                rule.id, rule.name, emp.id)
+    return fired
+
+
 def run_scheduled(db: Session, today: date | None = None) -> int:
     """date_field 规则日扫:员工日期字段 + offset_days == 今天 → 触发。
 
     - ``schedule.recurring=true`` → 按今年纪念日算(生日/入职周年;2/29
       平年按 2/28),否则按原始日期一次性触发
-    - 幂等:event_key = ``sched:{rule_id}:{emp_id}:{today}``,同天同人同
-      规则只执行一次
+    - 幂等:event_key = ``s:{emp_id}:{today}`` 与 rule_id 联合唯一,
+      同天同人同规则只执行一次
     - terminated 员工不触发;返回本次执行的动作数
     """
     today = today or local_now().date()
@@ -686,54 +735,17 @@ def run_scheduled(db: Session, today: date | None = None) -> int:
             AutomationRule.is_active.is_(True),
         )
     ).all()
-    if not rules:
-        return 0
-    spec = ENTITY_REGISTRY["employee"]
-    fired = 0
-    for rule in rules:
-        sched = rule.schedule or {}
-        field, offset = sched.get("field"), sched.get("offset_days") or 0
-        if field not in DATE_FIELDS:
-            continue
-        try:
-            offset = int(offset)
-        except (TypeError, ValueError):
-            continue
-        recurring = bool(sched.get("recurring"))
-        for emp in db.scalars(
-            select(Employee).where(
-                Employee.tenant_id == rule.tenant_id,
-                Employee.status != "terminated",
-            )
-        ).all():
-            base = _rule_date_value(emp, field)
-            if base is None:
-                continue
-            if recurring:
-                try:
-                    base = base.replace(year=today.year)
-                except ValueError:  # 2/29 → 平年 2/28
-                    base = base.replace(year=today.year, day=28)
-            if base + timedelta(days=offset) != today:
-                continue
-            snap = _snapshot(emp, spec["fields"])
-            extra = spec.get("extras")
-            if extra is not None:
-                snap.update(extra(emp))
-            try:
-                if _fire(
-                    db, rule, spec, emp, snap, None,
-                    # event_key 与 rule_id 联合唯一,本身只需区分「谁哪天」
-                    event_key=f"s:{emp.id}:{today.isoformat()}",
-                    entity_type="employee", entity_id=emp.id,
-                    trigger_label="date_field",
-                ):
-                    fired += 1
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "定时规则 %s(%s)对员工 %s 执行失败",
-                    rule.id, rule.name, emp.id)
-    return fired
+    return sum(_run_rule_today(db, r, today) for r in rules)
+
+
+def run_rule_now(db: Session, rule: AutomationRule) -> int:
+    """手动立即执行单条 date_field 规则(run-now API;Rippling 测试运行)。
+
+    不受 is_active 限制 —— 管理员可以测试未启用规则的产出。
+    """
+    if rule.trigger_kind != "date_field":
+        raise ValueError("not_a_date_field_rule")
+    return _run_rule_today(db, rule, local_now().date())
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +847,7 @@ __all__ = [
     "eval_conditions",
     "render_tpl",
     "resolve_recipients",
+    "run_rule_now",
     "run_scheduled",
     "schema_meta",
     "suspend_automation",
