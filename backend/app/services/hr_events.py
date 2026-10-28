@@ -110,12 +110,12 @@ def collect_events(
         p = e.personal or {}
         birth = _parse_day(p.get("birth_date"))
         if birth and e.status != "terminated":
-            for y in (start.year, end.year):
+            for y in {start.year, end.year}:
                 d = _recur_on((birth.month, birth.day), y)
                 if d and start <= d <= end:
                     _push(e, "birthday", d, {"age": y - birth.year or None})
         if e.hire_date and e.status != "terminated":
-            for y in (start.year, end.year):
+            for y in {start.year, end.year}:
                 if y <= e.hire_date.year:
                     continue  # 入职当年不算"周年"
                 d = _recur_on((e.hire_date.month, e.hire_date.day), y)

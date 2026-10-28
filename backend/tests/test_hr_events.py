@@ -111,6 +111,10 @@ def test_reminders_grouping_and_kinds(db, client):
     kinds_today = {e["kind"] for e in d["today"]}
     assert "birthday" in kinds_today and "anniversary" in kinds_today
     assert {e["employee_name"] for e in d["today"] if e["kind"] == "birthday"} == {"生日君"}
+    # 同年窗口内周期事件不重复展开
+    bday_rows = [e for e in d["today"]
+                 if e["kind"] == "birthday" and e["employee_name"] == "生日君"]
+    assert len(bday_rows) == 1
     kinds_week = {e["kind"] for e in d["week"]}
     assert "probation_end" in kinds_week
     assert any(e["kind"] == "contract_end" for e in d["later"])
