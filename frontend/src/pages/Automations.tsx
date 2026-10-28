@@ -36,7 +36,13 @@ type Rule = {
   schedule: Schedule | null;
   watch_fields: string[] | null;
   conditions: Cond[];
-  action: "notify" | "email" | "create_case";
+  action:
+    | "notify"
+    | "email"
+    | "create_case"
+    | "email_candidate"
+    | "add_to_group"
+    | "send_survey";
   action_config: ActionConfig | null;
   recipients: { kind: string; value?: string }[];
   title_tpl: string;
@@ -110,7 +116,12 @@ const ACTION_LABEL: Record<string, string> = {
   notify: "站内通知",
   email: "邮件",
   create_case: "创建 HR 工单",
+  email_candidate: "给候选人发邮件",
+  add_to_group: "加入人才分组",
+  send_survey: "发送问卷",
 };
+// 候选人动作:收件人是从实体解析的候选人,不走 recipients
+const CANDIDATE_ACTIONS = ["email_candidate", "add_to_group", "send_survey"];
 const CASE_KIND_LABEL: Record<string, string> = {
   it: "IT",
   admin: "行政",
@@ -743,6 +754,12 @@ function RuleModal({
           ))}
         </div>
 
+        {CANDIDATE_ACTIONS.includes(action) ? (
+          <p className="text-[12px] text-[var(--color-text-tertiary)] font-body bg-[var(--color-bg-subtle)] rounded-lg px-3 py-2">
+            候选人动作的接收方是申请关联的候选人,无需收件人;group_id /
+            survey_id 等配置建议从岗位详情页「阶段触发器」入口创建。
+          </p>
+        ) : (
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <span className="text-[13px] font-medium text-[var(--color-text-primary)] font-body">
@@ -804,6 +821,7 @@ function RuleModal({
             </div>
           ))}
         </div>
+        )}
 
         <Field label="标题模板(可用 {{字段}} 占位)" required>
           <Input

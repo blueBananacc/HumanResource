@@ -362,3 +362,45 @@ PUT     /api/work-calendar                        已存在 —— 加 work_star
   `set_automation_rule_active`(后两个走确认门)。
 - 前端:`/automations` 表单加触发方式切换(事件/日期)+ 日期配置 +
   建工单配置;`/approvals` 策略表单加自动批准条件行 + 列表徽标。
+
+
+## F. Teamtailor 阶段触发器(Stage Triggers)
+
+参照 Teamtailor「触发器长在招聘流程 stage 上」的交互,把自动化挂到
+岗位详情的阶段视图上;底层仍是同一份 AutomationRule 引擎,零新引擎。
+
+### F.1 规则形态
+
+- 每条阶段触发器 = `entity_type=job_application` +
+  `conditions=[{stage eq X},{job_id eq 本岗}]`;`applied` 阶段存
+  `trigger=create`(建卡即进入),其余阶段存 `transition`。
+- transition 审计 detail `{from,to}` 的标量键并入快照(`_snapshot_for`),
+  模板可用 `{{from}}`/`{{to}}`;`job_application` 注册表加
+  `extras` → `{{candidate_name}}`/`{{candidate_email}}`/`{{job_title}}`,
+  加 `candidate_attr=candidate_id` 供候选人动作解析(candidate/job_offer/
+  interview/interview_scorecard 同样注册)。
+
+### F.2 候选人动作(CANDIDATE_ACTIONS)
+
+- `email_candidate`:收件人 = 候选人 `display_email`,复用
+  queued_email → after_commit → celery 通道;无邮箱记
+  `skipped_no_recipients`。
+- `add_to_group`:`action_config.group_id` → 幂等插入
+  CandidateGroupMember(source=auto);已入组记 `already_member`;
+  分组不存在/跨租户记 run.error。
+- `send_survey`:`action_config.survey_id`(须 published)→ 自动建
+  一次性 SurveyLink(默认 14 天,绑候选人)→ 链接附在邮件正文尾部发给
+  候选人;无邮箱仍 ok(链接已建可转交)。
+- 这三个动作不走 recipients;`validate_rule_payload` 要求实体带
+  `candidate_attr` 且按动作校验必填 config(group_id/survey_id)。
+
+### F.3 挂载面
+
+- 前端 `JobStageTriggersCard`(岗位详情,manage_settings 门控):
+  六阶段行(applied→rejected),每行列已有触发器(动作图标+名称+启停
+  开关+编辑/删除)+「添加触发器」;模态只收最少参数(动作+模板/分组/
+  问卷/收件人/工单优先级)。
+- 回读 = `GET /automations?entity_type=job_application` 前端按
+  conditions 过滤本岗本阶段;规则同时出现在全局自动化列表。
+- schema_meta 透出 `candidate_actions` 与实体 `has_candidate`;
+  全局表单对候选人动作隐藏收件人区并提示到岗位页配置。

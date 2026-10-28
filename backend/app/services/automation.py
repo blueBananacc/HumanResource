@@ -32,6 +32,7 @@ from typing import Any
 from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.domain.models import (
     Announcement,
     Attendance,
@@ -40,6 +41,8 @@ from app.domain.models import (
     AutomationRule,
     AutomationRun,
     Candidate,
+    CandidateGroup,
+    CandidateGroupMember,
     Employee,
     EmployeeRequest,
     ExpenseClaim,
@@ -52,8 +55,11 @@ from app.domain.models import (
     LeaveApplication,
     Notification,
     OvertimeRequest,
+    Survey,
+    SurveyLink,
     User,
 )
+from app.infra.invite_tokens import generate_invite_token, hash_invite_token
 from app.services.timeutil import local_now, utc_now
 
 logger = logging.getLogger(__name__)
@@ -97,6 +103,29 @@ EMP_PERSONAL_DATE_KEYS = ("birth_date", "probation_end", "contract_end",
 # fields: 快照白名单(条件 field 校验也用它)
 # employee_attr: 指向 employees.id 的属性(record_manager 解析用)
 # owner_attr: 指向 users.id 的属性(record_owner 解析用)
+# candidate_attr: 指向 candidates.id 的属性(候选人动作解析用;"id"=实体本身)
+# extras: (db, obj) → 额外模板键(候选人/岗位名等,不进条件白名单)
+
+
+def _job_app_extras(db: Session, o: JobApplication) -> dict[str, Any]:
+    """管道申请的模板上下文:候选人名/邮箱 + 岗位标题。"""
+    out: dict[str, Any] = {}
+    try:
+        if o.candidate_id:
+            cand = db.get(Candidate, o.candidate_id)
+            if cand is not None:
+                out["candidate_name"] = cand.name
+                out["candidate_email"] = cand.display_email
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        if o.job_id:
+            job = db.get(Job, o.job_id)
+            if job is not None:
+                out["job_title"] = job.title
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 ENTITY_REGISTRY: dict[str, dict[str, Any]] = {
     "candidate": {
         "model": Candidate,
@@ -104,6 +133,7 @@ ENTITY_REGISTRY: dict[str, dict[str, Any]] = {
                    "is_blacklisted", "org_unit_id"),
         "employee_attr": None,
         "owner_attr": "owner_user_id",
+        "candidate_attr": "id",
         "link": lambda o: f"/talents/{o.id}",
         "label": "候选人",
     },
@@ -120,6 +150,8 @@ ENTITY_REGISTRY: dict[str, dict[str, Any]] = {
         "fields": ("stage", "source", "candidate_id", "job_id", "rejected_reason"),
         "employee_attr": None,
         "owner_attr": "owner_user_id",
+        "candidate_attr": "candidate_id",
+        "extras": _job_app_extras,
         "link": lambda o: f"/pipeline",
         "label": "管道申请",
     },
@@ -128,6 +160,7 @@ ENTITY_REGISTRY: dict[str, dict[str, Any]] = {
         "fields": ("status", "position", "candidate_id", "job_id", "start_date"),
         "employee_attr": "employee_id",
         "owner_attr": "created_by",
+        "candidate_attr": "candidate_id",
         "link": lambda o: "/offers",
         "label": "Offer",
     },
@@ -136,6 +169,7 @@ ENTITY_REGISTRY: dict[str, dict[str, Any]] = {
         "fields": ("status", "mode", "modality", "candidate_id", "job_id"),
         "employee_attr": None,
         "owner_attr": None,
+        "candidate_attr": "candidate_id",
         "link": lambda o: "/interviews",
         "label": "面试",
     },
@@ -145,7 +179,7 @@ ENTITY_REGISTRY: dict[str, dict[str, Any]] = {
         "fields": ("name", "employee_no", "status", "designation", "work_email",
                    "employment_type", "org_unit_id", "hire_date",
                    *EMP_PERSONAL_DATE_KEYS),
-        "extras": lambda o: {
+        "extras": lambda db, o: {
             k: _scalar((o.personal or {}).get(k))
             for k in EMP_PERSONAL_DATE_KEYS
         },
@@ -225,6 +259,7 @@ ENTITY_REGISTRY: dict[str, dict[str, Any]] = {
         "fields": ("title", "status", "candidate_id", "job_id"),
         "employee_attr": None,
         "owner_attr": "created_by",
+        "candidate_attr": "candidate_id",
         "link": lambda o: f"/talents/{o.candidate_id}",
         "label": "面试评分卡",
     },
@@ -261,7 +296,13 @@ def _action_matches(trigger: str, action: str) -> bool:
 
 CONDITION_OPS = ("eq", "ne", "gt", "lt", "ge", "le", "contains", "in", "exists")
 RECIPIENT_KINDS = ("actor", "role", "user", "record_owner", "record_manager")
-ACTIONS = ("notify", "email", "create_case")
+ACTIONS = ("notify", "email", "create_case",
+           "email_candidate", "add_to_group", "send_survey")
+
+# 作用于「实体关联候选人」的动作 —— Teamtailor 阶段触发器的主力动作:
+# email_candidate 给候选人发邮件;add_to_group 进人才分组;send_survey 发问卷链接。
+# 这些动作不走 recipients(收件人是候选人),要求实体注册表带 candidate_attr。
+CANDIDATE_ACTIONS = ("email_candidate", "add_to_group", "send_survey")
 
 # trigger_kind:audit = 审计事件(默认);date_field = 员工日期字段到达
 TRIGGER_KINDS = ("audit", "date_field")
@@ -431,7 +472,12 @@ def _snapshot_for(db: Session, spec: dict, log: AuditLog) -> tuple[Any, dict[str
     snap = _snapshot(obj, spec["fields"])
     extra = spec.get("extras")
     if extra is not None:
-        snap.update(extra(obj))
+        snap.update(extra(db, obj))
+    # 审计 detail 里的标量也进模板上下文(from/to_stage 等迁移语境)
+    if isinstance(log.detail, dict):
+        for k, v in log.detail.items():
+            if k not in snap and not isinstance(v, (dict, list)):
+                snap[k] = _scalar(v)
     return obj, snap
 
 
@@ -541,29 +587,152 @@ def _fire(
     if rule.action == "create_case":
         _exec_create_case(db, rule, spec, obj, snap, actor, run,
                           title, body, users)
+    elif rule.action in CANDIDATE_ACTIONS:
+        _exec_candidate_action(db, rule, spec, obj, run, body)
     elif not users:
         run.status = "skipped_no_recipients"
         db.add(run)
         return False
     elif rule.action == "email":
-        run.payload["to"] = [u.email for u in users if u.email]
-        if not run.payload["to"]:
+        to = [u.email for u in users if u.email]
+        if not to:
             run.status = "skipped_no_recipients"
             db.add(run)
             return False
-        run.status = "queued_email"
-        db.info.setdefault("automation_email_runs", [])
-        if run.id not in db.info["automation_email_runs"]:
-            db.add(run)
-            db.flush()  # 需要 run.id 供 after_commit 任务回查
-            db.info["automation_email_runs"].append(run.id)
-        _register_commit_hook(db)
+        _queue_email_run(db, run, to)
     else:
         _notify_users(db, rule, users, title, body, link)
         run.status = "ok"
         db.add(run)
     rule.last_fired_at = utc_now()
     return True
+
+
+def _queue_email_run(db: Session, run: AutomationRun, to: list[str]) -> None:
+    """把 run 挂为 queued_email,after_commit 交 celery 投递。"""
+    run.payload["to"] = to
+    run.status = "queued_email"
+    db.info.setdefault("automation_email_runs", [])
+    if run.id not in db.info["automation_email_runs"]:
+        db.add(run)
+        db.flush()  # 需要 run.id 供 after_commit 任务回查
+        db.info["automation_email_runs"].append(run.id)
+    _register_commit_hook(db)
+
+
+def _public_base() -> str:
+    """候选人侧公开链接的站点根(public_base_url → cors 兜底)。"""
+    if settings.public_base_url:
+        return settings.public_base_url.rstrip("/")
+    return (settings.cors_origins[0] if settings.cors_origins else "").rstrip("/")
+
+
+def _resolve_candidate(
+    db: Session, spec: dict, obj: Any, tenant_id: str
+) -> Candidate | None:
+    """按注册表 candidate_attr 从快照实体解析候选人(租户校验)。"""
+    attr = spec.get("candidate_attr")
+    if attr is None or obj is None:
+        return None
+    cid = getattr(obj, attr, None)
+    if not cid:
+        return None
+    cand = db.get(Candidate, cid)
+    return cand if cand is not None and cand.tenant_id == tenant_id else None
+
+
+def _exec_candidate_action(
+    db: Session,
+    rule: AutomationRule,
+    spec: dict,
+    obj: Any,
+    run: AutomationRun,
+    body: str,
+) -> None:
+    """候选人动作:email_candidate / add_to_group / send_survey。
+
+    Teamtailor 阶段触发器主力动作 —— 收件人/目标是从实体解析出的候选人,
+    不走 recipients。失败只写 run.error,不抛回业务事务。
+    """
+    cand = _resolve_candidate(db, spec, obj, rule.tenant_id)
+    if cand is None:
+        run.status = "error"
+        run.error = "candidate_not_found"
+        db.add(run)
+        return
+    cfg = rule.action_config or {}
+    run.payload["candidate_id"] = cand.id
+    run.payload["candidate_name"] = cand.name
+
+    if rule.action == "add_to_group":
+        gid = cfg.get("group_id")
+        grp = db.get(CandidateGroup, gid) if gid else None
+        if grp is None or grp.tenant_id != rule.tenant_id:
+            run.status = "error"
+            run.error = "group_not_found"
+            db.add(run)
+            return
+        exists = db.scalars(
+            select(CandidateGroupMember.id).where(
+                CandidateGroupMember.group_id == gid,
+                CandidateGroupMember.candidate_id == cand.id,
+            )
+        ).first()
+        if exists:
+            run.payload["already_member"] = True
+        else:
+            db.add(CandidateGroupMember(
+                group_id=gid, candidate_id=cand.id,
+                added_by=rule.created_by, source="auto",
+            ))
+        run.payload["group_id"] = gid
+        run.payload["group_name"] = grp.name
+        run.status = "ok"
+        db.add(run)
+        return
+
+    if rule.action == "send_survey":
+        sid = cfg.get("survey_id")
+        survey = db.get(Survey, sid) if sid else None
+        if survey is None or survey.tenant_id != rule.tenant_id:
+            run.status = "error"
+            run.error = "survey_not_found"
+            db.add(run)
+            return
+        if survey.status != "published":
+            run.status = "error"
+            run.error = "survey_not_published"
+            db.add(run)
+            return
+        days = cfg.get("expires_in_days", 14)
+        try:
+            days = max(1, min(90, int(days)))
+        except (TypeError, ValueError):
+            days = 14
+        token = generate_invite_token()
+        link = SurveyLink(
+            tenant_id=rule.tenant_id, survey_id=survey.id,
+            token_hash=hash_invite_token(token),
+            candidate_id=cand.id,
+            expires_at=utc_now() + timedelta(days=days),
+            created_by=rule.created_by,
+        )
+        db.add(link)
+        db.flush()
+        url = f"{_public_base()}/s/{token}"
+        run.payload["link_id"] = link.id
+        run.payload["survey_id"] = survey.id
+        run.payload["survey_title"] = survey.title
+        run.payload["body"] = f"{body}\n\n问卷链接:{url}".strip()
+    # email_candidate / send_survey:有邮箱则走 queued_email。
+    # send_survey 无邮箱仍 ok(链接已建,可线下转交);email_candidate 记跳过。
+    if cand.display_email:
+        _queue_email_run(db, run, [cand.display_email])
+    else:
+        run.payload["email_skipped"] = True
+        run.status = ("ok" if rule.action == "send_survey"
+                      else "skipped_no_recipients")
+        db.add(run)
 
 
 def _notify_users(
@@ -702,7 +871,7 @@ def _run_rule_today(db: Session, rule: AutomationRule, today: date) -> int:
         snap = _snapshot(emp, spec["fields"])
         extra = spec.get("extras")
         if extra is not None:
-            snap.update(extra(emp))
+            snap.update(extra(db, emp))
         try:
             if _fire(
                 db, rule, spec, emp, snap, None,
@@ -795,6 +964,14 @@ def validate_rule_payload(
             return "assignee_kind 须为 role/user"
         if ak and not cfg.get("assignee_value"):
             return "assignee 需要 value"
+    if action in CANDIDATE_ACTIONS:
+        if not spec.get("candidate_attr"):
+            return f"「{action}」动作要求实体有关联候选人"
+        cfg = action_config or {}
+        if action == "add_to_group" and not cfg.get("group_id"):
+            return "加入候选人分组需要 action_config.group_id"
+        if action == "send_survey" and not cfg.get("survey_id"):
+            return "发送问卷需要 action_config.survey_id"
     allowed_fields = set(spec["fields"]) | {"id"}
     for c in conditions or []:
         if c.get("field") not in allowed_fields:
@@ -822,11 +999,13 @@ def schema_meta() -> dict[str, Any]:
                     or (k2 == "record_owner" and v.get("owner_attr"))
                     or (k2 == "record_manager" and v.get("employee_attr"))
                 ],
+                "has_candidate": bool(v.get("candidate_attr")),
             }
             for k, v in ENTITY_REGISTRY.items()
         },
         "ops": list(CONDITION_OPS),
         "actions": list(ACTIONS),
+        "candidate_actions": list(CANDIDATE_ACTIONS),
         "triggers": list(TRIGGERS),
         "trigger_kinds": [
             {"value": "audit", "label": "业务事件"},

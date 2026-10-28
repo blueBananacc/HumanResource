@@ -76,7 +76,10 @@ class RuleIn(BaseModel):
     schedule: dict[str, Any] | None = None
     watch_fields: list[str] | None = None
     conditions: list[dict[str, Any]] = []
-    action: Literal["notify", "email", "create_case"] = "notify"
+    action: Literal[
+        "notify", "email", "create_case",
+        "email_candidate", "add_to_group", "send_survey",
+    ] = "notify"
     action_config: dict[str, Any] | None = None
     recipients: list[dict[str, Any]] = []
     title_tpl: str = Field(min_length=1, max_length=256)
@@ -91,7 +94,10 @@ class RulePatch(BaseModel):
     schedule: dict[str, Any] | None = None
     watch_fields: list[str] | None = None
     conditions: list[dict[str, Any]] | None = None
-    action: Literal["notify", "email", "create_case"] | None = None
+    action: Literal[
+        "notify", "email", "create_case",
+        "email_candidate", "add_to_group", "send_survey",
+    ] | None = None
     action_config: dict[str, Any] | None = None
     recipients: list[dict[str, Any]] | None = None
     title_tpl: str | None = Field(default=None, min_length=1, max_length=256)
