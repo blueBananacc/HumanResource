@@ -15,6 +15,7 @@ ApprovalInstance + ApprovalStep 链;单据保持 pending 直到末步批准才�
 """
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -51,6 +52,8 @@ CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 _OPS = ("eq", "ne", "gt", "lt", "ge", "le", "in")
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
@@ -98,13 +101,16 @@ def _cond_ok(db: Session, request_type: str, obj: Any, cond: dict) -> bool:
     return {"gt": a > b, "lt": a < b, "ge": a >= b, "le": a <= b}[op]
 
 
-def validate_policy(request_type: str, conditions: list, steps: list) -> None:
+def validate_policy(
+    request_type: str, conditions: list, steps: list,
+    auto_approve: list | None = None,
+) -> None:
     """建/改策略时的静态校验;不合格抛 422。"""
     if request_type not in REQUEST_TYPES:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             f"未知 request_type,可选:{','.join(REQUEST_TYPES)}")
-    for c in conditions or []:
+    for c in (conditions or []) + (auto_approve or []):
         if (c.get("field") not in CONDITION_FIELDS[request_type]
                 or c.get("op") not in _OPS):
             raise HTTPException(
@@ -170,8 +176,79 @@ def route_request(
             label=s.get("label"),
         ))
     db.flush()
+    # 自动裁决(Rippling auto-approve):策略 auto_approve 条件组非空且全部
+    # 命中 → 提交即批准;副作用失败则保持 pending 走人工链,永不卡单。
+    if pol.auto_approve and all(
+            _cond_ok(db, request_type, obj, c) for c in pol.auto_approve):
+        if _auto_approve(db, inst, pol, obj):
+            return inst
     _notify_step_approvers(db, inst, obj)
     return inst
+
+
+def _system_actor(
+    db: Session, tenant_id: str, pol: ApprovalPolicy
+) -> User | None:
+    """自动批准的名义执行人:策略创建者优先,退化到租户首个 active admin/hr。
+
+    领域副作用(余额扣减/考勤落账等)与审计都要求真实 User,不能凭空构造。
+    """
+    if pol.created_by:
+        u = db.get(User, pol.created_by)
+        if u and u.tenant_id == tenant_id and u.status == "active":
+            return u
+    for role in ("admin", "hr"):
+        u = db.scalars(
+            select(User).where(
+                User.tenant_id == tenant_id, User.role == role,
+                User.status == "active",
+            ).order_by(User.created_at)
+        ).first()
+        if u is not None:
+            return u
+    return None
+
+
+def _auto_approve(
+    db: Session, inst: ApprovalInstance, pol: ApprovalPolicy, obj: Any
+) -> bool:
+    """策略自动批准:先跑领域副作用,成功再把实例/步骤标记为 approved。
+
+    副作用与人工批准同一份 ``_apply_*_decision`` —— 余额校验、考勤占用等
+    护栏一个不少;任何异常都回 False 让人工链接管,自动裁决可安全退化。
+    """
+    actor = _system_actor(db, inst.tenant_id, pol)
+    if actor is None:
+        logger.warning("auto_approve 无可用执行人,policy=%s,退回人工链", pol.id)
+        return False
+    try:
+        apply_domain_decision(
+            db, inst.request_type, obj, "approved", actor,
+            f"自动批准 · {pol.name}", None,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "auto_approve 副作用失败 policy=%s inst=%s,退回人工链",
+            pol.id, inst.id)
+        return False
+    now = _now()
+    for s in db.scalars(
+        select(ApprovalStep).where(ApprovalStep.instance_id == inst.id)
+    ).all():
+        s.status = "approved"
+        s.decided_by_id = actor.id
+        s.decided_at = now
+        s.note = "自动批准"
+    inst.status = "approved"
+    inst.auto_approved = True
+    inst.current_step_idx = len(pol.steps or [])
+    inst.decided_at = now
+    requester_uid = _requester_user_id(db, inst.request_type, obj)
+    if requester_uid:
+        _notify(db, inst.tenant_id, requester_uid, "审批已自动批准",
+                _step_title(db, inst, obj)
+                + f"(策略「{pol.name}」自动裁决)", "/me/requests")
+    return True
 
 
 def _requester_user_id(db: Session, request_type: str, obj: Any) -> str | None:

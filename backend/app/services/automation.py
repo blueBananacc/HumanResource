@@ -26,10 +26,10 @@ from __future__ import annotations
 import logging
 import re
 from contextlib import contextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import event, select
+from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
 
 from app.domain.models import (
@@ -54,7 +54,7 @@ from app.domain.models import (
     OvertimeRequest,
     User,
 )
-from app.services.timeutil import utc_now
+from app.services.timeutil import local_now, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,11 @@ def _emp_id(attr: str):
 
 def _owner(attr: str):
     return lambda obj: getattr(obj, attr, None)
+
+
+# 员工 personal JSON 里的日期字段 —— date_field 触发器与条件的取值键
+EMP_PERSONAL_DATE_KEYS = ("birth_date", "probation_end", "contract_end",
+                        "cert_expire")
 
 
 # fields: 快照白名单(条件 field 校验也用它)
@@ -136,8 +141,14 @@ ENTITY_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "employee": {
         "model": Employee,
+        # personal JSON 里的日期键也进快照(条件可引用,值由 extras 补齐)
         "fields": ("name", "employee_no", "status", "designation", "work_email",
-                   "employment_type", "org_unit_id", "hire_date"),
+                   "employment_type", "org_unit_id", "hire_date",
+                   *EMP_PERSONAL_DATE_KEYS),
+        "extras": lambda o: {
+            k: _scalar((o.personal or {}).get(k))
+            for k in EMP_PERSONAL_DATE_KEYS
+        },
         "employee_attr": "id",
         "owner_attr": "user_id",
         "link": lambda o: f"/employees/{o.id}",
@@ -250,7 +261,21 @@ def _action_matches(trigger: str, action: str) -> bool:
 
 CONDITION_OPS = ("eq", "ne", "gt", "lt", "ge", "le", "contains", "in", "exists")
 RECIPIENT_KINDS = ("actor", "role", "user", "record_owner", "record_manager")
-ACTIONS = ("notify", "email")
+ACTIONS = ("notify", "email", "create_case")
+
+# trigger_kind:audit = 审计事件(默认);date_field = 员工日期字段到达
+TRIGGER_KINDS = ("audit", "date_field")
+
+# date_field 可监听的员工日期字段
+DATE_FIELDS = {
+    "hire_date": "入职日期",
+    "birth_date": "生日",
+    "probation_end": "转正日期",
+    "contract_end": "合同到期",
+    "cert_expire": "证件到期",
+}
+
+CASE_PRIORITIES = ("low", "normal", "high", "urgent")
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +428,11 @@ def _snapshot_for(db: Session, spec: dict, log: AuditLog) -> tuple[Any, dict[str
             snap.update({k: _scalar(v) for k, v in log.detail.items()
                          if not isinstance(v, (dict, list))})
         return None, snap
-    return obj, _snapshot(obj, spec["fields"])
+    snap = _snapshot(obj, spec["fields"])
+    extra = spec.get("extras")
+    if extra is not None:
+        snap.update(extra(obj))
+    return obj, snap
 
 
 def dispatch(db: Session, *, log: AuditLog, actor: User | None) -> int:
@@ -422,6 +451,7 @@ def dispatch(db: Session, *, log: AuditLog, actor: User | None) -> int:
                 select(AutomationRule).where(
                     AutomationRule.tenant_id == log.tenant_id,
                     AutomationRule.entity_type == log.entity_type,
+                    AutomationRule.trigger_kind == "audit",
                     AutomationRule.is_active.is_(True),
                 )
             ).all()
@@ -461,11 +491,32 @@ def _apply_rule(
         fields = (log.detail or {}).get("fields")
         if isinstance(fields, dict) and not (set(fields) & set(rule.watch_fields)):
             return False
+    return _fire(
+        db, rule, spec, obj, snap, actor,
+        event_key=log.id, entity_type=log.entity_type,
+        entity_id=log.entity_id, trigger_label=log.action,
+    )
+
+
+def _fire(
+    db: Session,
+    rule: AutomationRule,
+    spec: dict,
+    obj: Any,
+    snap: dict[str, Any],
+    actor: User | None,
+    *,
+    event_key: str,
+    entity_type: str,
+    entity_id: str,
+    trigger_label: str,
+) -> bool:
+    """条件评估 → 幂等检查 → 动作执行 → 记账。audit 事件与定时扫描共用。"""
     if not eval_conditions(rule.conditions, snap):
         return False
     exists = db.scalars(
         select(AutomationRun.id).where(
-            AutomationRun.rule_id == rule.id, AutomationRun.event_key == log.id
+            AutomationRun.rule_id == rule.id, AutomationRun.event_key == event_key
         )
     ).first()
     if exists:
@@ -479,19 +530,22 @@ def _apply_rule(
     run = AutomationRun(
         tenant_id=rule.tenant_id,
         rule_id=rule.id,
-        event_key=log.id,
-        entity_type=log.entity_type,
-        entity_id=log.entity_id,
-        trigger=log.action,
+        event_key=event_key,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        trigger=trigger_label,
         action=rule.action,
         recipients=[u.id for u in users],
         payload={"title": title, "body": body},
     )
-    if not users:
+    if rule.action == "create_case":
+        _exec_create_case(db, rule, spec, obj, snap, actor, run,
+                          title, body, users)
+    elif not users:
         run.status = "skipped_no_recipients"
         db.add(run)
         return False
-    if rule.action == "email":
+    elif rule.action == "email":
         run.payload["to"] = [u.email for u in users if u.email]
         if not run.payload["to"]:
             run.status = "skipped_no_recipients"
@@ -505,21 +559,181 @@ def _apply_rule(
             db.info["automation_email_runs"].append(run.id)
         _register_commit_hook(db)
     else:
-        for u in users:
-            db.add(
-                Notification(
-                    tenant_id=rule.tenant_id,
-                    user_id=u.id,
-                    kind="automation",
-                    title=title[:128],
-                    body=(body or None) and body[:512],
-                    link=link,
-                )
-            )
+        _notify_users(db, rule, users, title, body, link)
         run.status = "ok"
         db.add(run)
     rule.last_fired_at = utc_now()
     return True
+
+
+def _notify_users(
+    db: Session, rule: AutomationRule, users: list[User],
+    title: str, body: str, link: str | None,
+) -> None:
+    for u in users:
+        db.add(
+            Notification(
+                tenant_id=rule.tenant_id,
+                user_id=u.id,
+                kind="automation",
+                title=title[:128],
+                body=(body or None) and body[:512],
+                link=link,
+            )
+        )
+
+
+def _exec_create_case(
+    db: Session,
+    rule: AutomationRule,
+    spec: dict,
+    obj: Any,
+    snap: dict[str, Any],
+    actor: User | None,
+    run: AutomationRun,
+    title: str,
+    body: str,
+    users: list[User],
+) -> None:
+    """create_case 动作:自动建 HR 工单(转人工处理通道)。
+
+    - ``subject_tpl``/``description_tpl`` 走同一套 ``{{field}}`` 模板
+    - ``requester_employee_id`` 取快照实体的员工关联(员工规则=员工本人)
+    - ``assignee``:role → 该角色首个活跃用户;user → 指定账号
+    - 收件人(recipients)若配置,同时收到一条工单通知
+    """
+    cfg = rule.action_config or {}
+    kind = cfg.get("kind") if cfg.get("kind") in HrCase.KINDS else "other"
+    priority = (cfg.get("priority")
+                if cfg.get("priority") in CASE_PRIORITIES else "normal")
+    subject = render_tpl(cfg.get("subject_tpl"), snap, actor) or title
+    desc = render_tpl(cfg.get("description_tpl"), snap, actor) or body
+
+    emp_id = None
+    if spec.get("employee_attr") and obj is not None:
+        emp_id = getattr(obj, spec["employee_attr"], None)
+
+    assignee_id = None
+    ak, av = cfg.get("assignee_kind"), cfg.get("assignee_value")
+    if ak == "user" and av:
+        u = db.get(User, av)
+        if u and u.tenant_id == rule.tenant_id and u.status == "active":
+            assignee_id = u.id
+    elif ak == "role" and av:
+        assignee_id = db.scalars(
+            select(User.id).where(
+                User.tenant_id == rule.tenant_id, User.role == av,
+                User.status == "active",
+            ).order_by(User.created_at)
+        ).first()
+
+    case_no = (db.scalar(
+        select(func.max(HrCase.case_no)).where(
+            HrCase.tenant_id == rule.tenant_id)
+    ) or 0) + 1
+    case = HrCase(
+        tenant_id=rule.tenant_id, case_no=case_no,
+        subject=subject[:128], kind=kind, priority=priority,
+        status="assigned" if assignee_id else "new",
+        description=desc or None,
+        requester_employee_id=emp_id,
+        assignee_user_id=assignee_id,
+    )
+    db.add(case)
+    db.flush()
+    run.payload["case_id"] = case.id
+    run.payload["case_no"] = case_no
+
+    notified = {u.id for u in users}
+    _notify_users(db, rule, users, title, body, "/cases")
+    if assignee_id and assignee_id not in notified:
+        _notify_users(db, rule, [db.get(User, assignee_id)],
+                      f"自动化工单 HR-{case_no}:{case.subject}",
+                      "由自动化规则创建,请跟进处理", "/cases")
+    run.status = "ok"
+    db.add(run)
+
+
+# ---------------------------------------------------------------------------
+# 定时触发(date_field)— 每日 sweep,watch_loop 调用
+# ---------------------------------------------------------------------------
+
+
+def _rule_date_value(emp: Employee, field: str) -> date | None:
+    """员工日期字段取值:hire_date 是列,其余在 personal JSON。"""
+    raw = emp.hire_date if field == "hire_date" else (emp.personal or {}).get(field)
+    if not raw:
+        return None
+    try:
+        return raw if isinstance(raw, date) else date.fromisoformat(str(raw)[:10])
+    except ValueError:
+        return None
+
+
+def run_scheduled(db: Session, today: date | None = None) -> int:
+    """date_field 规则日扫:员工日期字段 + offset_days == 今天 → 触发。
+
+    - ``schedule.recurring=true`` → 按今年纪念日算(生日/入职周年;2/29
+      平年按 2/28),否则按原始日期一次性触发
+    - 幂等:event_key = ``sched:{rule_id}:{emp_id}:{today}``,同天同人同
+      规则只执行一次
+    - terminated 员工不触发;返回本次执行的动作数
+    """
+    today = today or local_now().date()
+    rules = db.scalars(
+        select(AutomationRule).where(
+            AutomationRule.trigger_kind == "date_field",
+            AutomationRule.is_active.is_(True),
+        )
+    ).all()
+    if not rules:
+        return 0
+    spec = ENTITY_REGISTRY["employee"]
+    fired = 0
+    for rule in rules:
+        sched = rule.schedule or {}
+        field, offset = sched.get("field"), sched.get("offset_days") or 0
+        if field not in DATE_FIELDS:
+            continue
+        try:
+            offset = int(offset)
+        except (TypeError, ValueError):
+            continue
+        recurring = bool(sched.get("recurring"))
+        for emp in db.scalars(
+            select(Employee).where(
+                Employee.tenant_id == rule.tenant_id,
+                Employee.status != "terminated",
+            )
+        ).all():
+            base = _rule_date_value(emp, field)
+            if base is None:
+                continue
+            if recurring:
+                try:
+                    base = base.replace(year=today.year)
+                except ValueError:  # 2/29 → 平年 2/28
+                    base = base.replace(year=today.year, day=28)
+            if base + timedelta(days=offset) != today:
+                continue
+            snap = _snapshot(emp, spec["fields"])
+            extra = spec.get("extras")
+            if extra is not None:
+                snap.update(extra(emp))
+            try:
+                if _fire(
+                    db, rule, spec, emp, snap, None,
+                    # event_key 与 rule_id 联合唯一,本身只需区分「谁哪天」
+                    event_key=f"s:{emp.id}:{today.isoformat()}",
+                    entity_type="employee", entity_id=emp.id,
+                    trigger_label="date_field",
+                ):
+                    fired += 1
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "定时规则 %s(%s)对员工 %s 执行失败",
+                    rule.id, rule.name, emp.id)
+    return fired
 
 
 # ---------------------------------------------------------------------------
@@ -533,16 +747,42 @@ def validate_rule_payload(
     conditions: list[dict[str, Any]] | None,
     recipients: list[dict[str, Any]] | None,
     action: str,
+    *,
+    trigger_kind: str = "audit",
+    schedule: dict[str, Any] | None = None,
+    action_config: dict[str, Any] | None = None,
 ) -> str | None:
     """返回错误消息字符串;None = 通过。"""
     spec = ENTITY_REGISTRY.get(entity_type)
     if spec is None:
         return f"不支持的实体:{entity_type}"
-    if not trigger or not _TRIGGER_RE.match(trigger):
+    if trigger_kind not in TRIGGER_KINDS:
+        return f"trigger_kind 须为 {TRIGGER_KINDS} 之一"
+    if trigger_kind == "date_field":
+        if entity_type != "employee":
+            return "日期触发目前仅支持员工实体"
+        sched = schedule or {}
+        if sched.get("field") not in DATE_FIELDS:
+            return f"日期字段须为 {','.join(DATE_FIELDS)} 之一"
+        off = sched.get("offset_days", 0)
+        if isinstance(off, bool) or not isinstance(off, int) or abs(off) > 365:
+            return "offset_days 须为 ±365 内的整数"
+    elif not trigger or not _TRIGGER_RE.match(trigger):
         return ("trigger 须为小写审计动作名(字母/数字/下划线/冒号,≤64);"
                 "常用 create/update/delete,也可用 approve 等具体动作名")
     if action not in ACTIONS:
         return f"action 必须是 {ACTIONS} 之一"
+    if action == "create_case":
+        cfg = action_config or {}
+        if cfg.get("kind") and cfg["kind"] not in HrCase.KINDS:
+            return f"工单类型须为 {','.join(HrCase.KINDS)} 之一"
+        if cfg.get("priority") and cfg["priority"] not in CASE_PRIORITIES:
+            return f"优先级须为 {','.join(CASE_PRIORITIES)} 之一"
+        ak = cfg.get("assignee_kind")
+        if ak and ak not in ("role", "user"):
+            return "assignee_kind 须为 role/user"
+        if ak and not cfg.get("assignee_value"):
+            return "assignee 需要 value"
     allowed_fields = set(spec["fields"]) | {"id"}
     for c in conditions or []:
         if c.get("field") not in allowed_fields:
@@ -576,16 +816,26 @@ def schema_meta() -> dict[str, Any]:
         "ops": list(CONDITION_OPS),
         "actions": list(ACTIONS),
         "triggers": list(TRIGGERS),
+        "trigger_kinds": [
+            {"value": "audit", "label": "业务事件"},
+            {"value": "date_field", "label": "日期到达"},
+        ],
+        "date_fields": [{"value": k, "label": v} for k, v in DATE_FIELDS.items()],
+        "case_kinds": list(HrCase.KINDS),
+        "case_priorities": list(CASE_PRIORITIES),
     }
 
 
 __all__ = [
     "ENTITY_REGISTRY",
     "ENTITY_TYPES",
+    "DATE_FIELDS",
+    "TRIGGER_KINDS",
     "dispatch",
     "eval_conditions",
     "render_tpl",
     "resolve_recipients",
+    "run_scheduled",
     "schema_meta",
     "suspend_automation",
     "validate_rule_payload",

@@ -1712,12 +1712,16 @@ function makeTools(token: string): ToolDef[] {
         "conditions=[{field,op,value}] 字段白名单见 list_approval_policies " +
         "返回的 condition_fields(如 days gt 3);steps=[{resolver,key?,label?}]" +
         " 按顺序逐级审批:manager=申请人直属上级/role=该角色全员(key=角色名)" +
-        "/user=指定人(key=user_id)",
+        "/user=指定人(key=user_id);auto_approve=[{field,op,value}] 非空时" +
+        "命中策略且满足该条件组的单据提交即自动批准(如 days le 2)",
       parameters: Type.Object({
         name: Type.String(),
         request_type: Type.String(),
         priority: Type.Optional(Type.Number()),
         conditions: Type.Optional(
+          Type.Array(Type.Record(Type.String(), Type.Unknown())),
+        ),
+        auto_approve: Type.Optional(
           Type.Array(Type.Record(Type.String(), Type.Unknown())),
         ),
         steps: Type.Array(Type.Record(Type.String(), Type.Unknown())),
@@ -1730,8 +1734,110 @@ function makeTools(token: string): ToolDef[] {
             request_type: p.request_type,
             priority: p.priority ?? 0,
             conditions: p.conditions ?? [],
+            auto_approve: p.auto_approve ?? null,
             steps: p.steps,
           },
+        }),
+    },
+    {
+      name: "list_automation_rules",
+      label: "查自动化规则",
+      description:
+        "查租户的自动化规则列表(触发方式=业务事件/日期到达、实体、条件、" +
+        "动作=站内通知/邮件/建工单、启停、上次触发时间)。「配置了哪些自动" +
+        "化」「合同到期有没有提醒」用这个",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/automations?limit=50"),
+    },
+    {
+      name: "list_automation_runs",
+      label: "查自动化执行记录",
+      description:
+        "查某条自动化规则的执行记录(状态 ok/skipped/error、收件人、" +
+        "建单产出、执行时间)。rule_id 从 list_automation_rules 取",
+      parameters: Type.Object({
+        rule_id: Type.String({ description: "规则 id" }),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/automations/${p.rule_id}/runs?limit=20`),
+    },
+    {
+      name: "create_automation_rule",
+      label: "创建自动化规则",
+      description:
+        "建自动化规则(需用户确认;manage_settings 权限)。触发方式:" +
+        "trigger_kind=audit 业务事件(entity_type 实体 + trigger=create/" +
+        "update/delete/approve 等审计动作名,update 可加 watch_fields);" +
+        "date_field 员工日期到达(entity_type 固定 employee," +
+        "schedule={field:hire_date|birth_date|probation_end|contract_end|" +
+        "cert_expire, offset_days:±N 负=提前, recurring?:每年重复})。" +
+        "conditions=[{field,op,value}] 白名单见 GET /api/automations/schema。" +
+        "action=notify|email 需要 recipients=[{kind:actor|role|user|" +
+        "record_owner|record_manager,value?}];action=create_case 建 HR 工单," +
+        "action_config={kind:it|admin|payroll|facility|leave_dispute|other," +
+        "priority:low|normal|high|urgent, assignee_kind?:role|user," +
+        "assignee_value?}。title_tpl/body_tpl 支持 {{字段}} 占位",
+      parameters: Type.Object({
+        name: Type.String(),
+        entity_type: Type.String(),
+        trigger_kind: Type.Optional(
+          Type.String({ description: "audit|date_field,默认 audit" }),
+        ),
+        trigger: Type.Optional(
+          Type.String({ description: "审计动作名:create/update/delete/approve 等" }),
+        ),
+        schedule: Type.Optional(
+          Type.Record(Type.String(), Type.Unknown()),
+        ),
+        watch_fields: Type.Optional(Type.Array(Type.String())),
+        conditions: Type.Optional(
+          Type.Array(Type.Record(Type.String(), Type.Unknown())),
+        ),
+        action: Type.Optional(
+          Type.String({ description: "notify|email|create_case" }),
+        ),
+        action_config: Type.Optional(
+          Type.Record(Type.String(), Type.Unknown()),
+        ),
+        recipients: Type.Optional(
+          Type.Array(Type.Record(Type.String(), Type.Unknown())),
+        ),
+        title_tpl: Type.String(),
+        body_tpl: Type.Optional(Type.String()),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/automations", {
+          method: "POST",
+          body: {
+            name: p.name,
+            entity_type: p.entity_type,
+            trigger_kind: p.trigger_kind ?? "audit",
+            trigger: p.trigger,
+            schedule: p.schedule,
+            watch_fields: p.watch_fields,
+            conditions: p.conditions ?? [],
+            action: p.action ?? "notify",
+            action_config: p.action_config,
+            recipients: p.recipients ?? [],
+            title_tpl: p.title_tpl,
+            body_tpl: p.body_tpl,
+          },
+        }),
+    },
+    {
+      name: "set_automation_rule_active",
+      label: "启停自动化规则",
+      description:
+        "启用/停用一条自动化规则(需用户确认)。rule_id 从 " +
+        "list_automation_rules 取;停用后不再触发但保留执行记录",
+      parameters: Type.Object({
+        rule_id: Type.String({ description: "规则 id" }),
+        is_active: Type.Boolean(),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/automations/${p.rule_id}`, {
+          method: "PATCH",
+          body: { is_active: p.is_active },
         }),
     },
     {
@@ -2040,6 +2146,8 @@ export const WRITE_TOOLS = new Set([
   "toggle_lifecycle_task",
   "decide_approval",
   "save_approval_policy",
+  "create_automation_rule",
+  "set_automation_rule_active",
   "set_my_delegate",
   "create_project",
   "add_project_member",

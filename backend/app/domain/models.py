@@ -2925,7 +2925,14 @@ class AutomationRule(Base):
     )
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     entity_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # audit=审计事件漏斗(默认);date_field=员工日期字段到达(每日 sweep)
+    trigger_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="audit"
+    )
     trigger: Mapped[str] = mapped_column(String(64), nullable=False)
+    # date_field 规则:{field: hire_date|birth_date|probation_end|contract_end|
+    #   cert_expire, offset_days: int(负=提前,0=当天,正=之后)}
+    schedule: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     # update 触发时限定关注字段;[]/None = 任意字段变更都算
     watch_fields: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     # [{field, op, value}] AND 语义;field 必须是注册表快照白名单键
@@ -2933,6 +2940,9 @@ class AutomationRule(Base):
         JSON, nullable=False, default=list, server_default="[]"
     )
     action: Mapped[str] = mapped_column(String(16), nullable=False, server_default="notify")
+    # 动作参数:create_case → {kind, priority, subject_tpl?, description_tpl?,
+    #   assignee_kind?: role|user, assignee_value?}
+    action_config: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     # [{"kind":"actor"|"role"|"user"|"record_owner"|"record_manager","value":?}]
     recipients: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, nullable=False, default=list, server_default="[]"
@@ -3842,6 +3852,9 @@ class ApprovalPolicy(Base):
     request_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     conditions: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    # 自动裁决:非空且全部命中时,提交即批准(同一组白名单字段/算子);
+    # 执行人为策略创建者→退化为首个 active admin。None/[] = 不自动批准。
+    auto_approve: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     steps: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sql_true())
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
@@ -3873,6 +3886,10 @@ class ApprovalInstance(Base):
     )
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default="pending", index=True
+    )
+    # 自动批准标记:策略 auto_approve 条件全部命中 → 提交即批准
+    auto_approved: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_false()
     )
     current_step_idx: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(

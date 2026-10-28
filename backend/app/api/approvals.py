@@ -172,6 +172,7 @@ class PolicyIn(BaseModel):
     request_type: str
     priority: int = 0
     conditions: list[PolicyCondIn] = Field(default_factory=list)
+    auto_approve: list[PolicyCondIn] | None = None
     steps: list[PolicyStepIn] = Field(min_length=1)
     active: bool = True
 
@@ -180,6 +181,7 @@ class PolicyPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     priority: int | None = None
     conditions: list[PolicyCondIn] | None = None
+    auto_approve: list[PolicyCondIn] | None = None
     steps: list[PolicyStepIn] | None = Field(default=None, min_length=1)
     active: bool | None = None
 
@@ -188,6 +190,7 @@ def _policy_out(db: Session, p: ApprovalPolicy) -> dict:
     return {
         "id": p.id, "name": p.name, "request_type": p.request_type,
         "priority": p.priority, "conditions": p.conditions or [],
+        "auto_approve": p.auto_approve,
         "steps": p.steps or [], "active": p.active,
         "condition_fields": list(CONDITION_FIELDS.get(p.request_type, ())),
     }
@@ -217,12 +220,14 @@ def create_policy(
 ):
     steps = [s.model_dump() for s in body.steps]
     conds = [c.model_dump() for c in body.conditions]
-    validate_policy(body.request_type, conds, steps)
+    auto = ([c.model_dump() for c in body.auto_approve]
+            if body.auto_approve else None)
+    validate_policy(body.request_type, conds, steps, auto_approve=auto)
     p = ApprovalPolicy(
         tenant_id=current.tenant_id, name=body.name.strip(),
         request_type=body.request_type, priority=body.priority,
-        conditions=conds, steps=steps, active=body.active,
-        created_by=current.id,
+        conditions=conds, auto_approve=auto, steps=steps,
+        active=body.active, created_by=current.id,
     )
     db.add(p)
     db.flush()
@@ -252,11 +257,15 @@ def update_policy(
         p.priority = body.priority
     if "conditions" in fields:
         p.conditions = [c.model_dump() for c in (body.conditions or [])]
+    if "auto_approve" in fields:
+        p.auto_approve = ([c.model_dump() for c in body.auto_approve]
+                          if body.auto_approve else None)
     if "steps" in fields:
         p.steps = [s.model_dump() for s in (body.steps or [])]
     if "active" in fields:
         p.active = body.active
-    validate_policy(p.request_type, p.conditions, p.steps)
+    validate_policy(p.request_type, p.conditions, p.steps,
+                    auto_approve=p.auto_approve)
     p.updated_at = _now()
     write_audit(db, actor=current, entity_type="approval_policy",
                 entity_id=p.id, action="update", detail={}, request=request)
@@ -348,6 +357,7 @@ def instance_detail(
     obj = _obj_for(db, request_type, request_id)
     return {
         "id": inst.id, "status": inst.status,
+        "auto_approved": bool(inst.auto_approved),
         "current_step_idx": inst.current_step_idx,
         "title": describe_item(db, request_type, obj) if obj else "?",
         "steps": [{

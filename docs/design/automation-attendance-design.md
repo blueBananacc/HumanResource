@@ -316,3 +316,49 @@ PUT     /api/work-calendar                        已存在 —— 加 work_star
 - IP:CIDR 命中/未命中 403、XFF 首跳、空列表放行、checkin.ip 留痕。
 - 权限:viewer 403 规则 CRUD;主管只能免计下属;tenant 隔离;ESS 只见本人。
 - watcher late_repeat;automation_rules/flags 进 entities 只读检索。
+
+---
+
+## E. Rippling 批次扩展(迁移 0079)
+
+对标 Rippling Workflow Studio 的两项能力,在 T7 引擎上做加法式扩展:
+
+### E.1 定时触发 `trigger_kind=date_field`
+
+- 规则新增 `trigger_kind`(`audit` 默认 | `date_field`)+ `schedule`
+  `{field, offset_days, recurring?}`。date_field 规则只挂员工实体:
+  `field` ∈ `hire_date|birth_date|probation_end|contract_end|cert_expire`
+  (后四个读 `employee.personal` JSON,已并入 employee 快照白名单)。
+- `_watch_loop` 每日 `run_scheduled(db)`:`日期值 + offset_days == today`
+  → 条件评估 → 执行;`recurring=true` 按今年纪念日算(2/29 平年 2/28)。
+  幂等键 `event_key = s:{emp_id}:{today}`(与 rule_id 联合唯一),
+  terminated 员工跳过;规则执行失败单条记日志不影响其他。
+- 与 T7 差异:audit 规则走 write_audit 漏斗即时触发;date_field 规则
+  走日扫,`dispatch` 查询加 `trigger_kind='audit'` 过滤互不相扰。
+
+### E.2 `action=create_case`
+
+- `action_config` `{kind, priority, subject_tpl?, description_tpl?,
+  assignee_kind?: role|user, assignee_value?}`;subject/description 走同一
+  `{{field}}` 模板;`requester_employee_id` 取实体员工关联(员工规则=本人);
+  case_no 复用工单模块的租户内 max+1;assignee=role 取该角色首个活跃用户。
+- 收件人(recipients)若配置照常收通知;受理人未在收件人中则单独收一条。
+- notify/email 仍要求收件人非空,create_case 可选。
+
+### E.3 审批自动裁决 `ApprovalPolicy.auto_approve`
+
+- `auto_approve` JSON 条件组(与 `conditions` 同一白名单字段+算子)。
+  `route_request` 命中策略后:非空且全部命中 → `_auto_approve` 提交即批准;
+  否则走原人工链。执行人 = 策略创建者(active)→ 首个 active admin → hr。
+- **与人工批准同一份副作用**:先跑 `apply_domain_decision`(`_apply_*` 域
+  函数,余额/考勤护栏不打折),成功才标记 `inst.auto_approved=True` +
+  全部步骤 approved;副作用抛错 → 保持 pending 走人工链(自动裁决永远
+  可退化为人工)。通知申请人「已自动批准」;实例详情透出标记。
+- 校验复用 `validate_policy(auto_approve=…)`,字段越白名单 → 422。
+- API:`POST/PUT /approvals/policies` 接受 `auto_approve`;
+  `GET /approvals/instances/{type}/{id}` 返回 `auto_approved`。
+- sidecar:`save_approval_policy` 增 `auto_approve` 参数;新增
+  `list_automation_rules`/`list_automation_runs`/`create_automation_rule`/
+  `set_automation_rule_active`(后两个走确认门)。
+- 前端:`/automations` 表单加触发方式切换(事件/日期)+ 日期配置 +
+  建工单配置;`/approvals` 策略表单加自动批准条件行 + 列表徽标。

@@ -48,6 +48,7 @@ type Policy = {
   request_type: string;
   priority: number;
   conditions: { field: string; op: string; value: unknown }[];
+  auto_approve: { field: string; op: string; value: unknown }[] | null;
   steps: { resolver: string; key?: string | null; label?: string | null }[];
   active: boolean;
   condition_fields: string[];
@@ -356,6 +357,9 @@ function PoliciesTab({ isAdmin }: { isAdmin: boolean }) {
     condField: "",
     condOp: "ge",
     condValue: "",
+    autoField: "",
+    autoOp: "le",
+    autoValue: "",
     stepsText: "manager|直属上级\nrole:hr|HR复核",
   });
   const { data } = useQuery<{
@@ -389,6 +393,15 @@ function PoliciesTab({ isAdmin }: { isAdmin: boolean }) {
           request_type: form.request_type,
           priority: form.priority,
           conditions: conds,
+          auto_approve: form.autoField
+            ? [
+                {
+                  field: form.autoField,
+                  op: form.autoOp,
+                  value: _parseVal(form.autoValue),
+                },
+              ]
+            : null,
           steps,
         }),
       });
@@ -437,6 +450,16 @@ function PoliciesTab({ isAdmin }: { isAdmin: boolean }) {
                 <span className="px-2 py-0.5 rounded-md text-[11px] bg-[var(--color-info-soft)] text-[var(--color-info)] font-body">
                   {TYPE_LABEL[p.request_type] ?? p.request_type}
                 </span>
+                {p.auto_approve && p.auto_approve.length > 0 && (
+                  <span
+                    className="px-2 py-0.5 rounded-md text-[11px] bg-[var(--color-warning-soft)] text-[var(--color-warning)] font-body"
+                    title={p.auto_approve
+                      .map((c) => `${c.field} ${c.op} ${String(c.value)}`)
+                      .join(" 且 ")}
+                  >
+                    自动批准
+                  </span>
+                )}
                 <span
                   className={`px-2 py-0.5 rounded-md text-[11px] font-body ${
                     p.active
@@ -545,6 +568,37 @@ function PoliciesTab({ isAdmin }: { isAdmin: boolean }) {
               placeholder="值(如 3)"
               className="w-[110px] h-8 text-[13px]"
             />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[12px] text-[var(--color-text-secondary)] font-body">
+              自动批准(可空=人工审批):
+            </span>
+            <Select
+              value={form.autoField}
+              onChange={(v) => setForm((f) => ({ ...f, autoField: v }))}
+              options={[
+                { value: "", label: "不自动" },
+                ...fields.map((x) => ({ value: x, label: x })),
+              ]}
+              className="w-[150px]"
+            />
+            <Select
+              value={form.autoOp}
+              onChange={(v) => setForm((f) => ({ ...f, autoOp: v }))}
+              options={OP_OPTIONS}
+              className="w-[90px]"
+            />
+            <Input
+              value={form.autoValue}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, autoValue: e.target.value }))
+              }
+              placeholder="如 2(≤2天自动批)"
+              className="w-[140px] h-8 text-[13px]"
+            />
+            <span className="text-[11px] text-[var(--color-text-tertiary)] font-body">
+              命中策略且满足此条件 → 提交即批准
+            </span>
           </div>
           <div className="flex flex-col gap-1.5">
             <span className="text-[12px] text-[var(--color-text-secondary)] font-body">

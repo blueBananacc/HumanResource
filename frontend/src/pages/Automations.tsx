@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { History, Plus, Trash2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Empty } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
@@ -15,16 +16,28 @@ import { PageError, Field } from "./hris/Employees";
 
 type Cond = { field: string; op: string; value: string };
 type Recip = { kind: string; value: string };
+type Schedule = { field: string; offset_days: number; recurring?: boolean };
+type ActionConfig = {
+  kind?: string;
+  priority?: string;
+  subject_tpl?: string;
+  description_tpl?: string;
+  assignee_kind?: string;
+  assignee_value?: string;
+};
 
 type Rule = {
   id: string;
   name: string;
   entity_type: string;
   entity_label: string;
+  trigger_kind: "audit" | "date_field";
   trigger: string;
+  schedule: Schedule | null;
   watch_fields: string[] | null;
   conditions: Cond[];
-  action: "notify" | "email";
+  action: "notify" | "email" | "create_case";
+  action_config: ActionConfig | null;
   recipients: { kind: string; value?: string }[];
   title_tpl: string;
   body_tpl: string | null;
@@ -53,6 +66,10 @@ type Schema = {
   ops: string[];
   actions: string[];
   triggers: string[];
+  trigger_kinds: { value: string; label: string }[];
+  date_fields: { value: string; label: string }[];
+  case_kinds: string[];
+  case_priorities: string[];
 };
 
 const OP_LABEL: Record<string, string> = {
@@ -82,12 +99,31 @@ const ROLE_OPTIONS = [
 ];
 
 const RUN_STATUS: Record<string, string> = {
-  ok: "已通知",
+  ok: "已执行",
   skipped_no_recipients: "无收件人跳过",
   queued_email: "邮件排队中",
   sent: "邮件已发",
   email_failed: "邮件失败",
   error: "执行失败",
+};
+const ACTION_LABEL: Record<string, string> = {
+  notify: "站内通知",
+  email: "邮件",
+  create_case: "创建 HR 工单",
+};
+const CASE_KIND_LABEL: Record<string, string> = {
+  it: "IT",
+  admin: "行政",
+  payroll: "薪酬",
+  facility: "设施",
+  leave_dispute: "考勤申诉",
+  other: "其他",
+};
+const CASE_PRIORITY_LABEL: Record<string, string> = {
+  low: "低",
+  normal: "普通",
+  high: "高",
+  urgent: "紧急",
 };
 
 export function Automations() {
@@ -205,10 +241,21 @@ export function Automations() {
                   {r.name}
                 </span>
                 <span className="px-2 py-0.5 rounded-md text-[11px] bg-[var(--color-info-soft)] text-[var(--color-info)] font-body">
-                  {r.entity_label} · {r.trigger}
+                  {r.entity_label} ·{" "}
+                  {r.trigger_kind === "date_field"
+                    ? `${
+                        schema?.date_fields?.find(
+                          (d) => d.value === r.schedule?.field,
+                        )?.label ?? r.schedule?.field
+                      } ${(r.schedule?.offset_days ?? 0) >= 0 ? "+" : ""}${
+                        r.schedule?.offset_days ?? 0
+                      }天${r.schedule?.recurring ? "·每年" : ""}`
+                    : { create: "创建", update: "更新", delete: "删除" }[
+                        r.trigger
+                      ] ?? r.trigger}
                 </span>
                 <span className="px-2 py-0.5 rounded-md text-[11px] bg-[var(--color-bg-subtle)] text-[var(--color-text-secondary)] font-body">
-                  {r.action === "email" ? "邮件" : "站内通知"}
+                  {ACTION_LABEL[r.action] ?? r.action}
                 </span>
                 <div className="flex-1" />
                 <span className="text-[11px] text-[var(--color-text-tertiary)] font-body">
@@ -300,7 +347,15 @@ function RuleModal({
   const [recips, setRecips] = useState<Recip[]>([{ kind: "role", value: "hr" }]);
   const [entity, setEntity] = useState("leave_application");
   const [trigger, setTrigger] = useState("approve");
+  const [tKind, setTKind] = useState<"audit" | "date_field">("audit");
+  const [schedField, setSchedField] = useState("contract_end");
+  const [schedOffset, setSchedOffset] = useState("-30");
+  const [schedRecur, setSchedRecur] = useState(false);
   const [action, setAction] = useState("notify");
+  const [caseKind, setCaseKind] = useState("admin");
+  const [casePriority, setCasePriority] = useState("normal");
+  const [caseAssignee, setCaseAssignee] = useState("");
+  const [caseAssigneeUser, setCaseAssigneeUser] = useState("");
 
   // 打开时初始化(用 key 重置整个 Modal 也行,这里显式 init)
   const [inited, setInited] = useState<string>("");
@@ -308,9 +363,28 @@ function RuleModal({
   if (open && initKey !== inited) {
     setInited(initKey);
     setErr("");
-    setEntity(rule?.entity_type ?? "leave_application");
+    const tk = rule?.trigger_kind ?? "audit";
+    setTKind(tk);
+    setEntity(rule?.entity_type ?? (tk === "date_field" ? "employee" : "leave_application"));
     setTrigger(rule?.trigger ?? "approve");
+    setSchedField(rule?.schedule?.field ?? "contract_end");
+    setSchedOffset(String(rule?.schedule?.offset_days ?? -30));
+    setSchedRecur(!!rule?.schedule?.recurring);
     setAction(rule?.action ?? "notify");
+    setCaseKind(rule?.action_config?.kind ?? "admin");
+    setCasePriority(rule?.action_config?.priority ?? "normal");
+    setCaseAssignee(
+      rule?.action_config?.assignee_kind === "role"
+        ? `role:${rule.action_config.assignee_value}`
+        : rule?.action_config?.assignee_kind === "user"
+          ? "user"
+          : "",
+    );
+    setCaseAssigneeUser(
+      rule?.action_config?.assignee_kind === "user"
+        ? (rule.action_config.assignee_value ?? "")
+        : "",
+    );
     setConds(
       (rule?.conditions ?? []).map((c) => ({
         field: c.field,
@@ -364,7 +438,16 @@ function RuleModal({
     mut.mutate({
       name,
       ...(rule ? {} : { entity_type: entity }),
-      trigger,
+      trigger_kind: tKind,
+      trigger: tKind === "audit" ? trigger : "date_field",
+      schedule:
+        tKind === "date_field"
+          ? {
+              field: schedField,
+              offset_days: parseInt(schedOffset, 10) || 0,
+              recurring: schedRecur,
+            }
+          : null,
       watch_fields: watch
         ? watch.split(/[,\s]+/).filter(Boolean)
         : null,
@@ -372,6 +455,21 @@ function RuleModal({
         .filter((c) => c.field && c.op)
         .map((c) => ({ field: c.field, op: c.op, value: c.value })),
       action,
+      action_config:
+        action === "create_case"
+          ? {
+              kind: caseKind,
+              priority: casePriority,
+              ...(caseAssignee === "user"
+                ? { assignee_kind: "user", assignee_value: caseAssigneeUser }
+                : caseAssignee
+                  ? {
+                      assignee_kind: "role",
+                      assignee_value: caseAssignee.replace("role:", ""),
+                    }
+                  : {}),
+            }
+          : null,
       recipients: recips.filter((r) => r.kind),
       title_tpl: title,
       body_tpl: String(fd.get("body_tpl") || "").trim() || null,
@@ -384,7 +482,7 @@ function RuleModal({
       open={open}
       onClose={onClose}
       title={rule ? `编辑规则:${rule.name}` : "新建自动化规则"}
-      description="事件 → 条件 → 收件人 → 动作。条件留空 = 事件一发生就触发。"
+      description="触发(事件/日期)→ 条件 → 动作。条件留空 = 一命中就执行。"
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>
@@ -405,42 +503,151 @@ function RuleModal({
           <Field label="规则名" required>
             <Input name="name" defaultValue={rule?.name} placeholder="例如:请假批准通知员工" />
           </Field>
-          <Field label="动作">
+          <Field label="触发方式" required>
             <Select
-              value={action}
-              onChange={setAction}
-              options={[
-                { value: "notify", label: "站内通知" },
-                { value: "email", label: "邮件" },
-              ]}
+              value={tKind}
+              onChange={(v) => {
+                setTKind(v as "audit" | "date_field");
+                if (v === "date_field") setEntity("employee");
+              }}
+              options={
+                schema?.trigger_kinds ?? [
+                  { value: "audit", label: "业务事件" },
+                  { value: "date_field", label: "日期到达" },
+                ]
+              }
             />
           </Field>
         </div>
         <div className="grid grid-cols-2 gap-4">
-          <Field label="实体" required>
+          {tKind === "audit" ? (
+            <Field label="实体" required>
+              <Select
+                value={entity}
+                onChange={setEntity}
+                disabled={!!rule}
+                options={Object.entries(schema?.entities ?? {}).map(
+                  ([k, v]) => ({ value: k, label: v.label }),
+                )}
+              />
+            </Field>
+          ) : (
+            <Field label="监听对象" required>
+              <Select
+                value="employee"
+                onChange={() => {}}
+                disabled
+                options={[{ value: "employee", label: "员工" }]}
+              />
+            </Field>
+          )}
+          <Field label="动作">
             <Select
-              value={entity}
-              onChange={setEntity}
-              disabled={!!rule}
-              options={Object.entries(schema?.entities ?? {}).map(
-                ([k, v]) => ({ value: k, label: v.label }),
-              )}
-            />
-          </Field>
-          <Field label="触发动作" required>
-            <Select
-              value={trigger}
-              onChange={setTrigger}
-              options={(schema?.triggers ?? ["create", "update", "delete"]).map(
-                (t: string) => ({
-                  value: t,
-                  label: { create: "创建", update: "更新", delete: "删除" }[t] ?? t,
-                }),
+              value={action}
+              onChange={setAction}
+              options={(schema?.actions ?? ["notify", "email", "create_case"]).map(
+                (a: string) => ({ value: a, label: ACTION_LABEL[a] ?? a }),
               )}
             />
           </Field>
         </div>
-        {trigger === "update" && (
+        {tKind === "audit" ? (
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="触发动作" required>
+              <Select
+                value={trigger}
+                onChange={setTrigger}
+                options={(schema?.triggers ?? ["create", "update", "delete"]).map(
+                  (t: string) => ({
+                    value: t,
+                    label:
+                      { create: "创建", update: "更新", delete: "删除" }[t] ?? t,
+                  }),
+                )}
+              />
+            </Field>
+            <div />
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="日期字段" required>
+              <Select
+                value={schedField}
+                onChange={setSchedField}
+                options={schema?.date_fields ?? []}
+              />
+            </Field>
+            <div className="flex items-end gap-4 pb-1">
+              <Field label="偏移天数">
+                <Input
+                  type="number"
+                  value={schedOffset}
+                  onChange={(e) => setSchedOffset(e.target.value)}
+                  placeholder="-7 = 提前7天"
+                  className="w-28"
+                />
+              </Field>
+              <div className="flex items-center gap-2 h-9">
+                <Checkbox
+                  checked={schedRecur}
+                  onToggle={() => setSchedRecur(!schedRecur)}
+                  label="每年重复"
+                />
+                <span className="text-[12px] text-[var(--color-text-secondary)] font-body">
+                  每年重复(生日/周年)
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+        {action === "create_case" && (
+          <div className="grid grid-cols-2 gap-4 bg-[var(--color-bg-subtle)] rounded-lg p-3">
+            <Field label="工单类型">
+              <Select
+                value={caseKind}
+                onChange={setCaseKind}
+                options={(schema?.case_kinds ?? Object.keys(CASE_KIND_LABEL)).map(
+                  (k: string) => ({ value: k, label: CASE_KIND_LABEL[k] ?? k }),
+                )}
+              />
+            </Field>
+            <Field label="优先级">
+              <Select
+                value={casePriority}
+                onChange={setCasePriority}
+                options={(
+                  schema?.case_priorities ?? Object.keys(CASE_PRIORITY_LABEL)
+                ).map((k: string) => ({
+                  value: k,
+                  label: CASE_PRIORITY_LABEL[k] ?? k,
+                }))}
+              />
+            </Field>
+            <Field label="受理人(可选)">
+              <Select
+                value={caseAssignee}
+                onChange={setCaseAssignee}
+                options={[
+                  { value: "", label: "不指派" },
+                  { value: "role:hr", label: "角色:hr" },
+                  { value: "role:admin", label: "角色:admin" },
+                  { value: "user", label: "指定用户" },
+                ]}
+              />
+            </Field>
+            {caseAssignee === "user" && (
+              <Field label="受理用户 ID">
+                <Input
+                  value={caseAssigneeUser}
+                  onChange={(e) => setCaseAssigneeUser(e.target.value)}
+                  placeholder="用户 ID"
+                  className="font-mono"
+                />
+              </Field>
+            )}
+          </div>
+        )}
+        {trigger === "update" && tKind === "audit" && (
           <Field label="仅当这些字段变化(逗号分隔,留空=任意变更)">
             <Input
               name="watch_fields"
@@ -513,7 +720,7 @@ function RuleModal({
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <span className="text-[13px] font-medium text-[var(--color-text-primary)] font-body">
-              收件人
+              {action === "create_case" ? "同时通知(可选)" : "收件人"}
             </span>
             <Button
               type="button"

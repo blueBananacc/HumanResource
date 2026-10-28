@@ -364,6 +364,12 @@ async def _watch_loop() -> None:
                 peopled = run_people_reminders(db)
                 if peopled:
                     logger.info("[watch-loop] 人事提醒 %d 条", peopled)
+                # 定时自动化:date_field 规则按员工日期字段+偏移触发
+                from app.services.automation import run_scheduled
+
+                sched = run_scheduled(db)
+                if sched:
+                    logger.info("[watch-loop] 定时自动化 %d 条", sched)
                 subs = due_subscriptions(db)
                 for s in subs:
                     send_report_subscription.delay(str(s.id))

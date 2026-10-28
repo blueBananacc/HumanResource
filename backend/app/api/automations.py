@@ -30,10 +30,13 @@ class RuleOut(BaseModel):
     name: str
     entity_type: str
     entity_label: str
+    trigger_kind: str
     trigger: str
+    schedule: dict[str, Any] | None
     watch_fields: list[str] | None
     conditions: list[dict[str, Any]]
     action: str
+    action_config: dict[str, Any] | None
     recipients: list[dict[str, Any]]
     title_tpl: str
     body_tpl: str | None
@@ -47,8 +50,11 @@ def _out(r: AutomationRule) -> RuleOut:
     return RuleOut(
         id=r.id, name=r.name, entity_type=r.entity_type,
         entity_label=spec.get("label", r.entity_type),
-        trigger=r.trigger, watch_fields=r.watch_fields,
+        trigger_kind=r.trigger_kind or "audit",
+        trigger=r.trigger, schedule=r.schedule,
+        watch_fields=r.watch_fields,
         conditions=r.conditions or [], action=r.action,
+        action_config=r.action_config,
         recipients=r.recipients or [], title_tpl=r.title_tpl,
         body_tpl=r.body_tpl, is_active=r.is_active,
         last_fired_at=r.last_fired_at, created_at=r.created_at,
@@ -65,10 +71,13 @@ def _get_rule(db: Session, tenant_id: str, rule_id: str) -> AutomationRule:
 class RuleIn(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     entity_type: str = Field(min_length=1, max_length=64)
-    trigger: str = Field(min_length=1, max_length=64)
+    trigger_kind: Literal["audit", "date_field"] = "audit"
+    trigger: str | None = Field(default=None, max_length=64)
+    schedule: dict[str, Any] | None = None
     watch_fields: list[str] | None = None
     conditions: list[dict[str, Any]] = []
-    action: Literal["notify", "email"] = "notify"
+    action: Literal["notify", "email", "create_case"] = "notify"
+    action_config: dict[str, Any] | None = None
     recipients: list[dict[str, Any]] = []
     title_tpl: str = Field(min_length=1, max_length=256)
     body_tpl: str | None = Field(default=None, max_length=1024)
@@ -77,10 +86,13 @@ class RuleIn(BaseModel):
 
 class RulePatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
-    trigger: str | None = Field(default=None, min_length=1, max_length=64)
+    trigger_kind: Literal["audit", "date_field"] | None = None
+    trigger: str | None = Field(default=None, max_length=64)
+    schedule: dict[str, Any] | None = None
     watch_fields: list[str] | None = None
     conditions: list[dict[str, Any]] | None = None
-    action: Literal["notify", "email"] | None = None
+    action: Literal["notify", "email", "create_case"] | None = None
+    action_config: dict[str, Any] | None = None
     recipients: list[dict[str, Any]] | None = None
     title_tpl: str | None = Field(default=None, min_length=1, max_length=256)
     body_tpl: str | None = Field(default=None, max_length=1024)
@@ -120,17 +132,23 @@ def create_rule(
     db: Session = Depends(get_db),
     current: User = Depends(require_permission(PERM_MANAGE_SETTINGS)),
 ):
+    trigger = body.trigger or (
+        "date_field" if body.trigger_kind == "date_field" else "create")
     err = svc.validate_rule_payload(
-        body.entity_type, body.trigger, body.conditions, body.recipients, body.action
+        body.entity_type, trigger, body.conditions, body.recipients, body.action,
+        trigger_kind=body.trigger_kind, schedule=body.schedule,
+        action_config=body.action_config,
     )
     if err:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, err)
-    if not body.recipients:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "至少需要一个收件人")
+    if body.action in ("notify", "email") and not body.recipients:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "通知类动作至少需要一个收件人")
     r = AutomationRule(
         tenant_id=current.tenant_id, name=body.name, entity_type=body.entity_type,
-        trigger=body.trigger, watch_fields=body.watch_fields,
-        conditions=body.conditions, action=body.action, recipients=body.recipients,
+        trigger_kind=body.trigger_kind, trigger=trigger, schedule=body.schedule,
+        watch_fields=body.watch_fields,
+        conditions=body.conditions, action=body.action,
+        action_config=body.action_config, recipients=body.recipients,
         title_tpl=body.title_tpl, body_tpl=body.body_tpl, is_active=body.is_active,
         created_by=current.id,
     )
@@ -157,11 +175,18 @@ def update_rule(
     r = _get_rule(db, current.tenant_id, rule_id)
     data = body.model_dump(exclude_unset=True)
     entity_type = r.entity_type  # 实体不可改 —— 改实体请新建规则
+    trigger_kind = data.get("trigger_kind", r.trigger_kind)
     trigger = data.get("trigger", r.trigger)
+    schedule = data.get("schedule", r.schedule)
     conditions = data.get("conditions", r.conditions)
     recipients = data.get("recipients", r.recipients)
     action = data.get("action", r.action)
-    err = svc.validate_rule_payload(entity_type, trigger, conditions, recipients, action)
+    action_config = data.get("action_config", r.action_config)
+    err = svc.validate_rule_payload(
+        entity_type, trigger, conditions, recipients, action,
+        trigger_kind=trigger_kind, schedule=schedule,
+        action_config=action_config,
+    )
     if err:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, err)
     changed = {}
