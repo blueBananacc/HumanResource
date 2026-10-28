@@ -1015,6 +1015,70 @@ def add_note(
     )
 
 
+# ============ similar candidates(iCIMS Talent Match)============
+
+
+class SimilarItemOut(BaseModel):
+    candidate_id: str
+    name: str
+    score: int
+    skill_score: float
+    exp_score: float
+    shared_skills: list[str]
+    title: str | None
+    years: float | None
+    education_level: int
+    silver: bool
+    silver_job_title: str | None
+    tags: list[str]
+    status: str
+    display_email: str | None
+    resume_id: str
+
+
+class SimilarOut(BaseModel):
+    model: dict[str, Any]
+    items: list[SimilarItemOut]
+    scanned: int
+    semantic: bool
+
+
+@router.get(
+    "/{candidate_id}/similar",
+    response_model=SimilarOut,
+    dependencies=[Depends(require_permission(PERM_VIEW_REPORTS))],
+)
+def similar_candidates_api(
+    candidate_id: str,
+    limit: int = Query(default=10, ge=1, le=50),
+    min_score: int = Query(default=0, ge=0, le=100),
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> SimilarOut:
+    """找相似:以该候选人为 model,在权限范围内召回相似候选人(iCIMS Talent Match)。
+
+    相似分 = 技能加权命中(0.6)+ 经验画像(职位/年限/学历,0.4);
+    租户配了 embedding 时掺 20% 语义相似。银牌候选人(深入流程后被拒)+5 召回加成。
+    """
+    from app.services.similar import similar_candidates
+
+    c = _get_candidate(db, candidate_id=candidate_id, current=current)
+    scope = get_org_scope(db, current)
+    stmt = select(Candidate).where(
+        Candidate.tenant_id == current.tenant_id,
+        Candidate.is_blacklisted.is_(False),
+        Candidate.status == "active",
+        Candidate.id != c.id,
+    )
+    stmt = apply_org_filter(stmt, org_column=Candidate.org_unit_id, scope=scope)
+    pool = list(db.scalars(stmt).all())
+    res = similar_candidates(
+        db, tenant_id=current.tenant_id, model=c, pool=pool,
+        limit=limit, min_score=min_score,
+    )
+    return SimilarOut(**res)
+
+
 # ============ groups ============
 
 

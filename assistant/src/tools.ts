@@ -117,6 +117,23 @@ function makeTools(token: string): ToolDef[] {
         ),
     },
     {
+      name: "find_similar_candidates",
+      label: "找相似候选人",
+      description:
+        "以某候选人为标杆召回相似候选人(iCIMS Talent Match):返回相似度分、技能/经验子分、" +
+        "共享技能、银牌候选人标记(曾深入流程后被拒,优先召回)。先用 search_talents 找到标杆 id。",
+      parameters: Type.Object({
+        candidate_id: Type.String({ description: "标杆候选人 id" }),
+        limit: Type.Optional(Type.Number({ description: "返回条数,默认 10" })),
+        min_score: Type.Optional(Type.Number({ description: "最低相似度 0-100" })),
+      }),
+      execute: async (_id, p: any) => {
+        const qs = new URLSearchParams({ limit: String(p.limit ?? 10) });
+        if (p.min_score != null) qs.set("min_score", String(p.min_score));
+        return t(`/api/talents/${p.candidate_id}/similar?${qs}`);
+      },
+    },
+    {
       name: "list_jobs",
       label: "查询岗位",
       description: "列出岗位(可按 open/paused/closed 过滤),返回岗位 id、名称、等级、技能、状态",

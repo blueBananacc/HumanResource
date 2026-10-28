@@ -392,6 +392,8 @@ export function TalentDetail() {
             canCreateDict={hasPermission(PERM.MANAGE_SETTINGS)}
           />
 
+          <SimilarCard candidateId={c.id} />
+
           <Section icon={FileText} title="简历版本">
             {c.resumes.length === 0 ? (
               <Empty
@@ -990,6 +992,143 @@ function NotesCard({
               </span>
             </li>
           ))}
+        </ul>
+      )}
+    </Section>
+  );
+}
+
+
+type SimilarItem = {
+  candidate_id: string;
+  name: string;
+  score: number;
+  skill_score: number;
+  exp_score: number;
+  shared_skills: string[];
+  title: string | null;
+  years: number | null;
+  education_level: number;
+  silver: boolean;
+  silver_job_title: string | null;
+  status: string;
+};
+
+type SimilarResp = {
+  model: { candidate_id: string; name: string; skills: string[] };
+  items: SimilarItem[];
+  scanned: number;
+  semantic: boolean;
+};
+
+const EDU_LABEL: Record<number, string> = {
+  0: "高中",
+  1: "大专",
+  2: "本科",
+  3: "硕士",
+  4: "博士",
+};
+
+function ScoreRing({ score }: { score: number }) {
+  const r = 14;
+  const circ = 2 * Math.PI * r;
+  const off = circ * (1 - score / 100);
+  const tone =
+    score >= 75
+      ? "text-[var(--color-success)]"
+      : score >= 50
+        ? "text-[var(--color-info)]"
+        : "text-[var(--color-text-tertiary)]";
+  return (
+    <div className="relative w-9 h-9 shrink-0" title={`相似度 ${score}`}>
+      <svg viewBox="0 0 36 36" className={`w-9 h-9 -rotate-90 ${tone}`}>
+        <circle cx="18" cy="18" r={r} fill="none" stroke="currentColor" strokeOpacity="0.15" strokeWidth="3.5" />
+        <circle
+          cx="18" cy="18" r={r} fill="none" stroke="currentColor" strokeWidth="3.5"
+          strokeDasharray={circ} strokeDashoffset={off} strokeLinecap="round"
+        />
+      </svg>
+      <span className="absolute inset-0 flex items-center justify-center text-[10px] font-mono font-semibold text-[var(--color-text-primary)]">
+        {score}
+      </span>
+    </div>
+  );
+}
+
+function SimilarCard({ candidateId }: { candidateId: string }) {
+  const { data, isLoading } = useQuery<SimilarResp>({
+    queryKey: ["talent-similar", candidateId],
+    queryFn: () => fetchJSON<SimilarResp>(`/api/talents/${candidateId}/similar?limit=8`),
+  });
+  const items = data?.items ?? [];
+  return (
+    <Section icon={Users} title="相似候选人">
+      {isLoading ? (
+        <div className="text-[12px] text-[var(--color-text-tertiary)] font-body py-2">召回中…</div>
+      ) : items.length === 0 ? (
+        <Empty
+          icon={Users}
+          title="没有相似候选人"
+          description="人才库中没有与该候选人技能/经验相近的人选"
+        />
+      ) : (
+        <ul className="flex flex-col">
+          {items.map((it, i) => (
+            <li
+              key={it.candidate_id}
+              className={`flex items-center gap-3 py-2.5 ${
+                i === items.length - 1 ? "" : "border-b border-[var(--color-border-row)]"
+              }`}
+            >
+              <ScoreRing score={it.score} />
+              <div className="flex-1 flex flex-col gap-0.5 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Link
+                    to={`/talents/${it.candidate_id}`}
+                    className="font-medium text-sm text-[var(--color-text-primary)] hover:underline"
+                  >
+                    {it.name}
+                  </Link>
+                  {it.silver && (
+                    <span
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-[var(--color-warning-soft,var(--color-bg-subtle))] text-[var(--color-warning-text,var(--color-text-secondary))] font-body"
+                      title={`曾进入「${it.silver_job_title ?? "某岗位"}」深入流程后被拒——银牌候选人,优先召回`}
+                    >
+                      银牌
+                    </span>
+                  )}
+                  {it.status !== "active" && (
+                    <span className="text-[11px] text-[var(--color-text-tertiary)]">{it.status}</span>
+                  )}
+                </div>
+                <span className="text-[11px] text-[var(--color-text-tertiary)] font-body truncate">
+                  {[it.title, it.years != null ? `${it.years}年` : null, EDU_LABEL[it.education_level]]
+                    .filter(Boolean)
+                    .join(" · ") || "—"}
+                </span>
+                {it.shared_skills.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-0.5">
+                    {it.shared_skills.slice(0, 5).map((s) => (
+                      <span
+                        key={s}
+                        className="px-1.5 py-0.5 rounded bg-[var(--color-bg-subtle)] text-[11px] text-[var(--color-text-secondary)] font-mono"
+                      >
+                        {s}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <span className="text-[11px] text-[var(--color-text-tertiary)] font-body shrink-0">
+                技{Math.round(it.skill_score)} · 经{Math.round(it.exp_score)}
+              </span>
+            </li>
+          ))}
+          {data && (
+            <li className="pt-2 text-[11px] text-[var(--color-text-tertiary)] font-body">
+              已扫描 {data.scanned} 人{data.semantic ? " · 语义相似已参与" : ""}
+            </li>
+          )}
         </ul>
       )}
     </Section>

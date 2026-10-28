@@ -122,3 +122,20 @@ class TalentProfile(Base):
 测试沿用既有约定:test_t16(库内直插 profile+简历→scan 排序断言)、
 verify_t16_live(HTTP:建画像→扫描→安排面试)、ego-browser(对话→画像沿用提示→
 候选卡勾选→安排面试 confirm→纪要卡)。
+
+
+## 8. iCIMS 批次:相似候选人召回(Talent Match,2026-10)
+
+iCIMS Talent Match 机制:Similarity = skills match + experience match(对 model candidate 的
+技能重叠 + 职位/任职年限相近),加银牌候选人(silver medalist:曾深入流程后被拒)召回叙事。
+
+落地:`services/similar.py` + `GET /api/talents/{id}/similar`(view_reports):
+
+- 技能集:CandidateSkill(level 加权)∪ parsed_data.skills → 加权命中率(精确 skill_id
+  优先,CJK 关键词兜底)
+- 经验画像:最近职位 title(结构化 work_experiences,噪声词剥离+token Jaccard)+
+  年限接近度(15 分/年衰减)+ 学历等级差
+- 可选语义融合:租户配 embedding 时 cos×100 占 20%,任何失败 fail-open
+- 银牌标记:JobApplicationEvent 曾 to_stage∈{interview,offer} 且当前 rejected/withdrawn → +5
+- 前端:TalentDetail「相似候选人」卡(ScoreRing+共享技能+银牌徽标);assistant 工具
+  `find_similar_candidates`
