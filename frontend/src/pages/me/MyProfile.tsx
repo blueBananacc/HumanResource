@@ -181,6 +181,9 @@ function EditModal({
     else delete personal["住址"];
     if (emergency) personal["紧急联系人"] = emergency;
     else delete personal["紧急联系人"];
+    const birth = String(fd.get("birth_date") || "").trim();
+    if (birth) personal["birth_date"] = birth;
+    else delete personal["birth_date"];
     mut.mutate({
       phone: String(fd.get("phone") || "").trim() || null,
       personal,
@@ -218,6 +221,13 @@ function EditModal({
             name="emergency_contact"
             defaultValue={personal["紧急联系人"] ?? ""}
             placeholder="姓名 电话"
+          />
+        </Field>
+        <Field label="生日">
+          <Input
+            name="birth_date"
+            type="date"
+            defaultValue={personal["birth_date"] ?? ""}
           />
         </Field>
         {err && (

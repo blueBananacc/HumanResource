@@ -100,6 +100,8 @@ export const mainModules: NavModule[] = [
         label: "员工",
         items: [
           { to: "/employees", label: "员工列表", permission: PERM.MANAGE_EMPLOYEES, keywords: "员工 employee 花名册" },
+          { to: "/people/reminders", label: "人事提醒", permission: PERM.MANAGE_EMPLOYEES, keywords: "生日 周年 转正 合同 证件 提醒 reminder" },
+          { to: "/people/calendar", label: "人事日历", permission: PERM.MANAGE_EMPLOYEES, keywords: "日历 calendar 生日 入职 离职" },
           { to: "/org-chart", label: "组织架构图", keywords: "汇报线 架构 org" },
           { to: "/lifecycle", label: "生命周期", permission: PERM.MANAGE_LIFECYCLE, keywords: "入职 离职 调动 晋升 onboarding" },
           { to: "/positions", label: "职位编制", permission: PERM.MANAGE_ORG, keywords: "职位 编制 空缺 position headcount" },

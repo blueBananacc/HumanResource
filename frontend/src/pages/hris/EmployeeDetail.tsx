@@ -311,6 +311,17 @@ function EmployeeEditModal({
     else delete personal["住址"];
     if (emergency) personal["紧急联系人"] = emergency;
     else delete personal["紧急联系人"];
+    // 人事提醒日期键(birth_date 员工也可在自助端填)
+    for (const [name, key] of [
+      ["birth_date", "birth_date"],
+      ["probation_end", "probation_end"],
+      ["contract_end", "contract_end"],
+      ["cert_expire", "cert_expire"],
+    ] as const) {
+      const v = String(fd.get(name) || "").trim();
+      if (v) personal[key] = v;
+      else delete personal[key];
+    }
     mut.mutate({
       name: String(fd.get("name") || "").trim(),
       designation: String(fd.get("designation") || "").trim() || null,
@@ -410,6 +421,42 @@ function EmployeeEditModal({
               name="emergency_contact"
               defaultValue={String(
                 (emp.personal ?? {})["紧急联系人"] ?? "",
+              )}
+            />
+          </Field>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="生日">
+            <Input
+              name="birth_date"
+              type="date"
+              defaultValue={String((emp.personal ?? {})["birth_date"] ?? "")}
+            />
+          </Field>
+          <Field label="转正到期">
+            <Input
+              name="probation_end"
+              type="date"
+              defaultValue={String(
+                (emp.personal ?? {})["probation_end"] ?? "",
+              )}
+            />
+          </Field>
+          <Field label="合同到期">
+            <Input
+              name="contract_end"
+              type="date"
+              defaultValue={String(
+                (emp.personal ?? {})["contract_end"] ?? "",
+              )}
+            />
+          </Field>
+          <Field label="证件到期">
+            <Input
+              name="cert_expire"
+              type="date"
+              defaultValue={String(
+                (emp.personal ?? {})["cert_expire"] ?? "",
               )}
             />
           </Field>

@@ -54,6 +54,8 @@ import { Employees } from "@/pages/hris/Employees";
 import { EmployeeDetail } from "@/pages/hris/EmployeeDetail";
 import { OrgChart } from "@/pages/hris/OrgChart";
 import { Lifecycle } from "@/pages/hris/Lifecycle";
+import { PeopleReminders } from "@/pages/hris/PeopleReminders";
+import { PeopleCalendar } from "@/pages/hris/PeopleCalendar";
 import { LeaveAdmin } from "@/pages/hris/LeaveAdmin";
 import { LeavePolicies } from "@/pages/hris/LeavePolicies";
 import { OvertimeRequests } from "@/pages/hris/OvertimeRequests";
@@ -129,6 +131,8 @@ export const router = createBrowserRouter([
       { path: "employees/:id", element: <EmployeeDetail /> },
       { path: "org-chart", element: <OrgChart /> },
       { path: "lifecycle", element: <Lifecycle /> },
+      { path: "people/reminders", element: <PeopleReminders /> },
+      { path: "people/calendar", element: <PeopleCalendar /> },
       // ── HRIS 假勤 ──
       { path: "leave", element: <LeaveAdmin /> },
       { path: "leave/balances", element: <LeaveBalances /> },

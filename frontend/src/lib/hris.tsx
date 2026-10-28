@@ -660,6 +660,41 @@ export const LIFECYCLE_KIND_LABEL: Record<string, string> = {
   separation: "离职",
 };
 
+// ── 人事提醒/日历(慧人力智能待办同款) ──────────────────────────
+
+export type PersonEvent = {
+  kind: string;
+  label: string;
+  category: "deadline" | "celebrate";
+  employee_id: string;
+  employee_name: string;
+  org_unit_name: string | null;
+  day: string;
+  days_until: number;
+  link: string;
+  meta: { years?: number; age?: number; overdue?: boolean; event_id?: string };
+};
+
+export const PERSON_EVENT_TONE: Record<string, string> = {
+  birthday: "bg-pink-100 text-pink-700",
+  anniversary: "bg-violet-100 text-violet-700",
+  probation_end: "bg-amber-100 text-amber-700",
+  contract_end: "bg-orange-100 text-orange-700",
+  cert_expire: "bg-red-100 text-red-700",
+  onboarding: "bg-emerald-100 text-emerald-700",
+  separation: "bg-slate-200 text-slate-700",
+};
+
+export const PERSON_EVENT_DOT: Record<string, string> = {
+  birthday: "bg-pink-400",
+  anniversary: "bg-violet-400",
+  probation_end: "bg-amber-400",
+  contract_end: "bg-orange-400",
+  cert_expire: "bg-red-400",
+  onboarding: "bg-emerald-400",
+  separation: "bg-slate-400",
+};
+
 export function statusLabel(s: string): string {
   return STATUS_LABEL[s] ?? s;
 }

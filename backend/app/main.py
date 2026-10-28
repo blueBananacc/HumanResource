@@ -53,6 +53,7 @@ from app.api import doc_templates as doc_templates_api
 from app.api import favorites as favorites_api
 from app.api import healthz
 from app.api import hiring as hiring_api
+from app.api import hr_events as hr_events_api
 from app.api import hr_me as hr_me_api
 from app.api import idempotency as idempotency_api
 from app.api import imports as imports_api
@@ -357,6 +358,12 @@ async def _watch_loop() -> None:
                 nudged = run_scorecard_nudges(db)
                 if nudged:
                     logger.info("[watch-loop] 面评催办 %d 条", nudged)
+                # 人事提醒:deadline 类提前 7 天 / 生日周年当天送祝福
+                from app.services.hr_events import run_people_reminders
+
+                peopled = run_people_reminders(db)
+                if peopled:
+                    logger.info("[watch-loop] 人事提醒 %d 条", peopled)
                 subs = due_subscriptions(db)
                 for s in subs:
                     send_report_subscription.delay(str(s.id))
@@ -450,6 +457,7 @@ def create_app() -> FastAPI:
     app.include_router(mcp_api.me_router, prefix="/api")
     # HRIS 员工核心(license feature: hr.suite)
     app.include_router(employees_api.router, prefix="/api")
+    app.include_router(hr_events_api.router, prefix="/api")
     app.include_router(hr_me_api.router, prefix="/api")
     app.include_router(leave_api.router, prefix="/api")
     app.include_router(attendance_api.router, prefix="/api")

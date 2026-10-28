@@ -59,6 +59,15 @@ source_candidate_id(→candidates,录用转化来源)
   HR 录入/编辑,员工只读明细 + **电子签收**(confirmed_at,收回重发需重签,
   HR 可催签收,发放/催办走 Notification)
 
+### 人事提醒 + 人事日历(慧人力/2号人事部同款)
+- 数据源实时聚合不落库:`employees.personal` JSON 键 `birth_date`/`probation_end`/
+  `contract_end`/`cert_expire` + `hire_date`(周年)+ LifecycleEvent(待入职/离职)
+- `GET /api/hr/reminders?days=` 分组(逾期/今天/本周/30天内);`GET /api/hr/calendar?month=`
+  月视图(周期事件按年展开,2/29→平年2/28)
+- `run_people_reminders` 挂 `_watch_loop`:deadline 类进 7 天窗口推 HR;
+  生日/周年当天推 HR + **员工本人祝福**;同日同事件 link fragment 去重
+- `POST /api/hr/reminders/greet` HR 一键送祝福给员工(同日幂等)
+
 ### 明确不做
 - 自动薪资核算、税务申报、排班 Roster 拖拽、工时 Timesheet、印度本地税
 
