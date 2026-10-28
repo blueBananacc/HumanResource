@@ -12,6 +12,7 @@ import {
   type MeEvent,
   type MeProfile,
 } from "@/lib/hris";
+import { MyRatingTasks, MySkillsCard } from "@/components/people/SkillRatings";
 import { Field } from "../hris/Employees";
 
 export function MyProfile() {
@@ -118,6 +119,9 @@ export function MyProfile() {
           })}
         </section>
       )}
+
+      <MyRatingTasks />
+      <MySkillsCard />
 
       <EditModal p={p} open={editOpen} onClose={() => setEditOpen(false)} />
     </main>

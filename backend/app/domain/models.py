@@ -3947,7 +3947,7 @@ class EmployeeSkill(Base):
     __tablename__ = "employee_skills"
 
     SOURCES = ("resume", "interview", "appraisal", "project", "insight",
-               "manual", "ai")
+               "manual", "ai", "self", "manager", "peer")
     STATUSES = ("suggested", "confirmed")
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
@@ -3980,6 +3980,97 @@ class EmployeeSkill(Base):
 
     __table_args__ = (
         UniqueConstraint("employee_id", "skill_id", name="uq_employee_skills_pair"),
+    )
+
+
+class SkillRating(Base):
+    """多评价者技能评分(Degreed 式)——同一技能可并存多个评分来源。
+
+    - ``rater_kind``: self(自评) / manager(直属上级) / peer(同事)
+    - 每人每技能只保留一条最新评分:重复提交覆盖 level/comment
+    - ``request_id`` 回填发起它的 SkillRatingRequest(自评无请求 → NULL)
+    - 提交时同步 upsert EmployeeSkill(source=rater_kind, confirmed):
+      employee_skills.level 仍是"最高证据等级"语义,精确的多源分数
+      以本表为准,卡片据此展示分歧。
+    """
+
+    __tablename__ = "skill_ratings"
+
+    KINDS = ("self", "manager", "peer")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    skill_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("skills.id", ondelete="CASCADE"), nullable=False
+    )
+    rater_employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False
+    )
+    rater_kind: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    level: Mapped[int] = mapped_column(Integer, nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("skill_rating_requests.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("employee_id", "skill_id", "rater_employee_id",
+                         name="uq_skill_ratings_rater"),
+    )
+
+
+class SkillRatingRequest(Base):
+    """技能评分请求(iCIMS 反馈请求式)——员工/经理/HR 发起,请某同事给
+    某员工的某技能打分;提交后不可改(iCIMS 语义),要改只能取消重发。
+
+    - ``status``: pending / completed / declined / cancelled
+    - ``rater_kind`` 建请求时快照:rater==ratee.reports_to_id → manager,否则 peer
+    - ``rating_id`` 完成后回填生成的 SkillRating
+    """
+
+    __tablename__ = "skill_rating_requests"
+
+    STATUSES = ("pending", "completed", "declined", "cancelled")
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    skill_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("skills.id", ondelete="CASCADE"), nullable=False
+    )
+    rater_employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    rater_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="pending", index=True
+    )
+    rating_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("skill_ratings.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    requested_by_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
     )
 
 

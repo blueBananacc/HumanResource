@@ -14,10 +14,18 @@ import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
 import { fetchJSON, ApiError } from "@/lib/api";
+import {
+  PendingRequestLine,
+  RatingLine,
+  RequestRatingModal,
+  type Rating,
+} from "@/components/people/SkillRatings";
+import { UserCheck } from "lucide-react";
 
 /* P 批次 — 员工人才画像卡(嵌入 EmployeeDetail)。
    数据源:GET /api/employees/{id}/talent-card
-   写操作:技能确认/驳回、手动加技能、上传洞察(会议纪要入口)。 */
+   写操作:技能确认/驳回、手动加技能、上传洞察(会议纪要入口)、
+   多评价者评分请求(Degreed 式)与多源评分展示。 */
 
 type Skill = {
   id: string;
@@ -29,6 +37,8 @@ type Skill = {
   status: string;
   evidence?: { kind?: string; quote?: string; note?: string } | null;
   note?: string | null;
+  ratings?: Rating[];
+  divergent?: boolean;
 };
 
 type Card = {
@@ -61,6 +71,13 @@ type Card = {
     body: string;
     source_ref?: { minutes?: Minutes } | null;
     created_at: string;
+  }[];
+  pending_rating_requests?: {
+    id: string;
+    skill_id: string;
+    skill_name: string | null;
+    rater_name: string | null;
+    rater_kind: string;
   }[];
 };
 
@@ -118,6 +135,7 @@ export function TalentCardSection({ employeeId }: { employeeId: string }) {
   const qc = useQueryClient();
   const [insightOpen, setInsightOpen] = useState(false);
   const [skillOpen, setSkillOpen] = useState(false);
+  const [rateReqOpen, setRateReqOpen] = useState(false);
   const { data: card, isLoading } = useQuery<Card>({
     queryKey: ["talent-card", employeeId],
     queryFn: () => fetchJSON(`/api/employees/${employeeId}/talent-card`),
@@ -175,6 +193,15 @@ export function TalentCardSection({ employeeId }: { employeeId: string }) {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setRateReqOpen(true)}
+            disabled={card.skills_confirmed.length === 0 && suggested.length === 0}
+          >
+            <UserCheck className="w-3.5 h-3.5" />
+            请求评分
+          </Button>
           <Button variant="secondary" size="sm" onClick={() => setSkillOpen(true)}>
             <Plus className="w-3.5 h-3.5" />
             加技能
@@ -204,6 +231,29 @@ export function TalentCardSection({ employeeId }: { employeeId: string }) {
             <SkillChip key={s.id} s={s} pending />
           ))}
         </div>
+        {/* 多评价者评分:有评分或进行中请求时展开 */}
+        {[...card.skills_confirmed, ...suggested].some(
+          (s) => (s.ratings?.length ?? 0) > 0
+        ) && (
+          <div
+            className="rounded-lg bg-[var(--color-surface)] p-3 flex flex-col gap-1.5"
+            data-testid="multi-ratings"
+          >
+            <div className="text-[11px] text-[var(--color-text-tertiary)] font-body">
+              多源评分(自评 / 经理 / 同事)
+            </div>
+            {[...card.skills_confirmed, ...suggested].map((s) => (
+              <RatingLine key={s.id} skill={s} />
+            ))}
+          </div>
+        )}
+        {(card.pending_rating_requests ?? []).length > 0 && (
+          <div className="flex flex-col gap-1" data-testid="pending-rating-reqs">
+            {(card.pending_rating_requests ?? []).map((q) => (
+              <PendingRequestLine key={q.id} q={q} />
+            ))}
+          </div>
+        )}
         {suggested.length > 0 && (
           <div className="flex items-center gap-2">
             <Button
@@ -317,6 +367,14 @@ export function TalentCardSection({ employeeId }: { employeeId: string }) {
         </div>
       </div>
 
+      <RequestRatingModal
+        open={rateReqOpen}
+        onClose={() => setRateReqOpen(false)}
+        postUrl={`/api/employees/${employeeId}/skill-rating-requests`}
+        skills={[...card.skills_confirmed, ...suggested]}
+        excludeEmployeeId={employeeId}
+        invalidateKeys={[["talent-card", employeeId]]}
+      />
       <AddSkillModal
         employeeId={employeeId}
         open={skillOpen}

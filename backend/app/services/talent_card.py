@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.models import (
     Appraisal, Employee, EmployeeSkill, InsightNote, Interview, OrgUnit,
-    Project, ProjectMember, Skill,
+    Project, ProjectMember, Skill, SkillRating, SkillRatingRequest,
 )
 
 
@@ -54,6 +54,43 @@ def build_card(
             "evidence": es.evidence, "note": es.note, "status": es.status,
         }
         (suggested if es.status == "suggested" else confirmed).append(item)
+
+    # ---- 多评价者评分:每技能挂各来源分数 + 分歧标记 ----
+    rrows = db.execute(
+        select(SkillRating, Employee)
+        .join(Employee, Employee.id == SkillRating.rater_employee_id)
+        .where(SkillRating.employee_id == employee.id)
+        .order_by(SkillRating.created_at.desc())
+    ).all()
+    ratings_by_skill: dict[str, list[dict[str, Any]]] = {}
+    for r, rater in rrows:
+        ratings_by_skill.setdefault(r.skill_id, []).append({
+            "id": r.id, "rater_kind": r.rater_kind, "rater_name": rater.name,
+            "level": r.level, "comment": r.comment,
+            "created_at": str(r.created_at or "")[:16],
+        })
+    for item in confirmed + suggested:
+        rs = ratings_by_skill.get(item["skill_id"], [])
+        item["ratings"] = rs
+        levels = [x["level"] for x in rs]
+        # 分歧:≥2 个来源且极差 ≥2 级(自评5 vs 经理评2 → 校准信号)
+        item["divergent"] = len(rs) >= 2 and (max(levels) - min(levels)) >= 2
+
+    # 进行中的评分请求(本人视图也可见 —— 让员工知道"已催办/在等谁")
+    pend_reqs = db.scalars(
+        select(SkillRatingRequest).where(
+            SkillRatingRequest.employee_id == employee.id,
+            SkillRatingRequest.status == "pending",
+        ).order_by(SkillRatingRequest.created_at.desc())
+    ).all()
+    rater_names = _names(db, [q.rater_employee_id for q in pend_reqs], Employee)
+    skill_names = _names(db, [q.skill_id for q in pend_reqs], Skill)
+    pending_ratings = [{
+        "id": q.id, "skill_id": q.skill_id,
+        "skill_name": skill_names.get(q.skill_id),
+        "rater_name": rater_names.get(q.rater_employee_id),
+        "rater_kind": q.rater_kind, "created_at": str(q.created_at or "")[:16],
+    } for q in pend_reqs]
 
     # ---- 面试评价(沿录用来源回溯)----
     interviews: list[dict[str, Any]] = []
@@ -128,5 +165,6 @@ def build_card(
         "appraisals": appraisals,
         "insights": insights,
         "skills_suggested": [] if is_self else suggested,
+        "pending_rating_requests": pending_ratings,
     }
     return card

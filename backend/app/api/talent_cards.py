@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,9 +26,12 @@ from app.domain.models import (
     Employee,
     EmployeeSkill,
     InsightNote,
+    Notification,
     OrgUnit,
     ProjectMember,
     Skill,
+    SkillRating,
+    SkillRatingRequest,
     User,
 )
 from app.infra.db import get_db
@@ -347,4 +351,415 @@ def search_talent(
             "requested": [n for n, _ in reqs],
             "dict_hits": [s.name for s in dict_rows],
         },
+    }
+
+
+# ============ 多评价者技能评分(Degreed 式多源评分 + iCIMS 反馈请求流) ============
+#
+# 流:员工/经理/HR 发起 SkillRatingRequest(评价人默认直属上级)→ 评价人在
+# 「待我评价」里打分/婉拒 → 提交落 SkillRating(每人每技能一条,幂等 upsert)
+# 并同步 upsert EmployeeSkill(source=self/manager/peer, confirmed)。评分提交后
+# 不可改(iCIMS 语义):要改分只能取消请求重发,或再次发起新请求覆盖。
+# 员工也可不经过请求直接自评(POST /me/skills/{skill_id}/rate)。
+
+RATING_KIND_LABEL = {"self": "自评", "manager": "经理", "peer": "同事"}
+
+
+def _now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _rating_out(db: Session, r: SkillRating) -> dict[str, Any]:
+    rater = db.get(Employee, r.rater_employee_id)
+    skill = db.get(Skill, r.skill_id)
+    return {
+        "id": r.id, "skill_id": r.skill_id,
+        "skill_name": skill.name if skill else None,
+        "employee_id": r.employee_id,
+        "rater_employee_id": r.rater_employee_id,
+        "rater_name": rater.name if rater else None,
+        "rater_kind": r.rater_kind, "level": r.level, "comment": r.comment,
+        "request_id": r.request_id,
+        "created_at": str(r.created_at or "")[:16],
+    }
+
+
+def _req_out(db: Session, q: SkillRatingRequest) -> dict[str, Any]:
+    skill = db.get(Skill, q.skill_id)
+    ratee = db.get(Employee, q.employee_id)
+    rater = db.get(Employee, q.rater_employee_id)
+    return {
+        "id": q.id, "skill_id": q.skill_id,
+        "skill_name": skill.name if skill else None,
+        "employee_id": q.employee_id,
+        "ratee_name": ratee.name if ratee else None,
+        "rater_employee_id": q.rater_employee_id,
+        "rater_name": rater.name if rater else None,
+        "rater_kind": q.rater_kind, "note": q.note, "status": q.status,
+        "rating_id": q.rating_id,
+        "created_at": str(q.created_at or "")[:16],
+        "decided_at": str(q.decided_at or "")[:16],
+    }
+
+
+def _notify_emp(
+    db: Session, tenant_id: str, emp_id: str | None, *,
+    title: str, body: str | None = None, link: str = "/me/profile",
+) -> None:
+    """给员工的绑定账号写站内通知(未绑账号静默跳过)。"""
+    emp = db.get(Employee, emp_id) if emp_id else None
+    if emp is not None and emp.user_id:
+        db.add(Notification(
+            tenant_id=tenant_id, user_id=emp.user_id, kind="skill_rating",
+            title=title[:128], body=(body or "")[:512], link=link,
+        ))
+
+
+def _get_task(db: Session, task_id: str, current: User) -> SkillRatingRequest:
+    """我作为评价人的请求(不存在/非本人/跨租户 → 404)。"""
+    me = require_linked_employee(db, current)
+    q = db.get(SkillRatingRequest, task_id)
+    if (not q or q.tenant_id != current.tenant_id
+            or q.rater_employee_id != me):
+        raise HTTPException(404, "评分任务不存在")
+    return q
+
+
+class RatingRequestIn(BaseModel):
+    skill_id: str
+    rater_employee_id: str | None = None  # None → 被评人直属上级
+    note: str | None = Field(default=None, max_length=300)
+
+
+def _create_rating_request(
+    db: Session, *, current: User, ratee: Employee,
+    payload: RatingRequestIn, request: Request,
+) -> SkillRatingRequest:
+    skill = db.get(Skill, payload.skill_id)
+    if not skill or skill.tenant_id != current.tenant_id:
+        raise HTTPException(404, "技能不存在")
+    rater_id = payload.rater_employee_id or ratee.reports_to_id
+    if not rater_id:
+        raise HTTPException(422, "请指定评价人(该员工没有直属上级)")
+    if rater_id == ratee.id:
+        raise HTTPException(422, "不能向本人发起他评 — 自评请直接打分")
+    rater = db.get(Employee, rater_id)
+    if not rater or rater.tenant_id != current.tenant_id:
+        raise HTTPException(404, "评价人不存在")
+    if rater.status != "active":
+        raise HTTPException(422, "评价人已离职,无法接收评分任务")
+    if not rater.user_id:
+        raise HTTPException(422, "评价人未绑定账号,无法接收评分任务")
+    dup = db.scalars(
+        select(SkillRatingRequest).where(
+            SkillRatingRequest.tenant_id == current.tenant_id,
+            SkillRatingRequest.employee_id == ratee.id,
+            SkillRatingRequest.skill_id == skill.id,
+            SkillRatingRequest.rater_employee_id == rater.id,
+            SkillRatingRequest.status == "pending",
+        )
+    ).first()
+    if dup:
+        raise HTTPException(409, "已有一条待该评价人处理的评分请求")
+    kind = "manager" if rater.id == ratee.reports_to_id else "peer"
+    q = SkillRatingRequest(
+        tenant_id=current.tenant_id, employee_id=ratee.id, skill_id=skill.id,
+        rater_employee_id=rater.id, rater_kind=kind, note=payload.note,
+        requested_by_id=current.id,
+    )
+    db.add(q)
+    db.flush()
+    write_audit(db, actor=current, entity_type="skill_rating_request",
+                entity_id=q.id, action="create", request=request)
+    _notify_emp(
+        db, current.tenant_id, rater.id,
+        title=f"{ratee.name} 请你评价技能「{skill.name}」",
+        body=payload.note or "请在「我的 → 待我评价」中完成打分。",
+    )
+    return q
+
+
+@router.post("/me/skill-rating-requests", status_code=201)
+def request_rating_self(
+    payload: RatingRequestIn, request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """员工给自己发起他评请求(默认请直属上级评)。"""
+    ratee = db.get(Employee, require_linked_employee(db, current))
+    q = _create_rating_request(
+        db, current=current, ratee=ratee, payload=payload, request=request)
+    db.commit()
+    return _req_out(db, q)
+
+
+@router.post("/employees/{emp_id}/skill-rating-requests", status_code=201)
+def request_rating_for(
+    emp_id: str, payload: RatingRequestIn, request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """HR/直属上级代员工发起评分请求(校准场景)。"""
+    emp = _get_employee(db, emp_id, current)
+    if not _can_curate(db, emp, current):
+        raise HTTPException(403, "权限不足")
+    q = _create_rating_request(
+        db, current=current, ratee=emp, payload=payload, request=request)
+    db.commit()
+    return _req_out(db, q)
+
+
+@router.get("/me/skill-rating-requests")
+def my_rating_requests(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """我发出的评分请求(被评人=我)。"""
+    me = require_linked_employee(db, current)
+    rows = db.scalars(
+        select(SkillRatingRequest).where(
+            SkillRatingRequest.tenant_id == current.tenant_id,
+            SkillRatingRequest.employee_id == me,
+        ).order_by(SkillRatingRequest.created_at.desc()).limit(50)
+    ).all()
+    return {"items": [_req_out(db, q) for q in rows]}
+
+
+@router.get("/me/skill-rating-tasks")
+def my_rating_tasks(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """待我评价(评价人=我):pending 在前,已处理的按时间倒序附后。"""
+    me = require_linked_employee(db, current)
+    rows = db.scalars(
+        select(SkillRatingRequest).where(
+            SkillRatingRequest.tenant_id == current.tenant_id,
+            SkillRatingRequest.rater_employee_id == me,
+        ).order_by(SkillRatingRequest.created_at.desc()).limit(50)
+    ).all()
+    items = [_req_out(db, q) for q in rows]
+    items.sort(key=lambda x: (x["status"] != "pending", x["created_at"]),
+               reverse=False)
+    return {"items": items,
+            "pending_count": sum(1 for i in items if i["status"] == "pending")}
+
+
+@router.post("/me/skill-rating-requests/{req_id}/cancel")
+def cancel_rating_request(
+    req_id: str, request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """撤回待处理请求:发起者本人、被评人本人或 HR/直属上级可撤。"""
+    me = get_linked_employee_id(db, current)
+    q = db.get(SkillRatingRequest, req_id)
+    if not q or q.tenant_id != current.tenant_id:
+        raise HTTPException(404, "评分请求不存在")
+    ratee = db.get(Employee, q.employee_id)
+    allowed = (
+        q.requested_by_id == current.id
+        or (me is not None and q.employee_id == me)
+        or _can_curate(db, ratee, current)
+    )
+    if not allowed:
+        raise HTTPException(403, "权限不足")
+    if q.status != "pending":
+        raise HTTPException(409, "只能撤回待处理的请求")
+    q.status = "cancelled"
+    q.decided_at = _now()
+    write_audit(db, actor=current, entity_type="skill_rating_request",
+                entity_id=q.id, action="cancel", request=request)
+    skill = db.get(Skill, q.skill_id)
+    _notify_emp(db, current.tenant_id, q.rater_employee_id,
+                title=f"「{skill.name if skill else ''}」的评分请求已撤回")
+    db.commit()
+    return _req_out(db, q)
+
+
+class RateIn(BaseModel):
+    level: int = Field(ge=1, le=5)
+    comment: str | None = Field(default=None, max_length=500)
+
+
+class DeclineIn(BaseModel):
+    reason: str | None = Field(default=None, max_length=200)
+
+
+def _upsert_rating(
+    db: Session, *, tenant_id: str, ratee_id: str, skill_id: str,
+    rater_id: str, rater_kind: str, level: int, comment: str | None,
+    request_id: str | None, created_by: str,
+) -> SkillRating:
+    """每人每技能一条:重复评分覆盖(最新一次为准)。"""
+    r = db.scalars(
+        select(SkillRating).where(
+            SkillRating.employee_id == ratee_id,
+            SkillRating.skill_id == skill_id,
+            SkillRating.rater_employee_id == rater_id,
+        )
+    ).first()
+    if r is None:
+        r = SkillRating(
+            tenant_id=tenant_id, employee_id=ratee_id, skill_id=skill_id,
+            rater_employee_id=rater_id, rater_kind=rater_kind, level=level,
+            comment=comment, request_id=request_id, created_by=created_by,
+        )
+        db.add(r)
+    else:
+        r.level = level
+        r.comment = comment
+        r.rater_kind = rater_kind
+        if request_id:
+            r.request_id = request_id
+    db.flush()
+    return r
+
+
+def _reflect_to_employee_skill(
+    db: Session, *, tenant_id: str, ratee_id: str, skill_id: str,
+    rater_kind: str, level: int, rating_id: str, comment: str | None,
+    created_by: str,
+) -> None:
+    """评分回写 EmployeeSkill:人评即 confirmed 证据(source=自评/经理/同事)。"""
+    profile_update.upsert_employee_skill(
+        db, tenant_id=tenant_id, employee_id=ratee_id, skill_id=skill_id,
+        level=level, source=rater_kind, status="confirmed",
+        evidence={"kind": "rating", "id": rating_id, "rater_kind": rater_kind},
+        note=comment, created_by=created_by,
+    )
+
+
+@router.post("/me/skill-rating-tasks/{task_id}/rate", status_code=201)
+def submit_rating(
+    task_id: str, payload: RateIn, request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """评价人提交打分 → SkillRating + EmployeeSkill(confirmed) + 请求 completed。"""
+    me = require_linked_employee(db, current)
+    q = _get_task(db, task_id, current)
+    if q.status != "pending":
+        raise HTTPException(409, "该请求已处理,不能重复评分")
+    r = _upsert_rating(
+        db, tenant_id=current.tenant_id, ratee_id=q.employee_id,
+        skill_id=q.skill_id, rater_id=me, rater_kind=q.rater_kind,
+        level=payload.level, comment=payload.comment,
+        request_id=q.id, created_by=current.id,
+    )
+    _reflect_to_employee_skill(
+        db, tenant_id=current.tenant_id, ratee_id=q.employee_id,
+        skill_id=q.skill_id, rater_kind=q.rater_kind, level=payload.level,
+        rating_id=r.id, comment=payload.comment, created_by=current.id,
+    )
+    q.status = "completed"
+    q.rating_id = r.id
+    q.decided_at = _now()
+    write_audit(db, actor=current, entity_type="skill_rating_request",
+                entity_id=q.id, action="rate",
+                detail={"level": payload.level, "rater_kind": q.rater_kind},
+                request=request)
+    skill = db.get(Skill, q.skill_id)
+    rater = db.get(Employee, me)
+    _notify_emp(
+        db, current.tenant_id, q.employee_id,
+        title=f"{rater.name if rater else '同事'} 为你的「{skill.name if skill else ''}」评了 {payload.level} 级",
+        body=payload.comment or "",
+    )
+    # 代发场景(请求人≠被评人):结果也知会请求人
+    if q.requested_by_id and q.requested_by_id != current.id:
+        ratee = db.get(Employee, q.employee_id)
+        if not ratee or ratee.user_id != q.requested_by_id:
+            db.add(Notification(
+                tenant_id=current.tenant_id, user_id=q.requested_by_id,
+                kind="skill_rating",
+                title=f"{ratee.name if ratee else ''} 的「{skill.name if skill else ''}」已被 {rater.name if rater else '同事'} 评 {payload.level} 级"[:128],
+                body=(payload.comment or "")[:512], link="/me/profile",
+            ))
+    db.commit()
+    return {"request": _req_out(db, q), "rating": _rating_out(db, r)}
+
+
+@router.post("/me/skill-rating-tasks/{task_id}/decline")
+def decline_rating(
+    task_id: str, payload: DeclineIn, request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """评价人婉拒 → 请求 declined,通知发起方。"""
+    q = _get_task(db, task_id, current)
+    if q.status != "pending":
+        raise HTTPException(409, "该请求已处理")
+    q.status = "declined"
+    q.decided_at = _now()
+    write_audit(db, actor=current, entity_type="skill_rating_request",
+                entity_id=q.id, action="decline", request=request)
+    me = require_linked_employee(db, current)
+    rater = db.get(Employee, me)
+    skill = db.get(Skill, q.skill_id)
+    _notify_emp(
+        db, current.tenant_id, q.employee_id,
+        title=f"{rater.name if rater else '同事'} 婉拒了「{skill.name if skill else ''}」的评分请求",
+        body=payload.reason or "",
+    )
+    db.commit()
+    return _req_out(db, q)
+
+
+@router.post("/me/skills/{skill_id}/rate", status_code=201)
+def self_rate(
+    skill_id: str, payload: RateIn, request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """自评:不走请求流,直接落 self 评分 + EmployeeSkill(source=self)。"""
+    me = require_linked_employee(db, current)
+    skill = db.get(Skill, skill_id)
+    if not skill or skill.tenant_id != current.tenant_id:
+        raise HTTPException(404, "技能不存在")
+    r = _upsert_rating(
+        db, tenant_id=current.tenant_id, ratee_id=me, skill_id=skill.id,
+        rater_id=me, rater_kind="self", level=payload.level,
+        comment=payload.comment, request_id=None, created_by=current.id,
+    )
+    _reflect_to_employee_skill(
+        db, tenant_id=current.tenant_id, ratee_id=me, skill_id=skill.id,
+        rater_kind="self", level=payload.level, rating_id=r.id,
+        comment=payload.comment, created_by=current.id,
+    )
+    write_audit(db, actor=current, entity_type="skill_rating_request",
+                entity_id=r.id, action="self_rate",
+                detail={"level": payload.level, "skill_id": skill.id},
+                request=request)
+    db.commit()
+    return _rating_out(db, r)
+
+
+@router.get("/employees/{emp_id}/skill-ratings")
+def list_ratings(
+    emp_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """某员工的全部多源评分(按技能分组);可见性同 talent-card。"""
+    emp = _get_employee(db, emp_id, current)
+    rows = db.scalars(
+        select(SkillRating).where(
+            SkillRating.employee_id == emp.id,
+        ).order_by(SkillRating.created_at.desc()).limit(200)
+    ).all()
+    by_skill: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        by_skill.setdefault(r.skill_id, []).append(_rating_out(db, r))
+    return {
+        "items": [_rating_out(db, r) for r in rows],
+        "by_skill": by_skill,
+        "pending_requests": [
+            _req_out(db, q) for q in db.scalars(
+                select(SkillRatingRequest).where(
+                    SkillRatingRequest.employee_id == emp.id,
+                    SkillRatingRequest.status == "pending",
+                ).order_by(SkillRatingRequest.created_at.desc())
+            ).all()
+        ],
     }

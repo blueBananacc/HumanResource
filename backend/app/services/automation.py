@@ -55,6 +55,8 @@ from app.domain.models import (
     LeaveApplication,
     Notification,
     OvertimeRequest,
+    Skill,
+    SkillRatingRequest,
     Survey,
     SurveyLink,
     User,
@@ -126,6 +128,32 @@ def _job_app_extras(db: Session, o: JobApplication) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         pass
     return out
+
+
+def _skill_rating_req_extras(db: Session, o: SkillRatingRequest) -> dict[str, Any]:
+    """技能评分请求的模板上下文:技能名 + 被评人/评价人姓名。"""
+    out: dict[str, Any] = {}
+    try:
+        sk = db.get(Skill, o.skill_id)
+        if sk is not None:
+            out["skill_name"] = sk.name
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        ratee = db.get(Employee, o.employee_id)
+        if ratee is not None:
+            out["ratee_name"] = ratee.name
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        rater = db.get(Employee, o.rater_employee_id)
+        if rater is not None:
+            out["rater_name"] = rater.name
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 ENTITY_REGISTRY: dict[str, dict[str, Any]] = {
     "candidate": {
         "model": Candidate,
@@ -262,6 +290,16 @@ ENTITY_REGISTRY: dict[str, dict[str, Any]] = {
         "candidate_attr": "candidate_id",
         "link": lambda o: f"/talents/{o.candidate_id}",
         "label": "面试评分卡",
+    },
+    "skill_rating_request": {
+        "model": SkillRatingRequest,
+        "fields": ("status", "skill_id", "employee_id", "rater_employee_id",
+                   "rater_kind"),
+        "employee_attr": "employee_id",
+        "owner_attr": None,
+        "extras": _skill_rating_req_extras,
+        "link": lambda o: "/me/profile",
+        "label": "技能评分请求",
     },
 }
 
