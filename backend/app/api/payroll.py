@@ -2,8 +2,11 @@
 
 - ``GET/POST /payroll/slips``             列表(按期间/员工)/新建
 - ``GET/PUT/DELETE /payroll/slips/{id}``  详情/编辑(draft)/删除(draft)
-- ``POST /payroll/slips/{id}/issue``      draft → issued(员工端可见)
-- ``POST /payroll/slips/{id}/retract``    issued → draft(发错回收)
+- ``POST /payroll/slips/{id}/issue``      draft → issued(员工端可见+通知)
+- ``POST /payroll/slips/{id}/retract``    issued → draft(发错回收,清签收态)
+- ``POST /payroll/slips/{id}/nudge``      issued 未确认 → 催员工签收(20h 去重)
+
+员工签收(薪人薪事同款电子签收):``POST /api/me/salary-slips/{id}/confirm``
 """
 from __future__ import annotations
 
@@ -12,13 +15,13 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, count_total, paginate_params
 from app.api.license import require_feature
-from app.domain.models import Employee, OrgUnit, SalarySlip, User
+from app.domain.models import Employee, Notification, OrgUnit, SalarySlip, User
 from app.infra.db import get_db
 from app.services.audit import write_audit
 from app.services.permissions import (
@@ -74,6 +77,7 @@ class SlipOut(BaseModel):
     items: list[SlipItemOut] | None
     status: str
     issued_at: datetime | None
+    confirmed_at: datetime | None
     note: str | None
     created_at: datetime
 
@@ -96,7 +100,8 @@ def _slip_out(s: SalarySlip, emps, orgs) -> SlipOut:
         org_unit_name=orgs.get(e.org_unit_id) if e and e.org_unit_id else None,
         period=s.period, gross=s.gross, deductions=s.deductions, net=s.net,
         currency=s.currency, items=s.items, status=s.status,
-        issued_at=s.issued_at, note=s.note, created_at=s.created_at,
+        issued_at=s.issued_at, confirmed_at=s.confirmed_at,
+        note=s.note, created_at=s.created_at,
     )
 
 
@@ -255,6 +260,16 @@ def issue_slip(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅草稿可发放")
     s.status = "issued"
     s.issued_at = _now()
+    # 发放即推送员工签收提醒(薪人薪事:一键发送+确认追踪)
+    emp = db.get(Employee, s.employee_id)
+    if emp and emp.user_id:
+        db.add(Notification(
+            tenant_id=s.tenant_id, user_id=emp.user_id,
+            kind="payslip.issued",
+            title=f"{s.period} 工资条已发放",
+            body="请前往「我的工资条」查看明细并确认签收。",
+            link=f"/me/payslips#slip:{s.id}",
+        ))
     write_audit(
         db, actor=current, entity_type="salary_slip", entity_id=s.id,
         action="issue", detail={"period": s.period}, request=request,
@@ -277,11 +292,66 @@ def retract_slip(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅已发放的可回收")
     s.status = "draft"
     s.issued_at = None
+    was_confirmed = s.confirmed_at is not None
+    s.confirmed_at = None  # 收回后重新发放需重新签收
+    s.confirmed_by_id = None
     write_audit(
         db, actor=current, entity_type="salary_slip", entity_id=s.id,
-        action="retract", detail={"period": s.period}, request=request,
+        action="retract",
+        detail={"period": s.period, "was_confirmed": was_confirmed},
+        request=request,
     )
     db.commit()
     db.refresh(s)
     emps, orgs = _maps(db, current.tenant_id)
     return _slip_out(s, emps, orgs)
+
+
+NUDGE_COOLDOWN_HOURS = 20
+
+
+@router.post("/slips/{sid}/nudge")
+def nudge_slip(
+    sid: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_PAYROLL)),
+):
+    """催员工签收工资条。仅 issued 未确认可催;20h 内去重。"""
+    s = _slip(db, sid, current.tenant_id)
+    if s.status != "issued":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅已发放的工资条可催签收")
+    if s.confirmed_at:
+        raise HTTPException(status.HTTP_409_CONFLICT, "员工已确认签收")
+    emp = db.get(Employee, s.employee_id)
+    if not emp or not emp.user_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "该员工未关联账号")
+    link = f"/me/payslips#slip:{s.id}"
+    from datetime import timedelta
+
+    cutoff = _now() - timedelta(hours=NUDGE_COOLDOWN_HOURS)
+    recent = db.execute(
+        select(func.count(Notification.id)).where(
+            Notification.user_id == emp.user_id,
+            Notification.kind == "payslip.nudge",
+            Notification.link == link,
+            Notification.created_at >= cutoff,
+        )
+    ).scalar_one()
+    sent = 0
+    if not recent:
+        db.add(Notification(
+            tenant_id=s.tenant_id, user_id=emp.user_id,
+            kind="payslip.nudge",
+            title=f"{s.period} 工资条待确认",
+            body="工资条已发放,请尽快查看明细并确认签收。",
+            link=link,
+        ))
+        sent = 1
+    write_audit(
+        db, actor=current, entity_type="salary_slip", entity_id=s.id,
+        action="nudge", detail={"period": s.period, "sent": sent},
+        request=request,
+    )
+    db.commit()
+    return {"sent": sent}

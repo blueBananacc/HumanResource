@@ -401,6 +401,7 @@ export type SalarySlip = {
   items: SlipItem[] | null;
   status: string;
   issued_at: string | null;
+  confirmed_at: string | null;
   note: string | null;
   created_at: string;
 };
@@ -518,6 +519,7 @@ export type MeSlip = {
   currency: string;
   items: SlipItem[] | null;
   issued_at: string | null;
+  confirmed_at: string | null;
   note: string | null;
 };
 

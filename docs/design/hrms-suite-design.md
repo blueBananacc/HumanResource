@@ -56,7 +56,8 @@ source_candidate_id(→candidates,录用转化来源)
 - `expense_types` + `expense_claims`(items 子表,total 聚合,审批流同请假)
 - `salary_slips`: employee × period('2026-10'),gross/deductions/net + items JSON
   明细。**只登记不核算**(不接外部会计系统,明确不做),
-  HR 录入/编辑,员工只读
+  HR 录入/编辑,员工只读明细 + **电子签收**(confirmed_at,收回重发需重签,
+  HR 可催签收,发放/催办走 Notification)
 
 ### 明确不做
 - 自动薪资核算、税务申报、排班 Roster 拖拽、工时 Timesheet、印度本地税

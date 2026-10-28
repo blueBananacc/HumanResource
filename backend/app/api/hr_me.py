@@ -991,6 +991,7 @@ class MeSlipOut(BaseModel):
     currency: str
     items: list[SlipItem] | None
     issued_at: datetime | None
+    confirmed_at: datetime | None
     note: str | None
 
 
@@ -1005,7 +1006,7 @@ def me_slips(db: Session = Depends(get_db), current: User = Depends(get_current_
     return [MeSlipOut(
         id=s.id, period=s.period, gross=s.gross, deductions=s.deductions,
         net=s.net, currency=s.currency, items=s.items, issued_at=s.issued_at,
-        note=s.note,
+        confirmed_at=s.confirmed_at, note=s.note,
     ) for s in rows]
 
 
@@ -1022,7 +1023,30 @@ def me_slip_detail(
     return MeSlipOut(
         id=s.id, period=s.period, gross=s.gross, deductions=s.deductions,
         net=s.net, currency=s.currency, items=s.items, issued_at=s.issued_at,
-        note=s.note,
+        confirmed_at=s.confirmed_at, note=s.note,
+    )
+
+
+@router.post("/salary-slips/{slip_id}/confirm", response_model=MeSlipOut)
+def me_slip_confirm(
+    slip_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """员工电子签收工资条(幂等):仅已发放可签收;已签收返回当前状态。"""
+    e = _me(db, current)
+    s = db.get(SalarySlip, slip_id)
+    if not s or s.employee_id != e.id or s.status != "issued":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "工资条不存在")
+    if not s.confirmed_at:
+        s.confirmed_at = datetime.now(UTC).replace(tzinfo=None)
+        s.confirmed_by_id = current.id
+        db.commit()
+        db.refresh(s)
+    return MeSlipOut(
+        id=s.id, period=s.period, gross=s.gross, deductions=s.deductions,
+        net=s.net, currency=s.currency, items=s.items, issued_at=s.issued_at,
+        confirmed_at=s.confirmed_at, note=s.note,
     )
 
 

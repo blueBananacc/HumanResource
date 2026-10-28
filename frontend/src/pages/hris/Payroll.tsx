@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Banknote,
+  BellRing,
   Eye,
   FileSpreadsheet,
   Plus,
@@ -123,6 +124,12 @@ export function Payroll() {
                   {s.period}
                 </span>
                 <StatusPill status={s.status} />
+                {s.status === "issued" && (
+                  <StatusPill
+                    status={s.confirmed_at ? "approved" : "pending"}
+                    label={s.confirmed_at ? "已签收" : "待签收"}
+                  />
+                )}
                 <div className="flex-1" />
                 <span className="text-[12px] font-mono text-[var(--color-text-secondary)]">
                   应发 {fmtMoney(s.gross, s.currency)}
@@ -162,6 +169,20 @@ export function Payroll() {
                     </Button>
                   </>
                 )}
+                {s.status === "issued" && !s.confirmed_at && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      act.mutate({ id: s.id, action: "nudge" })
+                    }
+                    disabled={act.isPending}
+                    title="推送通知提醒员工签收"
+                  >
+                    <BellRing className="w-3.5 h-3.5" />
+                    催签收
+                  </Button>
+                )}
                 {s.status === "issued" && (
                   <Button
                     variant="secondary"
@@ -170,6 +191,7 @@ export function Payroll() {
                       act.mutate({ id: s.id, action: "retract" })
                     }
                     disabled={act.isPending}
+                    title="收回后重新发放需员工重新签收"
                   >
                     <Undo2 className="w-3.5 h-3.5" />
                     收回
@@ -178,6 +200,11 @@ export function Payroll() {
                 {s.issued_at && (
                   <span className="text-[11px] text-[var(--color-text-tertiary)] font-body">
                     发放于 {formatRelative(s.issued_at)}
+                  </span>
+                )}
+                {s.confirmed_at && (
+                  <span className="text-[11px] text-[var(--color-success)] font-body">
+                    签收于 {formatRelative(s.confirmed_at)}
                   </span>
                 )}
               </div>

@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Wallet } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CheckCheck, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { Empty } from "@/components/ui/empty";
 import { fetchJSON } from "@/lib/api";
-import { fmtMoney, fmtTime, type MeSlip } from "@/lib/hris";
+import { fmtMoney, fmtTime, StatusPill, type MeSlip } from "@/lib/hris";
 
 export function MyPayslips() {
   const [viewing, setViewing] = useState<MeSlip | null>(null);
@@ -54,6 +54,10 @@ export function MyPayslips() {
               <span className="text-[12px] text-[var(--color-text-tertiary)] font-body">
                 发放 {fmtTime(s.issued_at)}
               </span>
+              <StatusPill
+                status={s.confirmed_at ? "approved" : "pending"}
+                label={s.confirmed_at ? "已签收" : "待签收"}
+              />
               <div className="flex-1" />
               <span className="font-mono font-semibold text-sm text-[var(--color-text-primary)]">
                 {fmtMoney(s.net, s.currency)}
@@ -77,6 +81,7 @@ function SlipModal({
   slip: MeSlip;
   onClose: () => void;
 }) {
+  const qc = useQueryClient();
   const { data: full } = useQuery<MeSlip>({
     queryKey: ["me-slip", slip.id],
     queryFn: () => fetchJSON(`/api/me/salary-slips/${slip.id}`),
@@ -84,12 +89,41 @@ function SlipModal({
   });
   const s = full ?? slip;
 
+  const confirm = useMutation({
+    mutationFn: () =>
+      fetchJSON(`/api/me/salary-slips/${s.id}/confirm`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["me-slips"] });
+      qc.invalidateQueries({ queryKey: ["me-slip", s.id] });
+    },
+  });
+
   return (
     <Modal
       open
       onClose={onClose}
       title={`工资条 · ${s.period}`}
-      footer={<Button onClick={onClose}>关闭</Button>}
+      footer={
+        <div className="flex items-center gap-2">
+          {s.confirmed_at ? (
+            <span className="text-[12px] text-[var(--color-success)] font-body flex items-center gap-1">
+              <CheckCheck className="w-3.5 h-3.5" />
+              已于 {fmtTime(s.confirmed_at)} 签收
+            </span>
+          ) : (
+            <Button
+              onClick={() => confirm.mutate()}
+              disabled={confirm.isPending}
+            >
+              <CheckCheck className="w-4 h-4" />
+              确认无误,签收
+            </Button>
+          )}
+          <Button variant="secondary" onClick={onClose}>
+            关闭
+          </Button>
+        </div>
+      }
     >
       <div className="flex flex-col gap-3 text-[13px] font-body">
         {(s.items ?? []).length === 0 ? (

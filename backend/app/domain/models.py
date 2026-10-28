@@ -2035,6 +2035,11 @@ class SalarySlip(Base):
         String(16), nullable=False, server_default="draft", index=True
     )
     issued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 员工电子签收(薪人薪事同款):发放后员工在自助端确认;撤回重发需重新签收
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    confirmed_by_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
