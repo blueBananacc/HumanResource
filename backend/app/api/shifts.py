@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
@@ -43,6 +44,7 @@ from app.services.permissions import (
     require_permission,
 )
 from app.services.scheduling import (
+    _busy_map,
     _leave_days,
     auto_cover,
     cover_candidates,
@@ -60,6 +62,7 @@ from app.services.scheduling_rules import (
     violations_for_employee,
     violations_for_window,
 )
+from app.services.work_calendar import workday_dates
 
 
 def _now() -> datetime:
@@ -191,6 +194,251 @@ def compliance(
             "violations": violations_for_window(
                 db, current.tenant_id, start=start, end=end,
                 org_unit_id=org_unit_id)}
+
+
+# ===== AI 排班助手(盖雅「时间智能体」:解释排班/多方案对比) =====
+#
+# 三个只读端点把时间智能体的「为什么」与「换谁更好」做成确定性数据:
+# - ``/board``       某日各班次覆盖看板(谁上班/谁请假/缺几人)
+# - ``/explain``     某员工某天排班全景:在排什么、为什么没排、若排某班会违规吗
+# - ``/plan-compare`` 某槽位候选方案对比:逐人合规预判 + 公平/偏好优劣项
+
+
+@router.get("/board")
+def day_board(
+    day: date,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+):
+    """某日排班看板:班次 × 已排员工(含请假标记)× 缺口。"""
+    shifts = db.scalars(
+        select(Shift).where(
+            Shift.tenant_id == current.tenant_id, Shift.active.is_(True))
+        .order_by(Shift.start_min)).all()
+    rows = db.scalars(
+        select(ShiftAssignment).where(
+            ShiftAssignment.tenant_id == current.tenant_id,
+            ShiftAssignment.day == day)).all()
+    emps, _ = _name_maps(db, current.tenant_id)
+    leave = _leave_days(db, current.tenant_id, day, day)
+    slots = []
+    for s in shifts:
+        assigned = [
+            {
+                "assignment_id": a.id,
+                "employee_id": a.employee_id,
+                "employee_name": emps.get(a.employee_id, "?"),
+                "source": a.source,
+                "on_leave": day in leave.get(a.employee_id, set()),
+            }
+            for a in rows if a.shift_id == s.id
+        ]
+        on_leave = sum(1 for x in assigned if x["on_leave"])
+        covered = len(assigned) - on_leave
+        slots.append({
+            "shift_id": s.id, "shift_name": s.name,
+            "time_range": f"{_min_to_hhmm(s.start_min)}-{_min_to_hhmm(s.end_min)}",
+            "required": s.required, "covered": covered,
+            "missing": max(s.required - covered, 0),
+            "assigned": assigned,
+        })
+    return {"day": day.isoformat(), "slots": slots}
+
+
+def _consecutive_streak(pairs: list[tuple[date, Shift]], day: date) -> int:
+    """截至 day(含)的连续排班天数。"""
+    days = {d for d, _ in pairs}
+    n, cur = 0, day
+    while cur in days:
+        n += 1
+        cur -= timedelta(days=1)
+    return n
+
+
+@router.get("/explain")
+def explain_schedule(
+    employee_id: str,
+    day: date,
+    shift_id: str | None = None,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+):
+    """解释某员工某天的排班状态与可排性(AI 排班助手核心)。
+
+    - 已排:返回班次+来源+是否请假中
+    - 未排:列出原因(请假/非工作日无班次需求/登记不可排)
+    - ``shift_id`` 指定时附加「假设排此班」的合规预判 violations
+    """
+    emp = db.get(Employee, employee_id)
+    if not emp or emp.tenant_id != current.tenant_id:
+        raise HTTPException(404, "员工不存在")
+    emps, shift_names = _name_maps(db, current.tenant_id)
+    assignment = db.scalars(
+        select(ShiftAssignment).where(
+            ShiftAssignment.tenant_id == current.tenant_id,
+            ShiftAssignment.employee_id == employee_id,
+            ShiftAssignment.day == day)).first()
+    on_leave = day in _leave_days(db, current.tenant_id, day, day).get(
+        employee_id, set())
+    avail = _avail_map(db, current.tenant_id, [employee_id]).get(
+        employee_id, {})
+    pref = avail.get(day.weekday())
+    pairs, _shifts = _load_pairs(
+        db, current.tenant_id, [employee_id],
+        day.replace(day=1), day)
+    month_cnt = len(pairs.get(employee_id, []))
+    reasons: list[str] = []
+    if assignment:
+        reasons.append(
+            f"当天已排「{shift_names.get(assignment.shift_id, '?')}」"
+            f"(来源 {assignment.source})")
+        if on_leave:
+            reasons.append("但当天有已批请假 — 属于待替班项")
+    else:
+        if on_leave:
+            reasons.append("当天有已批请假,不可排班")
+        if pref == "unavailable":
+            reasons.append("员工登记该 weekday 为不可排")
+        if not reasons:
+            reasons.append("当天空闲可排(无排班/无请假)")
+    if pref == "preferred":
+        reasons.append("员工登记该 weekday 为偏好日")
+    # 假设合规预判
+    hypothetical: dict | None = None
+    target = None
+    if shift_id:
+        target = db.get(Shift, shift_id)
+        if not target or target.tenant_id != current.tenant_id:
+            raise HTTPException(404, "班次不存在")
+    if target is not None:
+        vs = precheck(db, current.tenant_id, employee_id, day, target)
+        hypothetical = {
+            "shift_id": target.id, "shift_name": target.name,
+            "ok": not any(v["severity"] == "block" for v in vs),
+            "violations": vs,
+        }
+    pending_swaps = db.scalars(
+        select(ShiftSwapRequest).where(
+            ShiftSwapRequest.tenant_id == current.tenant_id,
+            ShiftSwapRequest.day == day,
+            ShiftSwapRequest.status.in_(
+                ["pending_peer", "pending_approval"]),
+            (ShiftSwapRequest.requester_employee_id == employee_id)
+            | (ShiftSwapRequest.target_employee_id == employee_id),
+        )).all()
+    return {
+        "employee_id": employee_id, "employee_name": emp.name,
+        "day": day.isoformat(), "weekday": day.weekday(),
+        "is_workday": day in set(
+            workday_dates(db, current.tenant_id, day, day)),
+        "availability": pref or "unset",
+        "assignment": (
+            {"id": assignment.id, "shift_id": assignment.shift_id,
+             "shift_name": shift_names.get(assignment.shift_id, "?"),
+             "source": assignment.source, "on_leave": on_leave}
+            if assignment else None),
+        "on_leave": on_leave,
+        "month_assigned_count": month_cnt,
+        "consecutive_days_to_date": _consecutive_streak(
+            pairs.get(employee_id, []), day),
+        "pending_swaps": [
+            {"id": s.id, "status": s.status, "mode": s.mode}
+            for s in pending_swaps],
+        "hypothetical": hypothetical,
+        "reasons": reasons,
+    }
+
+
+@router.get("/plan-compare")
+def plan_compare(
+    day: date,
+    shift_id: str,
+    limit: int = Query(5, ge=1, le=15),
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+):
+    """某槽位候选方案对比(盖雅:多种微调方案 + 解释各方案优劣)。
+
+    对每个可排候选人给出:合规预判(若排此班引入的违规)、当月已排数
+    (公平性)、可用性偏好、同部门标记,并汇总确定性优劣项供 LLM 讲解。
+    """
+    shift = db.get(Shift, shift_id)
+    if not shift or shift.tenant_id != current.tenant_id:
+        raise HTTPException(404, "班次不存在")
+    month_start = day.replace(day=1)
+    employees = db.scalars(
+        select(Employee).where(
+            Employee.tenant_id == current.tenant_id,
+            Employee.status == "active").order_by(Employee.employee_no)).all()
+    assigns = db.scalars(
+        select(ShiftAssignment).where(
+            ShiftAssignment.tenant_id == current.tenant_id,
+            ShiftAssignment.day >= month_start,
+            ShiftAssignment.day <= day)).all()
+    busy = _busy_map(assigns)
+    cnt: dict[str, int] = defaultdict(int)
+    org_by_emp: dict[str, str | None] = {}
+    for a in assigns:
+        cnt[a.employee_id] += 1
+    leave = _leave_days(db, current.tenant_id, day, day)
+    avail = _avail_map(db, current.tenant_id, [e.id for e in employees])
+    for e in employees:
+        org_by_emp[e.id] = e.org_unit_id
+    # 当日该班已排员工的部门,作为 same_org 参照(取多数)
+    day_orgs = [
+        org_by_emp.get(a.employee_id)
+        for a in assigns if a.day == day and a.shift_id == shift_id]
+    anchor_org = day_orgs[0] if day_orgs else None
+
+    plans: list[dict] = []
+    ineligible: list[dict] = []
+    for e in employees:
+        if day in leave.get(e.id, set()):
+            ineligible.append({"employee_id": e.id, "employee_name": e.name,
+                               "reason": "当天有已批请假"})
+            continue
+        if day in busy.get(e.id, set()):
+            ineligible.append({"employee_id": e.id, "employee_name": e.name,
+                               "reason": "当天已有排班"})
+            continue
+        vs = precheck(db, current.tenant_id, e.id, day, shift)
+        blocks = [v for v in vs if v["severity"] == "block"]
+        warns = [v for v in vs if v["severity"] == "warn"]
+        pref = avail.get(e.id, {}).get(day.weekday())
+        pros: list[str] = []
+        cons: list[str] = []
+        if not blocks:
+            pros.append("无合规阻断")
+        for v in blocks:
+            cons.append(f"违规:{v['detail']}")
+        for v in warns:
+            cons.append(f"提醒:{v['detail']}")
+        if pref == "preferred":
+            pros.append("员工登记该日为偏好日")
+        elif pref == "unavailable":
+            cons.append("员工登记该日为不可排")
+        if anchor_org and e.org_unit_id == anchor_org:
+            pros.append("与当班同事同部门")
+        plans.append({
+            "employee_id": e.id, "employee_name": e.name,
+            "org_unit_id": e.org_unit_id,
+            "assigned_this_month": cnt[e.id],
+            "eligible": not blocks,
+            "violations": vs, "pros": pros, "cons": cons,
+        })
+    # 排序:合规优先 → 当月已排少优先(公平) → 偏好日加权
+    plans.sort(key=lambda p: (
+        not p["eligible"], p["assigned_this_month"],
+        0 if avail.get(p["employee_id"], {}).get(day.weekday())
+        == "preferred" else 1,
+        p["employee_name"]))
+    return {
+        "day": day.isoformat(), "shift_id": shift_id,
+        "shift_name": shift.name,
+        "plans": plans[:limit],
+        "ineligible": ineligible[:10],
+        "pool_size": len(plans),
+    }
 
 
 # ===== 排班模板 / 循环规则(喔趣:固定班次·多班次循环模板) =====

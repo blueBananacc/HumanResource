@@ -335,7 +335,11 @@ const SYSTEM_PROMPT = `你是 HROnfire 招聘平台的 AI 助手,服务对象是
 5. 候选人隐私信息(完整联系方式)不要主动罗列,除非用户明确要
 6. 执行多步业务流程(发 offer/批量发面试/处理工单/发公告/订阅报表等)前,
    先调 list_playbooks 查租户有无对应 SOP 剧本;命中则 get_playbook 读后
-   严格按剧本步骤执行,剧本缺失或不适配再按通用流程走`;
+   严格按剧本步骤执行,剧本缺失或不适配再按通用流程走
+7. 排班类问题(AI 排班助手):问「谁上班/排得怎么样」用 get_schedule_board;
+   问「为什么这么排/某人能不能排」用 explain_schedule;要调整班次时先
+   compare_shift_plans 给候选方案并讲清优劣,用户选定后再调写工具;
+   写工具返回 409 违规时,把明细解释给用户,只有用户明确放行才带 force 重试`;
 
 /** 工具结果 SSE 载荷裁剪:text 分块上限 12k,深拷贝避免改到 agent 内部状态。 */
 function boundToolResult(result: unknown): unknown {

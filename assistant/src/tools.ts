@@ -1292,6 +1292,176 @@ function makeTools(token: string): ToolDef[] {
           body: { month: p.month, dry_run: p.dry_run ?? false },
         }),
     },
+    // ===== AI 排班助手(时间智能体):解释排班 / 方案对比 / 微调 =====
+    {
+      name: "list_shift_employees",
+      label: "查可排员工",
+      description:
+        "列出可排班员工(id/姓名/工号/部门)。用户给的是人名时,先用这个" +
+        "或 global_search 把名字解析成 employee_id",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/shifts/employees"),
+    },
+    {
+      name: "get_schedule_board",
+      label: "查当日排班看板",
+      description:
+        "某日各班次覆盖看板:每个班次谁上班/谁排了但在请假/缺几人。" +
+        "用户问「今天谁上班/周三晚班几个人/明天排班怎么样」用这个",
+      parameters: Type.Object({
+        day: Type.String({ description: "YYYY-MM-DD" }),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/shifts/board?day=${encodeURIComponent(p.day)}`),
+    },
+    {
+      name: "explain_schedule",
+      label: "解释排班",
+      description:
+        "解释某员工某天的排班全貌:当天排了什么(来源)、没排的原因" +
+        "(请假/登记不可排/空闲)、本月已排班数、连续出勤天数、进行中的换班。" +
+        "带 shift_id 时额外返回「假设给此人排这个班」的合规预判 violations。" +
+        "用户问「为什么把X排在周一/X那天能不能排晚班」用这个",
+      parameters: Type.Object({
+        employee_id: Type.String({ description: "员工 id" }),
+        day: Type.String({ description: "YYYY-MM-DD" }),
+        shift_id: Type.Optional(
+          Type.String({ description: "假设要排的班次 id(可选)" })),
+      }),
+      execute: async (_id, p: any) => {
+        let u = `/api/shifts/explain?employee_id=${encodeURIComponent(p.employee_id)}` +
+          `&day=${encodeURIComponent(p.day)}`;
+        if (p.shift_id) u += `&shift_id=${encodeURIComponent(p.shift_id)}`;
+        return t(u);
+      },
+    },
+    {
+      name: "compare_shift_plans",
+      label: "对比排班方案",
+      description:
+        "某槽位(日×班次)候选方案对比:对每个可排候选人给出合规预判、" +
+        "当月已排班数、可用性偏好、同部门标记和确定性优劣项(pros/cons)," +
+        "另列当天不可排的人及原因。用户要「换个有空的/找几个人选对比/" +
+        "谁能顶这个班」时先调它再讲解优劣",
+      parameters: Type.Object({
+        day: Type.String({ description: "YYYY-MM-DD" }),
+        shift_id: Type.String({ description: "班次 id" }),
+        limit: Type.Optional(
+          Type.Number({ description: "返回方案数,默认 5" })),
+      }),
+      execute: async (_id, p: any) =>
+        t(
+          `/api/shifts/plan-compare?day=${encodeURIComponent(p.day)}` +
+          `&shift_id=${encodeURIComponent(p.shift_id)}` +
+          `&limit=${Number(p.limit ?? 5) || 5}`,
+        ),
+    },
+    {
+      name: "check_shift_compliance",
+      label: "排班合规体检",
+      description:
+        "全员排班合规体检:返回当月每条违规(员工/日期/规则/明细)。" +
+        "规则含连班上限/周工时上限/班间休息间隔/员工可用性。问「排班有没有" +
+        "违规/谁连班太多」用这个",
+      parameters: Type.Object({
+        month: Type.Optional(
+          Type.String({ description: "YYYY-MM,默认当月" })),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/shifts/compliance?month=${encodeURIComponent(p.month ?? "")}`),
+    },
+    {
+      name: "get_shift_rules",
+      label: "查排班规则",
+      description:
+        "查当前排班合规规则口径:连班上限/周工时上限/班间最小休息分钟/" +
+        "是否尊重员工可用性。解释违规含义前先查口径",
+      parameters: Type.Object({}),
+      execute: async () => t("/api/shifts/rules"),
+    },
+    {
+      name: "list_shift_swaps",
+      label: "查换班申请",
+      description:
+        "HR 换班审批队列:可按 status 过滤(pending_peer 待对方确认/" +
+        "pending_approval 待 HR 审批/approved/rejected/withdrawn)。问" +
+        "「有没有待审批的换班」用这个",
+      parameters: Type.Object({
+        status: Type.Optional(Type.String({ description: "状态过滤" })),
+        month: Type.Optional(
+          Type.String({ description: "YYYY-MM,按换班日过滤" })),
+      }),
+      execute: async (_id, p: any) => {
+        let u = "/api/shifts/swaps?";
+        if (p.status) u += `status=${encodeURIComponent(p.status)}&`;
+        if (p.month) u += `month=${encodeURIComponent(p.month)}&`;
+        return t(u);
+      },
+    },
+    {
+      name: "assign_shift",
+      label: "给员工排班",
+      description:
+        "给某员工某天排某班次(需用户确认)。若返回 409 且 detail 含 " +
+        "violations,先把违规明细解释给用户;只有用户明确说「仍然排/放行」" +
+        "才带 force=true 重新调用",
+      parameters: Type.Object({
+        employee_id: Type.String({ description: "员工 id" }),
+        shift_id: Type.String({ description: "班次 id" }),
+        day: Type.String({ description: "YYYY-MM-DD" }),
+        note: Type.Optional(Type.String({ description: "备注" })),
+        force: Type.Optional(Type.Boolean({
+          description: "true = 知晓违规仍强制排(需用户明确放行)" })),
+      }),
+      execute: async (_id, p: any) =>
+        t("/api/shifts/assignments", {
+          method: "POST",
+          body: {
+            employee_id: p.employee_id, shift_id: p.shift_id, day: p.day,
+            note: p.note ?? null, force: p.force ?? false,
+          },
+        }),
+    },
+    {
+      name: "reassign_shift",
+      label: "调整已排班次",
+      description:
+        "把一条已排班改给另一个员工(需用户确认),常用于「把张三四月三号的" +
+        "晚班换成李四」。先用 compare_shift_plans 给候选人,用户选定后调用。" +
+        "409 违规时同 assign_shift 的 force 规则",
+      parameters: Type.Object({
+        assignment_id: Type.String({ description: "排班记录 id" }),
+        employee_id: Type.String({ description: "新替班员工 id" }),
+        note: Type.Optional(Type.String({ description: "备注" })),
+        force: Type.Optional(Type.Boolean({
+          description: "true = 知晓违规仍强制(需用户明确放行)" })),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/shifts/assignments/${encodeURIComponent(p.assignment_id)}/reassign`, {
+          method: "POST",
+          body: {
+            employee_id: p.employee_id, note: p.note ?? null,
+            force: p.force ?? false,
+          },
+        }),
+    },
+    {
+      name: "decide_shift_swap",
+      label: "审批换班申请",
+      description:
+        "批准或驳回一条待审批换班申请(需用户确认)。批准后系统自动交换" +
+        "双方班次并通知当事人;返回交换后的合规告警(不阻断)",
+      parameters: Type.Object({
+        swap_id: Type.String({ description: "换班申请 id" }),
+        approve: Type.Boolean({ description: "true 批准 / false 驳回" }),
+        note: Type.Optional(Type.String({ description: "审批意见" })),
+      }),
+      execute: async (_id, p: any) =>
+        t(`/api/shifts/swaps/${encodeURIComponent(p.swap_id)}/decide`, {
+          method: "POST",
+          body: { approve: p.approve, note: p.note ?? null },
+        }),
+    },
     // ===== E1:员工自助(全部走 /me 端点,行级=本人绑定的员工档案) =====
     {
       name: "get_my_profile",
@@ -1861,6 +2031,9 @@ export const WRITE_TOOLS = new Set([
   "apply_org_changes",
   "generate_shifts",
   "auto_cover_shifts",
+  "assign_shift",
+  "reassign_shift",
+  "decide_shift_swap",
   "create_leave_application",
   "create_overtime_request",
   "run_lifecycle_event",

@@ -80,6 +80,19 @@ source_candidate_id(→candidates,录用转化来源)
   (对方拒绝 peer_declined / 发起方撤回 cancelled);双方同日有班=exchange 互换,
   对方无班=transfer 转出;批准执行后通知双方,ESS `/me/shifts` 全流程自助
 
+### AI 排班助手(盖雅「时间智能体」同款)
+- 只读端点:`GET /api/shifts/board?day=` 当日各班次覆盖看板;
+  `GET /api/shifts/explain?employee_id&day&shift_id?` 单人单日排班解读
+  (在排/未排原因、月已排数、连班 streak、进行中换班、假设排班合规预判);
+  `GET /api/shifts/plan-compare?day&shift_id` 槽位候选方案对比(逐人合规
+  预判 + 公平/偏好/同部门优劣项 + 不可排名单)
+- sidecar 工具:`get_schedule_board / explain_schedule /
+  compare_shift_plans / check_shift_compliance / get_shift_rules /
+  list_shift_swaps / list_shift_employees` 读;`assign_shift /
+  reassign_shift / decide_shift_swap` 写(走确认门);409 违规明细回传,
+  模型先解释、用户明确放行后 force 重试
+- ToolResultCard 富卡片:看板/解读/方案对比/体检/换班队列/写操作结果
+
 ### 明确不做
 - 自动薪资核算、税务申报、排班 Roster 拖拽、工时 Timesheet、印度本地税
 

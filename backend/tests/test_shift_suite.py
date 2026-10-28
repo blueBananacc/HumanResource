@@ -364,3 +364,111 @@ def test_template_apply_cycle(db, client):
         ShiftAssignment.employee_id == e.id,
         ShiftAssignment.day >= start)).all()
     assert len(rows) == 6 and all(x.source == "template" for x in rows)
+
+
+# ---------- AI 排班助手(盖雅时间智能体):看板 / 解释 / 方案对比 ----------
+
+
+def test_day_board(db, client):
+    t = _tenant(db)
+    hr = _user(db, t)
+    eu = _user(db, t, "employee")
+    e = _employee(db, t, eu, "看板员工")
+    s = _shift(client, hr, "看板早班")
+    d = date.today() + timedelta(days=75)
+    _assign(client, hr, e.id, s["id"], d)
+
+    r = client.get(f"/api/shifts/board?day={d.isoformat()}", headers=_hdr(hr))
+    assert r.status_code == 200, r.text
+    slot = next(x for x in r.json()["slots"] if x["shift_id"] == s["id"])
+    assert slot["required"] == 1 and slot["covered"] == 1 and slot["missing"] == 0
+    assert slot["assigned"][0]["employee_id"] == e.id
+    assert slot["assigned"][0]["on_leave"] is False
+
+
+def test_explain_schedule(db, client):
+    t = _tenant(db)
+    hr = _user(db, t)
+    eu = _user(db, t, "employee")
+    e = _employee(db, t, eu, "解释员工")
+    s = _shift(client, hr, "解释班")
+    d = date.today() + timedelta(days=80)
+
+    # 空闲日:reasons 说明可排,假设排班合规预判 ok
+    r = client.get(
+        f"/api/shifts/explain?employee_id={e.id}&day={d.isoformat()}"
+        f"&shift_id={s['id']}", headers=_hdr(hr))
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["assignment"] is None and j["on_leave"] is False
+    assert j["hypothetical"]["ok"] is True
+    assert any("空闲" in x for x in j["reasons"])
+
+    # 登记不可排 → 原因 + hypothetical 违规
+    client.put("/api/me/shift-availability", json={
+        "items": [{"weekday": d.weekday(), "preference": "unavailable"}],
+    }, headers=_hdr(eu))
+    r = client.get(
+        f"/api/shifts/explain?employee_id={e.id}&day={d.isoformat()}"
+        f"&shift_id={s['id']}", headers=_hdr(hr))
+    j = r.json()
+    assert any("不可排" in x for x in j["reasons"])
+    assert j["hypothetical"]["ok"] is False
+    assert any(v["rule"] == "availability"
+               for v in j["hypothetical"]["violations"])
+
+    # 已排班 → assignment 呈现
+    _assign(client, hr, e.id, s["id"], d, force=True)
+    r = client.get(
+        f"/api/shifts/explain?employee_id={e.id}&day={d.isoformat()}",
+        headers=_hdr(hr))
+    j = r.json()
+    assert j["assignment"]["shift_id"] == s["id"]
+    assert j["consecutive_days_to_date"] == 1
+    assert any("已排" in x for x in j["reasons"])
+
+
+def test_plan_compare(db, client):
+    t = _tenant(db)
+    hr = _user(db, t)
+    e_free = _employee(db, t, name="空闲员工")
+    e_pref = _employee(db, t, name="偏好员工")
+    e_busy = _employee(db, t, name="已排员工")
+    s = _shift(client, hr, "对比班")
+    d = date.today() + timedelta(days=85)
+    # e_busy 当天已有别的班 → ineligible
+    s2 = _shift(client, hr, "占用班")
+    _assign(client, hr, e_busy.id, s2["id"], d)
+    # e_pref 登记偏好日
+    from app.domain.models import EmployeeAvailability
+    db.add(EmployeeAvailability(
+        tenant_id=t.id, employee_id=e_pref.id,
+        weekday=d.weekday(), preference="preferred"))
+    db.commit()
+
+    r = client.get(
+        f"/api/shifts/plan-compare?day={d.isoformat()}&shift_id={s['id']}",
+        headers=_hdr(hr))
+    assert r.status_code == 200, r.text
+    j = r.json()
+    ids = [p["employee_id"] for p in j["plans"]]
+    assert e_free.id in ids and e_pref.id in ids
+    assert e_busy.id not in ids
+    assert any(x["employee_id"] == e_busy.id for x in j["ineligible"])
+    # 偏好日员工排在最前(preferred 加权)
+    assert j["plans"][0]["employee_id"] == e_pref.id
+    assert any("偏好" in p for p in j["plans"][0]["pros"])
+
+    # 连班收紧后 e_free 引入违规 → eligible=False + cons 有违规项
+    client.put("/api/shifts/rules", json={
+        "max_consecutive_days": 1, "max_weekly_hours": 40,
+        "min_rest_minutes": 720, "respect_availability": True,
+    }, headers=_hdr(hr))
+    _assign(client, hr, e_free.id, s2["id"], d - timedelta(days=1), force=True)
+    r = client.get(
+        f"/api/shifts/plan-compare?day={d.isoformat()}&shift_id={s['id']}",
+        headers=_hdr(hr))
+    j = r.json()
+    p_free = next(p for p in j["plans"] if p["employee_id"] == e_free.id)
+    assert p_free["eligible"] is False
+    assert any("违规" in c for c in p_free["cons"])

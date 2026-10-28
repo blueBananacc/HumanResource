@@ -801,6 +801,285 @@ export function ToolResultCard({
     );
   }
 
+  // ===== AI 排班助手(时间智能体) =====
+  if (name === "get_schedule_board") {
+    const j = (json ?? {}) as Json;
+    const slots = (j.slots ?? []) as Json[];
+    return (
+      <CardShell
+        icon={CalendarDays}
+        title={`${str(j.day)} 排班看板`}
+        right={
+          <Link to="/hris/shifts" className="text-[10px] text-[var(--color-accent)] hover:underline">
+            排班管理
+          </Link>
+        }
+      >
+        {slots.map((s, i) => {
+          const assigned = (s.assigned ?? []) as Json[];
+          const missing = Number(s.missing ?? 0);
+          return (
+            <div key={i} className="py-1 border-b border-[var(--color-border-row)] last:border-0">
+              <div className="flex items-center gap-2 text-[11px]">
+                <span className="font-bold text-[var(--color-text-primary)]">{str(s.shift_name)}</span>
+                <span className="font-mono text-[10px] text-[var(--color-text-tertiary)]">{str(s.time_range)}</span>
+                <span className="ml-auto text-[10px] text-[var(--color-text-tertiary)]">
+                  {str(s.covered)}/{str(s.required)} 人
+                </span>
+                {missing > 0 && (
+                  <span className="rounded-full px-1.5 py-0.5 text-[10px] bg-[var(--color-danger-soft,#fef2f2)] text-[var(--color-danger,#dc2626)]">
+                    缺 {missing}
+                  </span>
+                )}
+              </div>
+              <div className="mt-0.5 flex flex-wrap gap-1">
+                {assigned.map((a, k) => (
+                  <span
+                    key={k}
+                    className={cn(
+                      "rounded-full px-1.5 py-0.5 text-[10px]",
+                      a.on_leave
+                        ? "bg-[var(--color-warning-soft,#fffbeb)] text-[var(--color-warning,#d97706)] line-through"
+                        : "bg-[var(--color-bg-muted)] text-[var(--color-text-secondary)]",
+                    )}
+                  >
+                    {str(a.employee_name)}
+                    {a.on_leave ? "(请假)" : ""}
+                  </span>
+                ))}
+                {assigned.length === 0 && (
+                  <span className="text-[10px] text-[var(--color-text-tertiary)]">无人排班</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </CardShell>
+    );
+  }
+
+  if (name === "explain_schedule") {
+    const j = (json ?? {}) as Json;
+    const asg = (j.assignment ?? null) as Json | null;
+    const hypo = (j.hypothetical ?? null) as Json | null;
+    const reasons = (j.reasons ?? []) as unknown[];
+    const swaps = (j.pending_swaps ?? []) as Json[];
+    const hypoViol = ((hypo?.violations ?? []) as Json[]);
+    return (
+      <CardShell
+        icon={CalendarDays}
+        title={`${str(j.employee_name)} · ${str(j.day)} 排班解读`}
+        right={
+          <Link to={`/employees/${str(j.employee_id)}`}
+            className="text-[10px] text-[var(--color-accent)] hover:underline">
+            员工档案
+          </Link>
+        }
+      >
+        <div className="flex flex-wrap gap-1.5 pb-1 text-[10px] text-[var(--color-text-tertiary)]">
+          <span>本月已排 {str(j.month_assigned_count)} 班</span>
+          <span>连续出勤 {str(j.consecutive_days_to_date)} 天</span>
+          <span>可用性 {str(j.availability)}</span>
+          {j.is_workday === false && <span className="text-[var(--color-warning,#d97706)]">非工作日</span>}
+        </div>
+        {asg && (
+          <div className="pb-1 text-[11px] text-[var(--color-text-secondary)]">
+            已排 <b>{str(asg.shift_name)}</b>({str(asg.source)})
+            {asg.on_leave === true && (
+              <span className="text-[var(--color-warning,#d97706)]"> · 当天请假中,待替班</span>
+            )}
+          </div>
+        )}
+        {reasons.map((r, i) => (
+          <div key={i} className="py-0.5 text-[11px] text-[var(--color-text-secondary)]">· {str(r)}</div>
+        ))}
+        {hypo && (
+          <div className={cn(
+            "mt-1 rounded-lg px-2 py-1.5 text-[11px]",
+            hypo.ok
+              ? "bg-[var(--color-success-soft,#f0fdf4)] text-[var(--color-success,#16a34a)]"
+              : "bg-[var(--color-danger-soft,#fef2f2)] text-[var(--color-danger,#dc2626)]",
+          )}>
+            假设排「{str(hypo.shift_name)}」:{hypo.ok ? "合规可排" : "有违规"}
+            {hypoViol.map((v, i) => (
+              <div key={i} className="text-[10px]">
+                {str(v.severity) === "block" ? "✗" : "△"} {str(v.detail)}
+              </div>
+            ))}
+          </div>
+        )}
+        {swaps.length > 0 && (
+          <div className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">
+            进行中换班 {swaps.length} 单({swaps.map((s) => str(s.status)).join(",")})
+          </div>
+        )}
+      </CardShell>
+    );
+  }
+
+  if (name === "compare_shift_plans") {
+    const j = (json ?? {}) as Json;
+    const plans = (j.plans ?? []) as Json[];
+    const ineligible = (j.ineligible ?? []) as Json[];
+    return (
+      <CardShell
+        icon={Users}
+        title={`${str(j.day)} 「${str(j.shift_name)}」方案对比 · ${plans.length}/${str(j.pool_size)} 候选`}
+      >
+        {plans.map((p, i) => {
+          const pros = (p.pros ?? []) as unknown[];
+          const cons = (p.cons ?? []) as unknown[];
+          return (
+            <div key={i} className="py-1 border-b border-[var(--color-border-row)] last:border-0">
+              <div className="flex items-center gap-2 text-[11px]">
+                <span className={cn(
+                  "w-4 text-center font-mono text-[10px]",
+                  i === 0 ? "text-[var(--color-accent)] font-bold" : "text-[var(--color-text-tertiary)]",
+                )}>
+                  {i + 1}
+                </span>
+                <span className="font-bold text-[var(--color-text-primary)]">{str(p.employee_name)}</span>
+                <span className="text-[10px] text-[var(--color-text-tertiary)]">
+                  本月已排 {str(p.assigned_this_month)}
+                </span>
+                <span className="ml-auto" />
+                {p.eligible === true ? (
+                  <span className="rounded-full px-1.5 py-0.5 text-[10px] bg-[var(--color-success-soft,#f0fdf4)] text-[var(--color-success,#16a34a)]">可排</span>
+                ) : (
+                  <span className="rounded-full px-1.5 py-0.5 text-[10px] bg-[var(--color-danger-soft,#fef2f2)] text-[var(--color-danger,#dc2626)]">有违规</span>
+                )}
+              </div>
+              <div className="pl-6 text-[10px]">
+                {pros.map((x, k) => (
+                  <span key={`p${k}`} className="mr-2 text-[var(--color-success,#16a34a)]">+{str(x)}</span>
+                ))}
+                {cons.map((x, k) => (
+                  <div key={`c${k}`} className="text-[var(--color-danger,#dc2626)]">-{str(x)}</div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+        {ineligible.length > 0 && (
+          <div className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">
+            不可排:{ineligible.map((x) => `${str(x.employee_name)}(${str(x.reason)})`).join("、")}
+          </div>
+        )}
+      </CardShell>
+    );
+  }
+
+  if (name === "check_shift_compliance") {
+    const j = (json ?? {}) as Json;
+    const vs = (j.violations ?? []) as Json[];
+    const RULE_ZH: Record<string, string> = {
+      consecutive_days: "连班", weekly_hours: "周工时",
+      rest_gap: "休息间隔", availability: "可用性",
+    };
+    return (
+      <CardShell
+        icon={AlertTriangle}
+        title={`${str(j.month)} 合规体检 · ${vs.length} 条违规`}
+        right={
+          <Link to="/hris/shifts?tab=compliance"
+            className="text-[10px] text-[var(--color-accent)] hover:underline">
+            合规页
+          </Link>
+        }
+      >
+        {vs.length === 0 && (
+          <div className="text-[11px] text-[var(--color-success,#16a34a)]">无违规 ✓</div>
+        )}
+        {vs.slice(0, 10).map((v, i) => (
+          <div key={i} className="flex items-start gap-2 py-0.5 text-[11px]">
+            <span className={cn(
+              "mt-0.5 shrink-0 rounded px-1 text-[9px]",
+              str(v.severity) === "block"
+                ? "bg-[var(--color-danger-soft,#fef2f2)] text-[var(--color-danger,#dc2626)]"
+                : "bg-[var(--color-warning-soft,#fffbeb)] text-[var(--color-warning,#d97706)]",
+            )}>
+              {RULE_ZH[str(v.rule)] ?? str(v.rule)}
+            </span>
+            <span className="font-mono text-[10px] text-[var(--color-text-tertiary)]">{str(v.day)}</span>
+            <span className="text-[var(--color-text-secondary)]">
+              <b>{str(v.employee_name)}</b> {str(v.detail)}
+            </span>
+          </div>
+        ))}
+        {vs.length > 10 && (
+          <div className="text-[10px] text-[var(--color-text-tertiary)]">… 共 {vs.length} 条</div>
+        )}
+      </CardShell>
+    );
+  }
+
+  if (name === "list_shift_swaps") {
+    const items = asArr(json);
+    const SWAP_ZH: Record<string, string> = {
+      pending_peer: "待对方确认", pending_approval: "待审批",
+      approved: "已批准", rejected: "已驳回", withdrawn: "已撤回",
+    };
+    return (
+      <CardShell
+        icon={CalendarDays}
+        title={`换班申请 ${items.length} 单`}
+        right={
+          <Link to="/hris/shifts?tab=swaps"
+            className="text-[10px] text-[var(--color-accent)] hover:underline">
+            审批队列
+          </Link>
+        }
+      >
+        {items.length === 0 && (
+          <div className="text-[11px] text-[var(--color-text-tertiary)]">暂无换班申请</div>
+        )}
+        <ItemRows
+          items={items}
+          render={(it) => (
+            <>
+              <span className="truncate text-[var(--color-text-secondary)]">
+                {str(it.requester_name)} ⇄ {str(it.target_name)}
+              </span>
+              <span className="font-mono text-[10px] text-[var(--color-text-tertiary)]">{str(it.day)}</span>
+              <span className="flex-1" />
+              <span className="shrink-0 text-[10px] rounded-full px-1.5 py-0.5 bg-[var(--color-bg-muted)] text-[var(--color-text-tertiary)]">
+                {SWAP_ZH[str(it.status)] ?? str(it.status)}
+              </span>
+            </>
+          )}
+        />
+      </CardShell>
+    );
+  }
+
+  if (name === "assign_shift" || name === "reassign_shift" || name === "decide_shift_swap") {
+    const j = (json ?? {}) as Json;
+    const ok = j.error == null;
+    const warnings = (j.warnings ?? []) as Json[];
+    return (
+      <div className="rounded-xl border border-[var(--color-border-subtle)] bg-white px-3 py-2 shadow-[var(--shadow-card)]">
+        <div className="flex items-center gap-2">
+          <CheckCircle2 className={cn(
+            "w-4 h-4 shrink-0",
+            ok ? "text-[var(--color-accent)]" : "text-[var(--color-danger,#dc2626)]",
+          )} />
+          <span className="text-[12px] text-[var(--color-text-primary)]">
+            {ok
+              ? name === "decide_shift_swap"
+                ? `换班已${(j.swap as Json)?.status === "approved" ? "批准并执行" : "驳回"}`
+                : `排班已更新:${str(j.employee_name)} · ${str(j.day)} 「${str(j.shift_name)}」`
+              : str(j.detail ?? "操作失败")}
+          </span>
+        </div>
+        {warnings.slice(0, 4).map((w, i) => (
+          <div key={i} className="mt-1 pl-6 text-[10px] text-[var(--color-warning,#d97706)]">
+            ⚠ {str(w.employee_name)} {str(w.day)} {str(w.detail)}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   // ===== E4:薪酬底表 → 月度算薪输入表 =====
   if (name === "run_report" && (json as Json)?.kind === "payroll_input") {
     const d = ((json as Json).data ?? {}) as Json;
