@@ -1,4 +1,4 @@
-"""排班 API(H3)。
+"""排班 API(H3 + 喔趣排班 2.0)。
 
 - ``GET/POST/PUT/DELETE /shifts``            班次定义(早/晚班 + 每班需人数)
 - ``GET/POST/DELETE /shifts/assignments``    排班明细(按月/员工过滤)
@@ -7,10 +7,16 @@
 - ``GET  /shifts/cover-candidates``          某天可替班候选人
 - ``POST /shifts/auto-cover``                自动替班 + 补缺
 - ``POST /shifts/assignments/{id}/reassign`` 手工指定替班人
+- ``GET/PUT /shifts/rules``                  合规规则(连班/周工时/休息间隔/可用性)
+- ``GET  /shifts/compliance``                全员排班合规体检
+- ``GET/POST/PUT/DELETE /shifts/templates``  排班模板/循环规则
+- ``POST /shifts/templates/{id}/apply``      模板套用生成排班
+- ``GET  /shifts/swaps``                     换班申请列表(HR 审批队列)
+- ``POST /shifts/swaps/{id}/decide``         批准(执行交换)/驳回
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -20,7 +26,15 @@ from sqlalchemy.orm import Session
 
 from app.api._pagination import PageOut, count_total, paginate_params
 from app.api.license import require_feature
-from app.domain.models import Employee, Shift, ShiftAssignment, User
+from app.domain.models import (
+    Employee,
+    Notification,
+    ScheduleTemplate,
+    Shift,
+    ShiftAssignment,
+    ShiftSwapRequest,
+    User,
+)
 from app.infra.db import get_db
 from app.services.audit import write_audit
 from app.services.permissions import (
@@ -29,12 +43,27 @@ from app.services.permissions import (
     require_permission,
 )
 from app.services.scheduling import (
+    _leave_days,
     auto_cover,
     cover_candidates,
     find_gaps,
     generate_schedule,
     month_range,
 )
+from app.services.scheduling_rules import (
+    _avail_map,
+    _load_pairs,
+    evaluate_pairs,
+    get_rules,
+    precheck,
+    rules_out,
+    violations_for_employee,
+    violations_for_window,
+)
+
+
+def _now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 router = APIRouter(prefix="/shifts", tags=["hris-shifts"],
                  dependencies=[Depends(require_feature("hr.suite"))])
@@ -98,6 +127,440 @@ def create_shift(
         raise HTTPException(409, "同名班次已存在")
     db.refresh(s)
     return _shift_out(s)
+
+
+# ===== 合规规则 / 体检(喔趣「从源头规避用工风险」) =====
+# 注意:以下静态路径必须注册在 ``/{shift_id}`` 路由之前。
+
+class RulesIn(BaseModel):
+    max_consecutive_days: int = Field(6, ge=1, le=14)
+    max_weekly_hours: float = Field(44, ge=1, le=80)
+    min_rest_minutes: int = Field(720, ge=0, le=1440)
+    respect_availability: bool = True
+
+
+@router.get("/rules")
+def shift_rules_get(
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+):
+    return rules_out(get_rules(db, current.tenant_id))
+
+
+@router.put("/rules")
+def shift_rules_put(
+    body: RulesIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_ATTENDANCE)),
+):
+    r = get_rules(db, current.tenant_id)
+    for k, v in body.model_dump().items():
+        setattr(r, k, v)
+    write_audit(db, actor=current, entity_type="shift_rules",
+                entity_id=r.id, action="update",
+                detail=body.model_dump(), request=request)
+    db.commit()
+    return rules_out(r)
+
+
+@router.get("/employees")
+def plannable_employees(
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+):
+    """可排班员工下拉数据(排班经理未必有员工管理权限,单独给轻量列表)。"""
+    rows = db.scalars(
+        select(Employee).where(
+            Employee.tenant_id == current.tenant_id,
+            Employee.status == "active")
+        .order_by(Employee.employee_no)).all()
+    return [{"id": e.id, "name": e.name, "employee_no": e.employee_no,
+             "org_unit_id": e.org_unit_id} for e in rows]
+
+
+@router.get("/compliance")
+def compliance(
+    month: str | None = Query(None, description="YYYY-MM"),
+    org_unit_id: str | None = None,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+):
+    start, end = month_range(month)
+    return {"month": start.isoformat()[:7],
+            "violations": violations_for_window(
+                db, current.tenant_id, start=start, end=end,
+                org_unit_id=org_unit_id)}
+
+
+# ===== 排班模板 / 循环规则(喔趣:固定班次·多班次循环模板) =====
+
+class TemplateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    period_days: int = Field(7, ge=1, le=28)
+    pattern: list[dict] = Field(default_factory=list)
+    active: bool = True
+
+
+def _check_pattern(db: Session, tenant_id: str, body: TemplateIn) -> None:
+    offsets: set[int] = set()
+    shift_ids: set[str] = set()
+    for p in body.pattern:
+        try:
+            off = int(p.get("offset"))
+        except (TypeError, ValueError):
+            raise HTTPException(422, "pattern.offset 必须是整数")
+        if not 0 <= off < body.period_days:
+            raise HTTPException(422, f"offset {off} 超出周期 {body.period_days}")
+        if off in offsets:
+            raise HTTPException(422, f"offset {off} 重复")
+        offsets.add(off)
+        if p.get("shift_id"):
+            shift_ids.add(str(p["shift_id"]))
+    if shift_ids:
+        found = {
+            s.id for s in db.scalars(
+                select(Shift).where(
+                    Shift.tenant_id == tenant_id, Shift.id.in_(shift_ids))).all()
+        }
+        missing = shift_ids - found
+        if missing:
+            raise HTTPException(422, "模板引用了不存在的班次")
+
+
+class TemplateOut(BaseModel):
+    id: str
+    name: str
+    period_days: int
+    pattern: list[dict]
+    active: bool
+
+
+def _tpl_out(t: ScheduleTemplate) -> TemplateOut:
+    return TemplateOut(id=t.id, name=t.name, period_days=t.period_days,
+                       pattern=t.pattern or [], active=t.active)
+
+
+@router.get("/templates", response_model=list[TemplateOut])
+def list_templates(
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+):
+    rows = db.scalars(
+        select(ScheduleTemplate).where(
+            ScheduleTemplate.tenant_id == current.tenant_id)
+        .order_by(ScheduleTemplate.created_at)).all()
+    return [_tpl_out(t) for t in rows]
+
+
+@router.post("/templates", response_model=TemplateOut,
+             status_code=status.HTTP_201_CREATED)
+def create_template(
+    body: TemplateIn,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_ATTENDANCE)),
+):
+    _check_pattern(db, current.tenant_id, body)
+    t = ScheduleTemplate(tenant_id=current.tenant_id, **body.model_dump())
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    return _tpl_out(t)
+
+
+@router.put("/templates/{tid}", response_model=TemplateOut)
+def update_template(
+    tid: str,
+    body: TemplateIn,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_ATTENDANCE)),
+):
+    t = db.get(ScheduleTemplate, tid)
+    if not t or t.tenant_id != current.tenant_id:
+        raise HTTPException(404, "模板不存在")
+    _check_pattern(db, current.tenant_id, body)
+    for k, v in body.model_dump().items():
+        setattr(t, k, v)
+    db.commit()
+    return _tpl_out(t)
+
+
+@router.delete("/templates/{tid}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_template(
+    tid: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_ATTENDANCE)),
+):
+    t = db.get(ScheduleTemplate, tid)
+    if not t or t.tenant_id != current.tenant_id:
+        raise HTTPException(404, "模板不存在")
+    db.delete(t)
+    db.commit()
+
+
+class TemplateApplyIn(BaseModel):
+    employee_ids: list[str] | None = None
+    org_unit_id: str | None = None
+    start: date
+    cycles: int = Field(1, ge=1, le=12)
+    dry_run: bool = True
+
+
+@router.post("/templates/{tid}/apply")
+def apply_template(
+    tid: str,
+    body: TemplateApplyIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_ATTENDANCE)),
+):
+    t = db.get(ScheduleTemplate, tid)
+    if not t or t.tenant_id != current.tenant_id:
+        raise HTTPException(404, "模板不存在")
+    pats: dict[int, str | None] = {}
+    for p in t.pattern or []:
+        try:
+            pats[int(p.get("offset"))] = (
+                str(p["shift_id"]) if p.get("shift_id") else None)
+        except (TypeError, ValueError):
+            continue
+    days = [body.start + timedelta(days=i)
+            for i in range(t.period_days * body.cycles)]
+    end = days[-1]
+    if body.org_unit_id:
+        emps = db.scalars(
+            select(Employee).where(
+                Employee.tenant_id == current.tenant_id,
+                Employee.org_unit_id == body.org_unit_id,
+                Employee.status == "active")).all()
+    elif body.employee_ids:
+        emps = db.scalars(
+            select(Employee).where(
+                Employee.tenant_id == current.tenant_id,
+                Employee.id.in_(body.employee_ids),
+                Employee.status == "active")).all()
+        if len(emps) != len(set(body.employee_ids)):
+            raise HTTPException(404, "存在无效员工(非在职/跨租户)")
+    else:
+        raise HTTPException(422, "employee_ids 与 org_unit_id 至少提供一个")
+    sid_needed = {v for v in pats.values() if v}
+    shifts = {
+        s.id: s for s in db.scalars(
+            select(Shift).where(Shift.id.in_(sid_needed or {""}))).all()
+    }
+    existing = {
+        (a.employee_id, a.day)
+        for a in db.scalars(
+            select(ShiftAssignment).where(
+                ShiftAssignment.tenant_id == current.tenant_id,
+                ShiftAssignment.day >= body.start,
+                ShiftAssignment.day <= end)).all()
+    }
+    leave = _leave_days(db, current.tenant_id, body.start, end)
+    plan: list[dict] = []
+    skipped: list[dict] = []
+    seen = set(existing)
+    for e in emps:
+        for d in days:
+            sid = pats.get((d - body.start).days % t.period_days)
+            if not sid:
+                continue
+            s = shifts.get(sid)
+            if s is None or not s.active:
+                skipped.append({"employee_id": e.id, "day": d.isoformat(),
+                                "reason": "班次不存在或已停用"})
+                continue
+            if (e.id, d) in seen:
+                skipped.append({"employee_id": e.id, "day": d.isoformat(),
+                                "reason": "当天已有排班"})
+                continue
+            if d in leave.get(e.id, set()):
+                skipped.append({"employee_id": e.id, "day": d.isoformat(),
+                                "reason": "当天有已批请假"})
+                continue
+            plan.append({"employee_id": e.id, "employee_name": e.name,
+                         "day": d.isoformat(), "shift_id": sid,
+                         "shift_name": s.name})
+            seen.add((e.id, d))
+    # 合规体检(合并候选排班,告警不阻断)
+    warnings: list[dict] = []
+    if plan:
+        rules = get_rules(db, current.tenant_id)
+        pairs, _ = _load_pairs(
+            db, current.tenant_id, [e.id for e in emps], body.start, end)
+        avail = _avail_map(db, current.tenant_id, [e.id for e in emps])
+        names = {e.id: e.name for e in emps}
+        by_emp: dict[str, list] = {}
+        for p in plan:
+            by_emp.setdefault(p["employee_id"], []).append(
+                (date.fromisoformat(p["day"]), shifts[p["shift_id"]]))
+        for eid, extra in by_emp.items():
+            for v in evaluate_pairs(
+                    pairs.get(eid, []) + extra, rules, avail.get(eid, {})):
+                warnings.append(
+                    {"employee_id": eid, "employee_name": names[eid], **v})
+    if not body.dry_run:
+        for p in plan:
+            db.add(ShiftAssignment(
+                tenant_id=current.tenant_id, employee_id=p["employee_id"],
+                shift_id=p["shift_id"], day=date.fromisoformat(p["day"]),
+                source="template", created_by=current.id))
+        write_audit(db, actor=current, entity_type="schedule_template",
+                    entity_id=t.id, action="apply",
+                    detail={"start": body.start.isoformat(),
+                            "cycles": body.cycles,
+                            "planned": len(plan)},
+                    request=request)
+        db.commit()
+    return {"planned": len(plan), "plan": plan, "skipped": skipped,
+            "warnings": warnings, "dry_run": body.dry_run}
+
+
+# ===== 换班申请(HR 审批队列) =====
+
+class SwapOut(BaseModel):
+    id: str
+    day: date
+    requester_employee_id: str
+    requester_name: str
+    target_employee_id: str
+    target_name: str
+    mode: str
+    status: str
+    requester_note: str | None
+    peer_note: str | None
+    decision_note: str | None
+    created_at: str
+
+
+def _swap_out(r: ShiftSwapRequest, names: dict[str, str]) -> SwapOut:
+    return SwapOut(
+        id=r.id, day=r.day,
+        requester_employee_id=r.requester_employee_id,
+        requester_name=names.get(r.requester_employee_id, "?"),
+        target_employee_id=r.target_employee_id,
+        target_name=names.get(r.target_employee_id, "?"),
+        mode=r.mode, status=r.status,
+        requester_note=r.requester_note, peer_note=r.peer_note,
+        decision_note=r.decision_note,
+        created_at=r.created_at.isoformat())
+
+
+def _emp_names(db: Session, tenant_id: str) -> dict[str, str]:
+    return {e.id: e.name for e in db.scalars(
+        select(Employee).where(Employee.tenant_id == tenant_id)).all()}
+
+
+def _notify(db: Session, tenant_id: str, emp_id: str, *,
+            kind: str, title: str, body: str | None = None) -> None:
+    emp = db.get(Employee, emp_id)
+    if emp is not None and emp.user_id:
+        db.add(Notification(
+            tenant_id=tenant_id, user_id=emp.user_id, kind=kind,
+            title=title[:128], body=(body or "")[:512],
+            link="/me/shifts"))
+
+
+@router.get("/swaps", response_model=list[SwapOut])
+def list_swaps(
+    status: str | None = None,
+    month: str | None = Query(None, description="YYYY-MM"),
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_VIEW_REPORTS)),
+):
+    stmt = select(ShiftSwapRequest).where(
+        ShiftSwapRequest.tenant_id == current.tenant_id)
+    if status:
+        stmt = stmt.where(ShiftSwapRequest.status == status)
+    if month:
+        start, end = month_range(month)
+        stmt = stmt.where(ShiftSwapRequest.day >= start,
+                          ShiftSwapRequest.day <= end)
+    rows = db.scalars(
+        stmt.order_by(ShiftSwapRequest.created_at.desc())).all()
+    names = _emp_names(db, current.tenant_id)
+    return [_swap_out(r, names) for r in rows]
+
+
+class SwapDecideIn(BaseModel):
+    approve: bool
+    note: str | None = None
+
+
+@router.post("/swaps/{swap_id}/decide")
+def decide_swap(
+    swap_id: str,
+    body: SwapDecideIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission(PERM_MANAGE_ATTENDANCE)),
+):
+    r = db.get(ShiftSwapRequest, swap_id)
+    if not r or r.tenant_id != current.tenant_id:
+        raise HTTPException(404, "换班申请不存在")
+    if r.status != "pending_approval":
+        raise HTTPException(409, "申请不在待审批状态")
+    warnings: list[dict] = []
+    names = _emp_names(db, current.tenant_id)
+    if body.approve:
+        ra = db.scalars(
+            select(ShiftAssignment).where(
+                ShiftAssignment.tenant_id == current.tenant_id,
+                ShiftAssignment.employee_id == r.requester_employee_id,
+                ShiftAssignment.day == r.day)).first()
+        if ra is None:
+            raise HTTPException(409, "发起方当天排班已变化,无法交换")
+        if r.mode == "exchange":
+            ta = db.scalars(
+                select(ShiftAssignment).where(
+                    ShiftAssignment.tenant_id == current.tenant_id,
+                    ShiftAssignment.employee_id == r.target_employee_id,
+                    ShiftAssignment.day == r.day)).first()
+            if ta is None:
+                raise HTTPException(409, "对方当天排班已变化,无法交换")
+            ra.shift_id, ta.shift_id = ta.shift_id, ra.shift_id
+            ra.source = ta.source = "swap"
+        else:
+            clash = db.scalars(
+                select(ShiftAssignment).where(
+                    ShiftAssignment.tenant_id == current.tenant_id,
+                    ShiftAssignment.employee_id == r.target_employee_id,
+                    ShiftAssignment.day == r.day)).first()
+            if clash is not None:
+                raise HTTPException(409, "对方当天已有排班,无法转入")
+            ra.employee_id = r.target_employee_id
+            ra.source = "swap"
+            ra.note = f"换班(转给{names.get(r.target_employee_id, '?')})"
+        r.status = "approved"
+        for eid in (r.requester_employee_id, r.target_employee_id):
+            _notify(db, current.tenant_id, eid, kind="shift.swap",
+                    title="换班申请已批准",
+                    body=f"{r.day.isoformat()} 的换班已生效,请查看新班次")
+        # 事后体检:交换引入的违规做告警返回(双方已同意,不阻断)
+        for eid in (r.requester_employee_id, r.target_employee_id):
+            for v in violations_for_employee(
+                    db, current.tenant_id, eid,
+                    start=r.day - timedelta(days=8),
+                    end=r.day + timedelta(days=8)):
+                if v["day"] >= r.day.isoformat():
+                    warnings.append(
+                        {"employee_id": eid,
+                         "employee_name": names.get(eid, "?"), **v})
+    else:
+        r.status = "rejected"
+        _notify(db, current.tenant_id, r.requester_employee_id,
+                kind="shift.swap", title="换班申请被驳回",
+                body=body.note or "审批未通过")
+    r.decided_at = _now()
+    r.approver_id = current.id
+    r.decision_note = body.note
+    write_audit(db, actor=current, entity_type="shift_swap",
+                entity_id=r.id,
+                action="approve" if body.approve else "reject",
+                detail={"day": r.day.isoformat(), "mode": r.mode},
+                request=request)
+    db.commit()
+    return {"swap": _swap_out(r, names), "warnings": warnings}
 
 
 @router.put("/{shift_id}", response_model=ShiftOut)
@@ -203,6 +666,22 @@ class AssignmentIn(BaseModel):
     shift_id: str
     day: date
     note: str | None = None
+    force: bool = False
+
+
+def _assert_compliant(
+    db: Session, tenant_id: str, employee_id: str, day: date,
+    shift: Shift, force: bool,
+) -> None:
+    """前置合规校验:有阻断级违规且未确认放行 → 409 携带违规明细。"""
+    if force:
+        return
+    vs = [v for v in precheck(db, tenant_id, employee_id, day, shift)
+          if v["severity"] == "block"]
+    if vs:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={"message": "排班违反合规规则", "violations": vs})
 
 
 @router.post("/assignments", response_model=AssignmentOut,
@@ -218,8 +697,11 @@ def create_assignment(
     s = db.get(Shift, body.shift_id)
     if not s or s.tenant_id != current.tenant_id:
         raise HTTPException(404, "班次不存在")
-    a = ShiftAssignment(tenant_id=current.tenant_id, source="manual",
-                        **body.model_dump())
+    _assert_compliant(
+        db, current.tenant_id, body.employee_id, body.day, s, body.force)
+    a = ShiftAssignment(
+        tenant_id=current.tenant_id, source="manual",
+        **body.model_dump(exclude={"force"}))
     db.add(a)
     try:
         db.commit()
@@ -332,6 +814,7 @@ def cover(
 class ReassignIn(BaseModel):
     employee_id: str
     note: str | None = None
+    force: bool = False
 
 
 @router.post("/assignments/{assign_id}/reassign", response_model=AssignmentOut)
@@ -348,6 +831,10 @@ def reassign(
     emp = db.get(Employee, body.employee_id)
     if not emp or emp.tenant_id != current.tenant_id or emp.status != "active":
         raise HTTPException(404, "替班员工不存在或已离职")
+    s = db.get(Shift, a.shift_id)
+    if s is not None:
+        _assert_compliant(
+            db, current.tenant_id, body.employee_id, a.day, s, body.force)
     clash = db.scalars(
         select(ShiftAssignment).where(
             ShiftAssignment.tenant_id == current.tenant_id,

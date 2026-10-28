@@ -68,6 +68,18 @@ source_candidate_id(→candidates,录用转化来源)
   生日/周年当天推 HR + **员工本人祝福**;同日同事件 link fragment 去重
 - `POST /api/hr/reminders/greet` HR 一键送祝福给员工(同日幂等)
 
+### 排班 2.0(喔趣同款)
+- `shift_rules`(每租户一行):连班上限/周工时上限/班间最小休息/尊重可用性;
+  手工排班与替班**前置校验**,阻断级违规 409 带明细,`force` 确认放行;
+  `GET /api/shifts/compliance` 全员体检
+- `employee_availability`(employee × weekday):员工自助登记
+  available/preferred/unavailable;生成器跳过不可排日
+- `schedule_templates`(period_days + pattern[{offset,shift_id|null}]):
+  「早早晚休」式循环模板,`apply` 按周期套用(跳过已有班/请假,落库 source=template)
+- `shift_swap_requests`:`pending_peer → pending_approval → approved|rejected`
+  (对方拒绝 peer_declined / 发起方撤回 cancelled);双方同日有班=exchange 互换,
+  对方无班=transfer 转出;批准执行后通知双方,ESS `/me/shifts` 全流程自助
+
 ### 明确不做
 - 自动薪资核算、税务申报、排班 Roster 拖拽、工时 Timesheet、印度本地税
 

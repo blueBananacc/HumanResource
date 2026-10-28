@@ -46,6 +46,7 @@ from app.domain.models import (
     AttendanceFlag,
     AttendanceRequest,
     Employee,
+    EmployeeAvailability,
     EmployeeCheckin,
     ExpenseClaim,
     ExpenseItem,
@@ -57,9 +58,13 @@ from app.domain.models import (
     LeaveType,
     LifecycleEvent,
     LifecycleTask,
+    Notification,
     OrgUnit,
     OvertimeRequest,
     SalarySlip,
+    Shift,
+    ShiftAssignment,
+    ShiftSwapRequest,
     User,
 )
 from app.infra.db import get_db
@@ -67,6 +72,7 @@ from app.services.approvals import cancel_instance_for, route_request
 from app.services.attendance_policy import client_ip, get_policy, ip_allowed
 from app.services.audit import write_audit_denied
 from app.services.permissions import require_linked_employee
+from app.services.scheduling import month_range
 from app.services.work_calendar import count_workdays, workday_hours
 
 router = APIRouter(prefix="/me", tags=["hris-ess"], dependencies=[Depends(require_feature("hr.suite"))])
@@ -1352,3 +1358,335 @@ def me_lifecycle(
                          done_at=t.done_at, sort=t.sort)
                for t in by_event.get(ev.id, [])],
     ) for ev in events]
+
+
+# ============ 排班 2.0(喔趣:员工班次自助 + 换班 + 可用性偏好) ============
+
+
+def _hhmm(m: int) -> str:
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+def _notify_emp(
+    db: Session, tenant_id: str, employee_id: str, *,
+    kind: str, title: str, body: str | None = None, link: str = "/me/shifts",
+) -> None:
+    emp = db.get(Employee, employee_id)
+    if emp is not None and emp.user_id:
+        db.add(Notification(
+            tenant_id=tenant_id, user_id=emp.user_id, kind=kind,
+            title=title[:128], body=(body or "")[:512], link=link))
+
+
+class MeShiftOut(BaseModel):
+    id: str
+    day: date
+    shift_id: str
+    shift_name: str
+    time_range: str
+    color: str | None
+    source: str
+    note: str | None
+
+
+@router.get("/shifts", response_model=list[MeShiftOut])
+def me_shifts(
+    month: str | None = Query(None, description="YYYY-MM"),
+    db: Session = Depends(get_db), current: User = Depends(get_current_user),
+):
+    e = _me(db, current)
+    start, end = month_range(month)
+    rows = db.scalars(
+        select(ShiftAssignment).where(
+            ShiftAssignment.tenant_id == current.tenant_id,
+            ShiftAssignment.employee_id == e.id,
+            ShiftAssignment.day >= start, ShiftAssignment.day <= end)
+        .order_by(ShiftAssignment.day)).all()
+    shifts = {s.id: s for s in db.scalars(
+        select(Shift).where(Shift.tenant_id == current.tenant_id)).all()}
+    out = []
+    for a in rows:
+        s = shifts.get(a.shift_id)
+        out.append(MeShiftOut(
+            id=a.id, day=a.day, shift_id=a.shift_id,
+            shift_name=s.name if s else "?",
+            time_range=(f"{_hhmm(s.start_min)}-{_hhmm(s.end_min)}" if s else ""),
+            color=s.color if s else None,
+            source=a.source, note=a.note))
+    return out
+
+
+class AvailItemIn(BaseModel):
+    weekday: int = Field(ge=0, le=6)
+    preference: Literal["available", "preferred", "unavailable"]
+
+
+class MeAvailIn(BaseModel):
+    items: list[AvailItemIn] = Field(default_factory=list)
+
+
+def _avail_out(db: Session, e: Employee) -> dict:
+    rows = db.scalars(
+        select(EmployeeAvailability).where(
+            EmployeeAvailability.tenant_id == e.tenant_id,
+            EmployeeAvailability.employee_id == e.id)).all()
+    by_wd = {a.weekday: a.preference for a in rows}
+    return {"items": [{"weekday": w,
+                       "preference": by_wd.get(w, "available")}
+                      for w in range(7)]}
+
+
+@router.get("/shift-availability")
+def me_avail_get(
+    db: Session = Depends(get_db), current: User = Depends(get_current_user),
+):
+    return _avail_out(db, _me(db, current))
+
+
+@router.put("/shift-availability")
+def me_avail_put(
+    body: MeAvailIn,
+    db: Session = Depends(get_db), current: User = Depends(get_current_user),
+):
+    e = _me(db, current)
+    seen: set[int] = set()
+    for item in body.items:
+        if item.weekday in seen:
+            raise HTTPException(422, f"weekday {item.weekday} 重复")
+        seen.add(item.weekday)
+        row = db.scalars(
+            select(EmployeeAvailability).where(
+                EmployeeAvailability.tenant_id == current.tenant_id,
+                EmployeeAvailability.employee_id == e.id,
+                EmployeeAvailability.weekday == item.weekday)).first()
+        if row is None:
+            row = EmployeeAvailability(
+                tenant_id=current.tenant_id, employee_id=e.id,
+                weekday=item.weekday, preference=item.preference)
+            db.add(row)
+        else:
+            row.preference = item.preference
+        row.updated_at = _now()
+    db.commit()
+    return _avail_out(db, e)
+
+
+@router.get("/shift-swap-targets")
+def me_swap_targets(
+    db: Session = Depends(get_db), current: User = Depends(get_current_user),
+):
+    e = _me(db, current)
+    rows = db.scalars(
+        select(Employee).where(
+            Employee.tenant_id == current.tenant_id,
+            Employee.status == "active",
+            Employee.id != e.id).order_by(Employee.employee_no)).all()
+    return [{"id": x.id, "name": x.name, "org_unit_id": x.org_unit_id,
+             "same_org": bool(e.org_unit_id
+                              and x.org_unit_id == e.org_unit_id)}
+            for x in rows]
+
+
+class MeSwapIn(BaseModel):
+    target_employee_id: str
+    day: date
+    note: str | None = Field(None, max_length=200)
+
+
+class MeSwapOut(BaseModel):
+    id: str
+    day: date
+    mode: str
+    status: str
+    direction: str
+    other_employee_id: str
+    other_name: str
+    my_shift_name: str | None
+    other_shift_name: str | None
+    requester_note: str | None
+    peer_note: str | None
+    decision_note: str | None
+    created_at: datetime
+
+
+def _me_swap_out(
+    r: ShiftSwapRequest, me_id: str,
+    names: dict[str, str],
+    assigns: dict[tuple[str, date], ShiftAssignment],
+    shifts: dict[str, Shift],
+) -> MeSwapOut:
+    out_dir = r.requester_employee_id == me_id
+    other_id = (r.target_employee_id if out_dir
+                else r.requester_employee_id)
+    my_a = assigns.get((me_id, r.day))
+    other_a = assigns.get((other_id, r.day))
+    return MeSwapOut(
+        id=r.id, day=r.day, mode=r.mode, status=r.status,
+        direction="out" if out_dir else "in",
+        other_employee_id=other_id,
+        other_name=names.get(other_id, "?"),
+        my_shift_name=(shifts[my_a.shift_id].name
+                       if my_a and my_a.shift_id in shifts else None),
+        other_shift_name=(shifts[other_a.shift_id].name
+                          if other_a and other_a.shift_id in shifts else None),
+        requester_note=r.requester_note, peer_note=r.peer_note,
+        decision_note=r.decision_note, created_at=r.created_at)
+
+
+def _swap_ctx(db: Session, tenant_id: str, rows: list[ShiftSwapRequest]):
+    names = {e.id: e.name for e in db.scalars(
+        select(Employee).where(Employee.tenant_id == tenant_id)).all()}
+    shifts = {s.id: s for s in db.scalars(
+        select(Shift).where(Shift.tenant_id == tenant_id)).all()}
+    days = {r.day for r in rows}
+    emp_ids = {r.requester_employee_id for r in rows} | {
+        r.target_employee_id for r in rows}
+    assigns: dict[tuple[str, date], ShiftAssignment] = {}
+    if days:
+        for a in db.scalars(
+                select(ShiftAssignment).where(
+                    ShiftAssignment.tenant_id == tenant_id,
+                    ShiftAssignment.day.in_(days),
+                    ShiftAssignment.employee_id.in_(emp_ids))).all():
+            assigns[(a.employee_id, a.day)] = a
+    return names, assigns, shifts
+
+
+@router.get("/shift-swaps", response_model=list[MeSwapOut])
+def me_swaps(
+    box: Literal["in", "out"] | None = None,
+    db: Session = Depends(get_db), current: User = Depends(get_current_user),
+):
+    e = _me(db, current)
+    stmt = select(ShiftSwapRequest).where(
+        ShiftSwapRequest.tenant_id == current.tenant_id)
+    if box == "out":
+        stmt = stmt.where(ShiftSwapRequest.requester_employee_id == e.id)
+    elif box == "in":
+        stmt = stmt.where(ShiftSwapRequest.target_employee_id == e.id)
+    else:
+        stmt = stmt.where(
+            (ShiftSwapRequest.requester_employee_id == e.id)
+            | (ShiftSwapRequest.target_employee_id == e.id))
+    rows = db.scalars(
+        stmt.order_by(ShiftSwapRequest.created_at.desc())).all()
+    names, assigns, shifts = _swap_ctx(db, current.tenant_id, rows)
+    return [_me_swap_out(r, e.id, names, assigns, shifts) for r in rows]
+
+
+@router.post("/shift-swaps", response_model=MeSwapOut,
+             status_code=status.HTTP_201_CREATED)
+def me_swap_create(
+    body: MeSwapIn,
+    db: Session = Depends(get_db), current: User = Depends(get_current_user),
+):
+    e = _me(db, current)
+    if body.target_employee_id == e.id:
+        raise HTTPException(400, "不能和自己换班")
+    target = db.get(Employee, body.target_employee_id)
+    if (not target or target.tenant_id != current.tenant_id
+            or target.status != "active"):
+        raise HTTPException(404, "对方员工不存在或已离职")
+    my_a = db.scalars(
+        select(ShiftAssignment).where(
+            ShiftAssignment.tenant_id == current.tenant_id,
+            ShiftAssignment.employee_id == e.id,
+            ShiftAssignment.day == body.day)).first()
+    if my_a is None:
+        raise HTTPException(409, "你当天没有排班可换")
+    dup = db.scalars(
+        select(ShiftSwapRequest).where(
+            ShiftSwapRequest.tenant_id == current.tenant_id,
+            ShiftSwapRequest.day == body.day,
+            ShiftSwapRequest.status.in_(
+                ["pending_peer", "pending_approval"]),
+            (ShiftSwapRequest.requester_employee_id.in_([e.id, target.id]))
+            | (ShiftSwapRequest.target_employee_id.in_([e.id, target.id])))).first()
+    if dup is not None:
+        raise HTTPException(409, "当天已有进行中的换班申请")
+    target_a = db.scalars(
+        select(ShiftAssignment).where(
+            ShiftAssignment.tenant_id == current.tenant_id,
+            ShiftAssignment.employee_id == target.id,
+            ShiftAssignment.day == body.day)).first()
+    r = ShiftSwapRequest(
+        tenant_id=current.tenant_id, day=body.day,
+        requester_employee_id=e.id, target_employee_id=target.id,
+        mode="exchange" if target_a is not None else "transfer",
+        requester_note=body.note)
+    db.add(r)
+    _notify_emp(db, current.tenant_id, target.id,
+                kind="shift.swap", title="收到换班请求",
+                body=f"{e.name} 请求与你处理 {body.day.isoformat()} 的换班")
+    db.commit()
+    names, assigns, shifts = _swap_ctx(db, current.tenant_id, [r])
+    return _me_swap_out(r, e.id, names, assigns, shifts)
+
+
+class PeerDecideIn(BaseModel):
+    accept: bool
+    note: str | None = Field(None, max_length=200)
+
+
+@router.post("/shift-swaps/{swap_id}/peer", response_model=MeSwapOut)
+def me_swap_peer(
+    swap_id: str,
+    body: PeerDecideIn,
+    db: Session = Depends(get_db), current: User = Depends(get_current_user),
+):
+    e = _me(db, current)
+    r = db.get(ShiftSwapRequest, swap_id)
+    if (not r or r.tenant_id != current.tenant_id
+            or r.target_employee_id != e.id):
+        raise HTTPException(404, "换班申请不存在")
+    if r.status != "pending_peer":
+        raise HTTPException(409, "申请已处理")
+    if body.accept:
+        ra = db.scalars(
+            select(ShiftAssignment).where(
+                ShiftAssignment.tenant_id == current.tenant_id,
+                ShiftAssignment.employee_id == r.requester_employee_id,
+                ShiftAssignment.day == r.day)).first()
+        if ra is None:
+            raise HTTPException(409, "对方当天排班已变化")
+        if r.mode == "exchange":
+            ta = db.scalars(
+                select(ShiftAssignment).where(
+                    ShiftAssignment.tenant_id == current.tenant_id,
+                    ShiftAssignment.employee_id == e.id,
+                    ShiftAssignment.day == r.day)).first()
+            if ta is None:
+                raise HTTPException(409, "你当天排班已变化")
+        r.status = "pending_approval"
+        _notify_emp(db, current.tenant_id, r.requester_employee_id,
+                    kind="shift.swap", title="对方已同意换班",
+                    body=f"{r.day.isoformat()} 换班待主管审批")
+    else:
+        r.status = "peer_declined"
+        _notify_emp(db, current.tenant_id, r.requester_employee_id,
+                    kind="shift.swap", title="对方拒绝了换班",
+                    body=body.note or "")
+    r.peer_note = body.note
+    r.updated_at = _now()
+    db.commit()
+    names, assigns, shifts = _swap_ctx(db, current.tenant_id, [r])
+    return _me_swap_out(r, e.id, names, assigns, shifts)
+
+
+@router.post("/shift-swaps/{swap_id}/cancel", response_model=MeSwapOut)
+def me_swap_cancel(
+    swap_id: str,
+    db: Session = Depends(get_db), current: User = Depends(get_current_user),
+):
+    e = _me(db, current)
+    r = db.get(ShiftSwapRequest, swap_id)
+    if (not r or r.tenant_id != current.tenant_id
+            or r.requester_employee_id != e.id):
+        raise HTTPException(404, "换班申请不存在")
+    if r.status not in ("pending_peer", "pending_approval"):
+        raise HTTPException(409, "申请已结束,不能撤回")
+    r.status = "cancelled"
+    r.updated_at = _now()
+    db.commit()
+    names, assigns, shifts = _swap_ctx(db, current.tenant_id, [r])
+    return _me_swap_out(r, e.id, names, assigns, shifts)

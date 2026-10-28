@@ -91,6 +91,7 @@ import { MeDashboard } from "@/pages/me/MeDashboard";
 import { MyLeave } from "@/pages/me/MyLeave";
 import { MyAttendance } from "@/pages/me/MyAttendance";
 import { MyPayslips } from "@/pages/me/MyPayslips";
+import { MyShifts } from "@/pages/me/MyShifts";
 import { MyExpenses } from "@/pages/me/MyExpenses";
 import { MyGoals } from "@/pages/me/MyGoals";
 import { MyProfile } from "@/pages/me/MyProfile";
@@ -171,6 +172,7 @@ export const router = createBrowserRouter([
       { path: "me", element: <MeGuard><MeDashboard /></MeGuard> },
       { path: "me/leave", element: <MeGuard><MyLeave /></MeGuard> },
       { path: "me/attendance", element: <MeGuard><MyAttendance /></MeGuard> },
+      { path: "me/shifts", element: <MeGuard><MyShifts /></MeGuard> },
       { path: "me/payslips", element: <MeGuard><MyPayslips /></MeGuard> },
       { path: "me/expenses", element: <MeGuard><MyExpenses /></MeGuard> },
       { path: "me/goals", element: <MeGuard><MyGoals /></MeGuard> },

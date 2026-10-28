@@ -1690,6 +1690,132 @@ class ShiftAssignment(Base):
     )
 
 
+class ShiftRule(Base):
+    """排班合规规则(每租户一行;喔趣「从源头规避用工风险」)。
+
+    - ``max_consecutive_days`` 连续出勤天数上限(自然日连续段)
+    - ``max_weekly_hours``     ISO 周工时上限(按班次时长计)
+    - ``min_rest_minutes``     相邻两日班次间最小休息间隔(分钟)
+    - ``respect_availability`` 尊重员工可用性(unavailable 不排/preferred 仅警告)
+    """
+
+    __tablename__ = "shift_rules"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False, unique=True,
+    )
+    max_consecutive_days: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="6")
+    max_weekly_hours: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default="44")
+    min_rest_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="720")
+    respect_availability: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_true())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now())
+
+
+class EmployeeAvailability(Base):
+    """员工每周可用性/班次偏好(喔趣:员工自助提交有空时间与偏好)。
+
+    (tenant_id, employee_id, weekday) 唯一;``weekday`` 与
+    ``date.weekday()`` 一致(0=周一)。``preference``:
+    available / preferred / unavailable。
+    """
+
+    __tablename__ = "employee_availability"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    weekday: Mapped[int] = mapped_column(Integer, nullable=False)
+    preference: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="available")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "employee_id", "weekday",
+                         name="uq_emp_avail_one"),
+    )
+
+
+class ScheduleTemplate(Base):
+    """排班模板/循环规则(喔趣:固定班次·多班次循环模板)。
+
+    ``pattern`` JSON ``[{offset, shift_id|null}]``:offset 为周期内第 N 天
+    (0..period_days-1),shift_id 为 null 表示休息。套用公式:
+    ``pattern[(day - anchor) % period_days]`` — 周循环(7)与
+    早晚休休(4)等多天循环同构表达。
+    """
+
+    __tablename__ = "schedule_templates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    period_days: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="7")
+    pattern: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list)
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_true())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now())
+
+
+class ShiftSwapRequest(Base):
+    """换班申请(喔趣:员工发起 → 对方确认 → 主管审批 → 班次交换)。
+
+    ``mode``: exchange 双方当天都有班→互换班次;transfer 对方无班→
+    请求者的班转给对方。状态机::
+
+        pending_peer ─对方拒绝→ peer_declined
+                   ─对方同意→ pending_approval ─批准(执行交换)→ approved
+                                              └─驳回→ rejected
+        pending_*/任意未决 ─发起人撤回→ cancelled
+    """
+
+    __tablename__ = "shift_swap_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    day: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    requester_employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    target_employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="pending_peer", index=True)
+    requester_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    peer_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approver_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now())
+
+
 class LeavePolicy(Base):
     """假期政策:一组 (leave_type × annual_days) + 结转上限。
 

@@ -21,6 +21,10 @@ from app.domain.models import (
     Shift,
     ShiftAssignment,
 )
+from app.services.scheduling_rules import (
+    availability_map_for,
+    get_rules,
+)
 from app.services.work_calendar import workday_dates
 
 
@@ -112,6 +116,8 @@ def generate_schedule(
     leave = _leave_days(db, tenant_id, start, end)
     busy = _busy_map(assigns)
     filled = _fill_map(assigns)
+    rules = get_rules(db, tenant_id)
+    avail = availability_map_for(db, tenant_id, [e.id for e in employees])
     assigned_cnt: dict[str, int] = defaultdict(int)
     for a in assigns:
         assigned_cnt[a.employee_id] += 1
@@ -128,6 +134,8 @@ def generate_schedule(
             cands = [
                 e for e in employees
                 if d not in leave.get(e.id, set()) and d not in busy.get(e.id, set())
+                and (not rules.respect_availability
+                     or avail.get(e.id, {}).get(d.weekday()) != "unavailable")
             ]
             # 公平轮转:当月累计最少优先,同数按工号稳定排序
             cands.sort(key=lambda e: (assigned_cnt[e.id], e.employee_no))
