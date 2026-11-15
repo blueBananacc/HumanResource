@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="frontend/public/logo.png" alt="HROnfire" width="120">
+</p>
+
 # HROnfire - AI 原生的人力资源管理系统(HCM)
 
 <p align="left">

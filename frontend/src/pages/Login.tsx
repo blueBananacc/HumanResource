@@ -72,9 +72,11 @@ export function Login() {
       <div className="relative w-[440px] max-w-full bg-white rounded-2xl shadow-[0_12px_40px_rgba(43,10,25,0.35)] p-10 flex flex-col gap-7">
         <div className="flex items-center justify-between gap-2.5">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-[12px_12px_12px_3px] bg-[var(--color-accent)] text-white font-body font-bold flex items-center justify-center text-sm">
-              Hi
-            </div>
+            <img
+              src="/logo.png"
+              alt="HROnfire"
+              className="w-8 h-8 rounded-lg"
+            />
             <span className="font-body font-bold text-lg tracking-tight">HROnfire</span>
           </div>
           <span className="text-xs text-[var(--color-text-tertiary)] font-body">

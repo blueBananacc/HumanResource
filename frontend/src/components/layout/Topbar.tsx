@@ -76,9 +76,11 @@ export function Topbar({ title }: { title: string }) {
         <GlobalSearch />
       </div>
       <div className="flex items-center gap-3 min-w-0">
-        <div className="w-8 h-8 rounded-[12px_12px_12px_3px] bg-[var(--color-accent)] text-white font-body font-bold text-sm flex items-center justify-center shrink-0">
-          Hi
-        </div>
+        <img
+          src="/logo.png"
+          alt="HROnfire"
+          className="w-8 h-8 rounded-lg shrink-0"
+        />
         <span className="font-body font-bold text-base text-white shrink-0 tracking-tight">HROnfire</span>
         <span className="w-px h-5 bg-white/20 shrink-0" />
         <h1 className="font-heading text-[15px] text-white/90 truncate">
