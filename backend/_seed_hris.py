@@ -1121,6 +1121,278 @@ def main():
             if not r.get("_status"):
                 print(f"  {jtitle} 匹配评估已排队")
 
+    # =====================================================================
+    # 增厚:人事日历铺满 / 管道铺开 / Offer 状态 / 需求 / 面试排期 / 技能标签
+    # =====================================================================
+    print("== 演示数据增厚 ==")
+
+    # ---------- 人事日历/提醒:personal 日期铺满本月 ----------
+    m0 = today.replace(day=1)
+    m_end = (date(today.year + (1 if today.month == 12 else 0),
+                  today.month % 12 + 1, 1) - timedelta(days=1))
+    def md(day_off: int) -> date:  # 本月内偏移,防 2 月溢出
+        return min(m0 + timedelta(days=day_off), m_end)
+    EMP_DATES = {
+        "EMP001": {"birth_date": md(29), "cert_expire": md(27)},
+        "EMP002": {"birth_date": md(21), "probation_end": md(25)},
+        "EMP003": {"birth_date": md(27), "contract_end": md(26)},
+        "EMP004": {"birth_date": md(4), "cert_expire": md(23)},
+        "EMP005": {"contract_end": md(28)},
+        "EMP006": {"probation_end": md(19), "cert_expire": md(13)},  # 已逾期
+    }
+    # EMP005 hire_date 调到本月两年前 → 本月多出一条「入职周年」
+    anniv = date(today.year - 2, today.month, min(today.day + 3, 28))
+    emp_updated = 0
+    for no, dates in EMP_DATES.items():
+        e = emp_by_no.get(no)
+        if not e:
+            continue
+        det = req("GET", f"/employees/{e['id']}", tok)
+        personal = dict(det.get("personal") or {})
+        hire = det.get("hire_date")
+        if no == "EMP005" and hire != str(anniv):
+            hire = str(anniv)
+        new_dates = {k: str(v) for k, v in dates.items()}
+        if all(personal.get(k) == v for k, v in new_dates.items()) and hire == det.get("hire_date"):
+            continue
+        personal.update(new_dates)
+        r = req("PUT", f"/employees/{e['id']}", tok, {
+            "name": det["name"], "employee_no": det.get("employee_no"),
+            "org_unit_id": det.get("org_unit_id"),
+            "designation": det.get("designation"),
+            "reports_to_id": det.get("reports_to_id"),
+            "work_email": det.get("work_email"), "phone": det.get("phone"),
+            "hire_date": hire, "employment_type": det.get("employment_type"),
+            "status": det.get("status"), "personal": personal,
+            "base_updated_at": det.get("updated_at"),
+        }, quiet=True)
+        if r.get("_status"):
+            print(f"  !! {no} personal 更新失败 {r.get('_detail', '')[:80]}")
+        else:
+            emp_updated += 1
+    print(f"  人事日历:{emp_updated} 人写入生日/转正/合同/证件/周年")
+
+    # ---------- 生命周期:待离职(在办) ----------
+    evs_now = req("GET", "/lifecycle/events", tok)
+    ev_list = evs_now if isinstance(evs_now, list) else evs_now.get("items", [])
+    if not any(ev.get("kind") == "separation" and ev.get("status") == "in_progress"
+               for ev in ev_list):
+        req("POST", "/lifecycle/events", tok, {
+            "employee_id": emp_by_no["EMP005"]["id"], "kind": "separation",
+            "effective_date": str(today + timedelta(days=25)),
+            "note": "合同到期不续签",
+        }, quiet=True)
+        print("  生命周期:待离职 +1")
+
+    # ---------- 简历增厚(4 份新候选人) ----------
+    resume_items = req("GET", "/resumes/?limit=200", tok).get("items", [])
+    have_files = {r["file_name"] for r in resume_items}
+    for fn, text in (
+        ("zhengnan.txt", "姓名:郑楠\nzheng.nan@example.com / 13800000006\n"
+         "3 年前端,React/Vue 双栈,小程序与可视化经验丰富。\n期望:高级前端工程师"),
+        ("fengxue.txt", "姓名:冯雪\nfeng.xue@example.com / 13800000007\n"
+         "2 年 Python 后端,Django/FastAPI,参与过订单履约系统。\n期望:Python 后端工程师"),
+        ("hexin.txt", "姓名:何欣\nhe.xin@example.com / 13800000008\n"
+         "5 年产品设计,B 端 SaaS + 交互规范,带 2 人小组。\n期望:产品设计师"),
+        ("luming.txt", "姓名:陆明\nlu.ming@example.com / 13800000009\n"
+         "4 年 QA/自动化测试,Python 脚本 + 接口自动化框架。\n期望:Python 后端工程师"),
+    ):
+        if fn not in have_files:
+            req_upload("/resumes/upload", tok, fn, text.encode("utf-8"))
+    FILE_NAMES.update({"zhengnan": "郑楠", "fengxue": "冯雪",
+                       "hexin": "何欣", "luming": "陆明"})
+    cand_ids = {}
+    for r in req("GET", "/resumes/?limit=200", tok).get("items", []):
+        c = r.get("candidate") or {}
+        stem = (r.get("file_name") or "").rsplit(".", 1)[0]
+        want = FILE_NAMES.get(stem)
+        if c.get("id") and want and c.get("name") != want:
+            req("PATCH", f"/resumes/{r['id']}", tok, {"name": want}, quiet=True)
+            c["name"] = want
+        if c.get("id") and c.get("name"):
+            cand_ids[c["name"]] = c["id"]
+
+    # ---------- 全候选人技能档案(人才地图「技能标签」数据源) ----------
+    skill_map = {
+        "陈默": [{"name": "React", "level": 5}, {"name": "沟通能力", "level": 4}],
+        "钱七": [{"name": "Python", "level": 4}, {"name": "沟通能力", "level": 3}],
+        "孙悦": [{"name": "沟通能力", "level": 5}],
+        "周凯": [{"name": "Python", "level": 5}, {"name": "沟通能力", "level": 3}],
+        "吴倩": [{"name": "React", "level": 4}, {"name": "沟通能力", "level": 4}],
+        "郑楠": [{"name": "React", "level": 3}, {"name": "沟通能力", "level": 4}],
+        "冯雪": [{"name": "Python", "level": 3}],
+        "何欣": [{"name": "沟通能力", "level": 5}],
+        "陆明": [{"name": "Python", "level": 4}],
+    }
+    for cname, items in skill_map.items():
+        cid = cand_ids.get(cname)
+        if cid:
+            req("PUT", f"/skills/candidates/{cid}", tok, {"items": items}, quiet=True)
+    print(f"  技能档案覆盖 {sum(1 for c in skill_map if c in cand_ids)} 人")
+
+    # ---------- 人才标签 ----------
+    tag_map = {"陈默": ["重点跟进", "内推"], "钱七": ["内推"],
+               "孙悦": ["设计方向"], "吴倩": ["重点跟进"], "何欣": ["资深"]}
+    for cname, tags in tag_map.items():
+        cid = cand_ids.get(cname)
+        if cid:
+            req("PUT", f"/talents/{cid}/tags", tok, {"tags": tags}, quiet=True)
+
+    # ---------- 管道铺开:每岗各阶段都有卡 ----------
+    EXTRA_APPS = [
+        ("郑楠", "高级前端工程师", ["screening"]),
+        ("吴倩", "高级前端工程师", ["screening", "interview"]),
+        ("何欣", "产品设计师", ["screening"]),
+        ("陆明", "Python 后端工程师", ["screening"]),
+        ("冯雪", "Python 后端工程师", ["screening", "interview"]),
+        ("周凯", "Python 后端工程师", ["screening", "interview"]),
+    ]
+    for jid in (fe_job["id"], py_job["id"], jobs["产品设计师"]["id"]):
+        req("POST", f"/matches/job/{jid}/evaluate-all", tok, quiet=True)
+    needed2 = {(cand_ids.get(c), jobs[j]["id"])
+               for c, j, _ in EXTRA_APPS if cand_ids.get(c) and jobs.get(j)}
+    done2 = set()
+    for _ in range(24):
+        for jid in {j for _, j in needed2}:
+            for m in req("GET", f"/matches/job/{jid}?status=done", tok):
+                if m.get("candidate_id"):
+                    done2.add((m["candidate_id"], jid))
+        if needed2 <= done2:
+            break
+        time.sleep(5)
+    apps = req("GET", "/applications/?limit=200", tok).get("items", [])
+    for cname, jtitle, stages in EXTRA_APPS:
+        cid, jid = cand_ids.get(cname), jobs.get(jtitle, {}).get("id")
+        if not cid or not jid:
+            continue
+        cur = next((a for a in apps
+                    if a["candidate_id"] == cid and a["job_id"] == jid), None)
+        if cur is None:
+            cur = req("POST", "/applications", tok,
+                      {"candidate_id": cid, "job_id": jid}, quiet=True)
+            if cur.get("_status"):
+                continue
+        for st in stages:
+            if cur.get("stage") == st:
+                continue
+            cur = req("POST", f"/applications/{cur['id']}/transition", tok,
+                      {"to_stage": st}, quiet=True)
+            if cur.get("_status"):
+                break
+    print(f"  管道铺开完成(match done {len(done2 & needed2)}/{len(needed2)})")
+
+    # ---------- 招聘需求增厚:approved / rejected / pending 各一 ----------
+    reqs = req("GET", "/requisitions?limit=200", tok).get("items", [])
+    req_titles = {r["title"] for r in reqs}
+    hr_tok2 = ensure_hr_token(tok)
+    REQ_SPECS = [
+        ("研发部-数据分析师(增长)", "approved", dev, "用户行为分析需求激增"),
+        ("产品部-市场专员(品牌)", "rejected", prod, "品牌投放计划"),
+        ("研发部-测试工程师(QA)", "pending", dev, "自动化测试人力缺口"),
+    ]
+    for t_, want, ou, reason in REQ_SPECS:
+        if t_ in req_titles:
+            continue
+        r = req("POST", "/requisitions", tok, {
+            "title": t_, "org_unit_id": ou["id"], "headcount": 1,
+            "level": "intermediate", "reason": reason,
+        }, quiet=True)
+        if r.get("_status") or not hr_tok2:
+            continue
+        if want == "approved":
+            req("POST", f"/requisitions/{r['id']}/approve", hr_tok2,
+                {"note": "编制内,同意"}, quiet=True)
+        elif want == "rejected":
+            req("POST", f"/requisitions/{r['id']}/reject", hr_tok2,
+                {"note": "本季度 HC 冻结"}, quiet=True)
+    print("  需求:approved/rejected/pending 就绪")
+
+    # ---------- Offer 增厚:再发一份 sent + 一份 declined ----------
+    offer_items = req("GET", "/offers?limit=100", tok).get("items", [])
+    have_status = {o["status"] for o in offer_items}
+    if "declined" not in have_status and cand_ids.get("吴倩"):
+        o = req("POST", "/offers", tok, {
+            "candidate_id": cand_ids["吴倩"], "job_id": fe_job["id"],
+            "position": "高级前端工程师", "salary": {"base": 26000, "months": 13},
+            "start_date": str(today + timedelta(days=20)),
+        }, quiet=True)
+        if not o.get("_status"):
+            req("POST", f"/offers/{o['id']}/send", tok, quiet=True)
+            req("POST", f"/offers/{o['id']}/respond", tok,
+                {"accepted": False}, quiet=True)
+            print("  Offer(declined) 吴倩")
+    if cand_ids.get("何欣"):
+        sent2 = req("POST", "/offers", tok, {
+            "candidate_id": cand_ids["何欣"], "job_id": jobs["产品设计师"]["id"],
+            "position": "产品设计师", "salary": {"base": 22000, "months": 13},
+            "start_date": str(today + timedelta(days=25)),
+        }, quiet=True)
+        if not sent2.get("_status"):
+            req("POST", f"/offers/{sent2['id']}/send", tok, quiet=True)
+            print("  Offer(sent) 何欣")
+
+    # ---------- 面试增厚:AI 面试 + 真人评分卡 + 一条已提交反馈 ----------
+    ivs = req("GET", "/interviews/?limit=100", tok).get("items", [])
+    iv_cands = {i.get("candidate_name") or (i.get("candidate") or {}).get("name")
+                for i in ivs}
+    for cname, jtitle in (("郑楠", "高级前端工程师"), ("冯雪", "Python 后端工程师")):
+        cid, jid = cand_ids.get(cname), jobs.get(jtitle, {}).get("id")
+        if cid and jid and cname not in iv_cands:
+            req("POST", "/interviews/start", tok, {
+                "job_id": jid, "candidate_id": cid, "question_count": 3,
+                "kinds": ["tech", "project"], "delivery": "link",
+                "expires_in_hours": 72,
+            }, quiet=True)
+    scs3 = req("GET", "/scorecards/?limit=100", tok)
+    sc_list3 = scs3.get("items", scs3) if isinstance(scs3, dict) else scs3
+    for cname, jtitle, d_off, tm in (
+        ("周凯", "Python 后端工程师", 2, "10:00"),
+        ("何欣", "产品设计师", 3, "15:00"),
+    ):
+        cid = cand_ids.get(cname)
+        day = today + timedelta(days=d_off)
+        exists = any(s.get("candidate_id") == cid and
+                     str(s.get("scheduled_at") or "")[:10] == str(day)
+                     for s in sc_list3)
+        if cid and not exists:
+            req("POST", "/scorecards", tok, {
+                "candidate_id": cid, "job_id": jobs[jtitle]["id"],
+                "title": f"{jtitle} · 一面", "scheduled_at": f"{day}T{tm}:00",
+                "interviewer_ids": [admin_uid],
+                "criteria": [{"name": "专业能力", "dimension": "tech", "weight": 3},
+                             {"name": "沟通表达", "dimension": "general", "weight": 2}],
+            }, quiet=True)
+    # 一条已提交反馈:工作台「已评」态
+    sc_fb = next((s for s in sc_list3
+                  if s.get("title", "").startswith("高级前端工程师 · 一面")), None)
+    if sc_fb and not sc_fb.get("feedbacks"):
+        crit_keys = [c["key"] for c in (sc_fb.get("criteria") or []) if c.get("key")]
+        req("POST", f"/scorecards/{sc_fb['id']}/feedback", tok, {
+            "rating": 4, "verdict": "recommend",
+            "scores": [{"criterion": k, "score": 4} for k in crit_keys],
+            "notes": "基本功扎实,沟通顺畅,建议进入下一轮。",
+        }, quiet=True)
+        print("  评分卡反馈已提交")
+
+    # ---------- 评分规则 +1 / 外联 +1 ----------
+    rules2 = {r["name"]: r for r in req("GET", "/scoring-rules", tok)}
+    if "设计岗三维" not in rules2:
+        req("POST", "/scoring-rules", tok, {
+            "name": "设计岗三维", "description": "设计类岗位评估",
+            "dimensions": [{"name": "作品集质量", "weight": 45},
+                           {"name": "交互思维", "weight": 30},
+                           {"name": "沟通协作", "weight": 25}],
+        }, quiet=True)
+        print("  评分规则 设计岗三维")
+    camps = req("GET", "/campaigns?limit=100", tok).get("items", [])
+    if not any(c["name"] == "Q1 前端人才回暖" for c in camps):
+        req("POST", "/campaigns", tok, {
+            "name": "Q1 前端人才回暖", "subject": "新年前端岗位开放",
+            "body_text": "{candidate_name}您好,我们新开放了高级前端岗位,期待与您再聊。",
+            "filter": {"query": "前端"},
+        }, quiet=True)
+        print("  外联 Q1 前端人才回暖(草稿)")
+
     # ---------- 历史打卡 SQL ----------
     emps_for_sql = [emp_by_no["EMP002"], emp_by_no["EMP003"], emp_by_no["EMP004"]]
     lines = ["-- 过去 5 个工作日历史打卡(psql -f _seed_checkins.sql 执行)",
