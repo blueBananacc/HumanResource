@@ -742,8 +742,9 @@ def main():
     # ---------- 评分规则 ----------
     print("== 评分规则 ==")
     rules = {r["name"]: r for r in req("GET", "/scoring-rules", tok)}
-    if "技术岗通用五维" not in rules:
-        req("POST", "/scoring-rules", tok, {
+    rule5 = rules.get("技术岗通用五维")
+    if rule5 is None:
+        rule5 = req("POST", "/scoring-rules", tok, {
             "name": "技术岗通用五维", "description": "技术岗位默认评分规则",
             "dimensions": [
                 {"name": "专业能力", "weight": 30},
@@ -752,8 +753,21 @@ def main():
                 {"name": "学习能力", "weight": 15},
                 {"name": "文化匹配", "weight": 10},
             ],
-        }, quiet=True)
+        })
         print("  评分规则 技术岗通用五维")
+    # 挂到「高级前端工程师」:之后该岗匹配按五维打分,
+    # 后续管道决策的快照即「规则内」维度(否则学到的全是规则外)
+    fe_detail = req("GET", f"/jobs/{fe_job['id']}", tok)
+    if not fe_detail.get("scoring_rule_id"):
+        r = req("PUT", f"/jobs/{fe_job['id']}", tok, {
+            "title": fe_detail["title"], "level": fe_detail["level"],
+            "description": fe_detail.get("description") or "",
+            "skills": fe_detail.get("skills") or [],
+            "scoring_rule_id": rule5["id"],
+            "base_updated_at": fe_detail["updated_at"],
+        }, quiet=True)
+        if not r.get("_status"):
+            print("  五维规则已挂「高级前端工程师」")
 
     # ---------- 问卷调查 ----------
     print("== 问卷调查 ==")
