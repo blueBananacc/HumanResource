@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import uuid
 import urllib.request
 import urllib.error
@@ -988,6 +989,114 @@ def main():
             "steps": [{"resolver": "manager", "label": "直属上级"}],
         }, quiet=True)
         print("  审批策略 员工请求→上级")
+
+    # ---------- 早报/记忆中枢:今日面试 + 待跟进 Offer + 决策数据 ----------
+    print("== 早报/记忆中枢 ==")
+    # 1) 今日面试:钱七排一张今天的卡(明天的两张不变,两栏都有数据)
+    scs2 = req("GET", "/scorecards/?limit=100", tok)
+    sc_list2 = scs2.get("items", scs2) if isinstance(scs2, dict) else scs2
+    if cand_ids.get("钱七") and not any(
+            s.get("candidate_id") == cand_ids["钱七"] for s in sc_list2):
+        req("POST", "/scorecards", tok, {
+            "candidate_id": cand_ids["钱七"], "job_id": py_job["id"],
+            "title": "Python 后端工程师 · 一面",
+            "scheduled_at": f"{today}T15:00:00",
+            "interviewer_ids": [admin_uid],
+            "criteria": [{"name": "专业能力", "dimension": "tech", "weight": 3},
+                         {"name": "沟通表达", "dimension": "general", "weight": 2}],
+        }, quiet=True)
+        print(f"  面试安排 钱七 {today} 15:00")
+
+    # 2) 待跟进 Offer:draft + sent 各一
+    offer_items = req("GET", "/offers?limit=100", tok).get("items", [])
+    have_status = {o["status"] for o in offer_items}
+    if "draft" not in have_status and cand_ids.get("孙悦"):
+        req("POST", "/offers", tok, {
+            "candidate_id": cand_ids["孙悦"], "job_id": jobs["产品设计师"]["id"],
+            "position": "产品设计师", "letter": "期待你的加入。",
+            "salary": {"base": 18000, "months": 13},
+            "start_date": str(today + timedelta(days=30)),
+        }, quiet=True)
+        print("  Offer(draft) 孙悦·产品设计师")
+    if "sent" not in have_status and cand_ids.get("陈默"):
+        o = req("POST", "/offers", tok, {
+            "candidate_id": cand_ids["陈默"], "job_id": fe_job["id"],
+            "position": "高级前端工程师",
+            "salary": {"base": 28000, "months": 14},
+            "start_date": str(today + timedelta(days=21)),
+        }, quiet=True)
+        if not o.get("_status"):
+            req("POST", f"/offers/{o['id']}/send", tok, quiet=True)
+            print("  Offer(sent) 陈默·高级前端工程师")
+
+    # 3) 决策数据:新简历 + 跨岗位申请,等 match done 再流转,
+    #    DecisionFeedback 攒到 >=20 出「高置信度」;含 1 条 rejected 负样本
+    resume_items = req("GET", "/resumes/?limit=200", tok).get("items", [])
+    have_files = {r["file_name"] for r in resume_items}
+    for fn, text in (
+        ("zhoukai.txt", "姓名:周凯\nzhou.kai@example.com / 13800000004\n"
+         "6 年 DevOps/后端,Python + Go + K8s,主导 CI/CD 与可观测体系。\n期望:Python 后端工程师"),
+        ("wuqian.txt", "姓名:吴倩\nwu.qian@example.com / 13800000005\n"
+         "4 年前端,Vue/React + 工程化,负责过设计系统落地。\n期望:高级前端工程师"),
+    ):
+        if fn not in have_files:
+            req_upload("/resumes/upload", tok, fn, text.encode("utf-8"))
+    FILE_NAMES.update({"zhoukai": "周凯", "wuqian": "吴倩"})
+    for r in req("GET", "/resumes/?limit=200", tok).get("items", []):
+        c = r.get("candidate") or {}
+        stem = (r.get("file_name") or "").rsplit(".", 1)[0]
+        want = FILE_NAMES.get(stem)
+        if c.get("id") and want and c.get("name") != want:
+            req("PATCH", f"/resumes/{r['id']}", tok, {"name": want}, quiet=True)
+            c["name"] = want
+        if c.get("id") and c.get("name"):
+            cand_ids[c["name"]] = c["id"]
+
+    DECISION_PLAN = [
+        ("周凯", "Python 后端工程师", ["screening", "interview"]),
+        ("吴倩", "高级前端工程师", ["screening", "interview"]),
+        ("陈默", "Python 后端工程师", ["screening", "interview"]),
+        ("孙悦", "高级前端工程师", ["rejected"]),
+        ("钱七", "高级前端工程师", ["screening"]),
+        ("周凯", "高级前端工程师", ["screening"]),
+    ]
+    for jid in (fe_job["id"], py_job["id"]):
+        req("POST", f"/matches/job/{jid}/evaluate-all", tok, quiet=True)
+    needed = {(cand_ids.get(c), jobs[j]["id"])
+              for c, j, _ in DECISION_PLAN if cand_ids.get(c)}
+    done_pairs = set()
+    for _ in range(24):  # 最多等 ~120s 让 match 评估完
+        for jid in {j for _, j in needed}:
+            for m in req("GET", f"/matches/job/{jid}?status=done", tok):
+                if m.get("candidate_id"):
+                    done_pairs.add((m["candidate_id"], jid))
+        if needed <= done_pairs:
+            break
+        time.sleep(5)
+    print(f"  match done {len(done_pairs & needed)}/{len(needed)} 对")
+
+    apps = req("GET", "/applications/?limit=200", tok).get("items", [])
+    made = 0
+    for cname, jtitle, stages in DECISION_PLAN:
+        cid, jid = cand_ids.get(cname), jobs.get(jtitle, {}).get("id")
+        if not cid or not jid or (cid, jid) not in done_pairs:
+            continue
+        cur = next((a for a in apps
+                    if a["candidate_id"] == cid and a["job_id"] == jid), None)
+        if cur is None:
+            cur = req("POST", "/applications", tok,
+                      {"candidate_id": cid, "job_id": jid}, quiet=True)
+            if cur.get("_status"):
+                continue
+        for st in stages:
+            if cur.get("stage") == st:
+                continue
+            cur = req("POST", f"/applications/{cur['id']}/transition", tok,
+                      {"to_stage": st}, quiet=True)
+            if cur.get("_status"):
+                break
+            made += 1
+    print(f"  决策流转 {made} 次")
 
     # ---------- 匹配评估(异步,尽力触发不等待) ----------
     print("== AI 匹配触发 ==")
