@@ -189,7 +189,9 @@ def _full_out(db: Session, sc: InterviewScorecard) -> ScorecardOut:
             for f in feedbacks
         ],
         aggregate=svc.aggregate(sc, feedbacks),
-        ai_summary=sc.ai_summary,
+        ai_summary=sc.ai_summary if isinstance(sc.ai_summary, dict) else (
+            {"text": sc.ai_summary} if sc.ai_summary else None
+        ),
         created_by=sc.created_by,
         created_at=sc.created_at,
         updated_at=sc.updated_at,

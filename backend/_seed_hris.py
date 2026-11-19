@@ -14,6 +14,12 @@
   - 生命周期模板+事件 / 招聘需求(已批+待批) / Offer(已接受→自动建档)
   - 目标+考核(含一条待上级评) / 报销(待批+已支付) / 工资条(已发放)
   - 工作日历+节假日 / 假期政策(结转+发放) / 补卡+加班→调休(待批+已批)
+  - ATS:技能字典 / 岗位(已发布×2+草稿×1) / 简历上传×3 / 人才分组 /
+    管道申请(applied→interview) / 岗位技能模型 / 题库 / AI 面试+面试安排 /
+    评分规则 / 问卷(已发布+链接) / 会议室+预约 / 公告×3
+  - 员工服务:请求×2(emp1/emp2) / HR 工单×2(1 处理中+1 新建) / 知识库×3
+  - 其他:职位编制+在岗 / 项目×2 / 班次+排班 / 薪酬区间+调薪评审 /
+    自动化规则×2 / 收藏筛选×2 / 外联活动(草稿) / 审批策略 / AI 匹配触发
   - 近 3 个工作日历史考勤:纯 API 补卡审批回填(云端无 psql 也能跑);
     另有 _seed_checkins.sql 供本地 psql 造更长的历史
 """
@@ -22,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import uuid
 import urllib.request
 import urllib.error
 from datetime import date, timedelta
@@ -49,6 +56,25 @@ def req(method: str, path: str, token: str | None = None, body=None, quiet=False
         if quiet:
             return {"_status": e.code, "_detail": detail}
         raise SystemExit(f"FAIL {method} {path} → {e.code}: {detail}")
+
+
+def req_upload(path: str, token: str, filename: str, data: bytes, content_type="text/plain"):
+    """multipart 文件上传(简历用);失败返回 {_status,_detail} 不抛异常。"""
+    boundary = "seedb" + uuid.uuid4().hex[:16]
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: {content_type}\r\n\r\n"
+    ).encode() + data + f"\r\n--{boundary}--\r\n".encode()
+    r = urllib.request.Request(f"{BASE}{path}", data=body, method="POST")
+    r.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    r.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(r, timeout=60) as resp:
+            raw = resp.read()
+            return json.loads(raw) if raw else None
+    except urllib.error.HTTPError as e:
+        return {"_status": e.code, "_detail": e.read().decode(errors="replace")}
 
 
 def login(email: str, password: str) -> str:
@@ -524,6 +550,453 @@ def main():
     req("POST", "/attendance/summarize", tok,
         {"start": str(month_start), "end": str(today)})
     print("  本月考勤重算完成")
+
+    # =====================================================================
+    # ATS / 员工服务 / 其余模块 —— 每个模块 2~3 条,全部按名称查重幂等
+    # =====================================================================
+    admin_uid = req("GET", "/auth/me", tok)["id"]
+
+    # ---------- 技能字典 ----------
+    print("== 技能 ==")
+    skills_map = {s["name"]: s for s in req("GET", "/skills?limit=200", tok)}
+    for nm, cat in (("React", "tech"), ("Python", "language"), ("沟通能力", "soft")):
+        if nm not in skills_map:
+            skills_map[nm] = req("POST", "/skills", tok, {"name": nm, "category": cat})
+    print(f"  技能 {len(skills_map)} 项")
+
+    # ---------- 岗位 ----------
+    print("== 岗位 ==")
+    jobs = {j["title"]: j for j in req("GET", "/jobs/?limit=200", tok).get("items", [])}
+    job_specs = [
+        ("高级前端工程师", "advanced", ["React", "TypeScript", "Node.js"],
+         "负责 C 端产品前端架构与组件库建设,推动性能与体验优化。"),
+        ("Python 后端工程师", "intermediate", ["Python", "FastAPI", "PostgreSQL"],
+         "负责业务 API、异步任务与数据管线,支撑招聘与人事流程。"),
+        ("产品设计师", "intermediate", ["Figma", "用户研究"],
+         "负责移动端改版,从用户调研到高保真交付全流程。"),
+    ]
+    for title, level, sks, desc in job_specs:
+        if title not in jobs:
+            jobs[title] = req("POST", "/jobs/", tok, {
+                "title": title, "level": level, "skills": sks, "description": desc,
+            })
+            print(f"  岗位 {title} → {jobs[title]['id'][:8]}")
+    # 治理流:前两个岗位提交审批并发布,产品设计师留 draft 演示待审态
+    for title in ("高级前端工程师", "Python 后端工程师"):
+        j = jobs[title]
+        if j.get("publish_status") == "draft":
+            req("POST", f"/jobs/{j['id']}/submit-approval", tok)
+            j["publish_status"] = "pending_approval"
+        if j.get("publish_status") == "pending_approval":
+            req("POST", f"/jobs/{j['id']}/approve", tok, {"note": "编制内,同意发布"})
+            j["publish_status"] = "published"
+        if j.get("status") != "open":
+            req("PATCH", f"/jobs/{j['id']}/status", tok, {"status": "open"})
+    print(f"  岗位 {len(jobs)} 个({jobs['高级前端工程师'].get('publish_status')}/"
+          f"{jobs['Python 后端工程师'].get('publish_status')}/{jobs['产品设计师'].get('publish_status')})")
+
+    # ---------- 简历上传(自动生成候选人) ----------
+    print("== 简历/候选人 ==")
+    resume_specs = [
+        ("chenmo.txt", "陈默\nchen.mo@example.com / 13800000001\n"
+         "5 年前端开发,React + TypeScript + Node.js,主导 3 个中后台项目重构。\n期望:高级前端工程师"),
+        ("qianqi.txt", "钱七\nqian.qi@example.com / 13800000002\n"
+         "4 年后端,Python + FastAPI + PostgreSQL,熟悉异步任务与高并发接口优化。\n期望:Python 后端工程师"),
+        ("sunyue.txt", "孙悦\nsun.yue@example.com / 13800000003\n"
+         "3 年产品设计,Figma + 用户研究,独立完成从调研到高保真的全流程。\n期望:产品设计师"),
+    ]
+    resume_items = req("GET", "/resumes/?limit=200", tok).get("items", [])
+    have_files = {r["file_name"] for r in resume_items}
+    for fn, text in resume_specs:
+        if fn not in have_files:
+            r = req_upload("/resumes/upload", tok, fn, text.encode("utf-8"))
+            if r and not r.get("_status"):
+                print(f"  {fn} → resume {r['id'][:8]}")
+            else:
+                print(f"  !! {fn} 上传失败 {r}")
+    resume_items = req("GET", "/resumes/?limit=200", tok).get("items", [])
+    FILE_NAMES = {"chenmo": "陈默", "qianqi": "钱七", "sunyue": "孙悦"}
+    cand_ids = {}
+    for r in resume_items:
+        c = r.get("candidate") or {}
+        if not c.get("id"):
+            continue
+        stem = (r.get("file_name") or "").rsplit(".", 1)[0]
+        want = FILE_NAMES.get(stem)
+        if want and c.get("name") != want:
+            req("PATCH", f"/resumes/{r['id']}", tok, {"name": want}, quiet=True)
+            c["name"] = want
+        if c.get("name"):
+            cand_ids[c["name"]] = c["id"]
+    print(f"  候选人 {len(cand_ids)} 位:{','.join(cand_ids)}")
+
+    # ---------- 人才分组 ----------
+    print("== 人才分组 ==")
+    groups = req("GET", "/talent-groups", tok)
+    grp = next((g for g in groups if g["name"] == "重点跟进"), None)
+    if grp is None:
+        grp = req("POST", "/talent-groups", tok,
+                  {"name": "重点跟进", "description": "高分或用人经理点名的候选人"})
+        print(f"  分组 重点跟进 → {grp['id'][:8]}")
+    member_cids = [cid for cname, cid in cand_ids.items() if cname in ("陈默", "钱七")]
+    if member_cids:
+        req("POST", f"/talent-groups/{grp['id']}/members", tok,
+            {"candidate_ids": member_cids}, quiet=True)
+
+    # ---------- 招聘管道 ----------
+    print("== 招聘管道 ==")
+    STAGES = ["applied", "screening", "interview", "offer", "hired"]
+    apps = req("GET", "/applications/?limit=200", tok).get("items", [])
+    for cname, jtitle, stage in (
+        ("陈默", "高级前端工程师", "screening"),
+        ("钱七", "Python 后端工程师", "interview"),
+        ("孙悦", "产品设计师", "applied"),
+    ):
+        cid, jid = cand_ids.get(cname), jobs.get(jtitle, {}).get("id")
+        if not cid or not jid:
+            continue
+        cur = next((a for a in apps
+                    if a["candidate_id"] == cid and a["job_id"] == jid), None)
+        if cur is None:
+            cur = req("POST", "/applications", tok,
+                      {"candidate_id": cid, "job_id": jid, "note": "种子导入"})
+            apps.append(cur)
+            print(f"  {cname} → {jtitle}")
+        while (cur["stage"] in STAGES and stage in STAGES
+               and STAGES.index(cur["stage"]) < STAGES.index(stage)):
+            cur = req("POST", f"/applications/{cur['id']}/transition", tok,
+                      {"to_stage": STAGES[STAGES.index(cur["stage"]) + 1]})
+
+    # ---------- 岗位技能模型 + 候选人技能档案 ----------
+    print("== 技能档案 ==")
+    fe_job, py_job = jobs["高级前端工程师"], jobs["Python 后端工程师"]
+    req("PUT", f"/skills/jobs/{fe_job['id']}", tok, {"items": [
+        {"name": "React", "importance": "must"},
+        {"name": "TypeScript", "importance": "must"},
+        {"name": "沟通能力", "importance": "nice"},
+    ]}, quiet=True)
+    req("PUT", f"/skills/jobs/{py_job['id']}", tok, {"items": [
+        {"name": "Python", "importance": "must"},
+        {"name": "沟通能力", "importance": "nice"},
+    ]}, quiet=True)
+    for cname, items in (
+        ("陈默", [{"name": "React", "level": 5}, {"name": "沟通能力", "level": 4}]),
+        ("钱七", [{"name": "Python", "level": 4}, {"name": "沟通能力", "level": 3}]),
+    ):
+        cid = cand_ids.get(cname)
+        if cid:
+            req("PUT", f"/skills/candidates/{cid}", tok, {"items": items}, quiet=True)
+
+    # ---------- 题库 ----------
+    print("== 题库 ==")
+    qtexts = {q["question"] for q in
+              req("GET", "/question-library/?limit=200", tok).get("items", [])}
+    for q, kind, diff in (
+        ("描述 React 并发渲染的工作原理与适用场景", "tech", "advanced"),
+        ("讲一个你主导过的跨团队项目,如何推进?", "project", "intermediate"),
+        ("线上出现严重故障时,你的应急处理流程?", "scenario", "intermediate"),
+    ):
+        if q not in qtexts:
+            req("POST", "/question-library/", tok, {
+                "question": q, "kind": kind, "difficulty": diff,
+                "category": "通用", "answer_points": ["要点一", "要点二"],
+            })
+    print("  题目就绪")
+
+    # ---------- AI 面试 + 面试安排(评分卡) ----------
+    print("== 面试 ==")
+    ivs = req("GET", "/interviews/?limit=100", tok).get("items", [])
+    iv_keys = {(i.get("candidate_name") or (i.get("candidate") or {}).get("name"),
+                i.get("job_title") or (i.get("job") or {}).get("title")) for i in ivs}
+    for cname, jtitle in (("陈默", "高级前端工程师"), ("钱七", "Python 后端工程师")):
+        cid, jid = cand_ids.get(cname), jobs.get(jtitle, {}).get("id")
+        if cid and jid and (cname, jtitle) not in iv_keys:
+            r = req("POST", "/interviews/start", tok, {
+                "job_id": jid, "candidate_id": cid, "question_count": 3,
+                "kinds": ["tech", "project"], "delivery": "link",
+                "expires_in_hours": 72,
+            }, quiet=True)
+            if not r.get("_status"):
+                print(f"  AI 面试 {cname} × {jtitle} → {r.get('invite_path', '')}")
+    scs = req("GET", "/scorecards/?limit=100", tok)
+    sc_list = scs.get("items", scs) if isinstance(scs, dict) else scs
+    tomorrow = today + timedelta(days=1)
+    for cname, jtitle, tm in (
+        ("陈默", "高级前端工程师", "10:00"),
+        ("孙悦", "产品设计师", "14:00"),
+    ):
+        cid, jid = cand_ids.get(cname), jobs.get(jtitle, {}).get("id")
+        exists = any(s.get("candidate_id") == cid for s in sc_list) if cid else True
+        if cid and not exists:
+            req("POST", "/scorecards", tok, {
+                "candidate_id": cid, "job_id": jid,
+                "title": f"{jtitle} · 一面",
+                "scheduled_at": f"{tomorrow}T{tm}:00",
+                "interviewer_ids": [admin_uid],
+                "criteria": [{"name": "专业能力", "dimension": "tech", "weight": 3},
+                             {"name": "沟通表达", "dimension": "general", "weight": 2}],
+            }, quiet=True)
+            print(f"  面试安排 {cname} {tomorrow} {tm}")
+
+    # ---------- 评分规则 ----------
+    print("== 评分规则 ==")
+    rules = {r["name"]: r for r in req("GET", "/scoring-rules", tok)}
+    if "技术岗通用五维" not in rules:
+        req("POST", "/scoring-rules", tok, {
+            "name": "技术岗通用五维", "description": "技术岗位默认评分规则",
+            "dimensions": [
+                {"name": "专业能力", "weight": 30},
+                {"name": "项目经验", "weight": 25},
+                {"name": "沟通协作", "weight": 20},
+                {"name": "学习能力", "weight": 15},
+                {"name": "文化匹配", "weight": 10},
+            ],
+        }, quiet=True)
+        print("  评分规则 技术岗通用五维")
+
+    # ---------- 问卷调查 ----------
+    print("== 问卷调查 ==")
+    surveys = {s["title"]: s for s in req("GET", "/surveys", tok)}
+    if "面试体验反馈" not in surveys:
+        s = req("POST", "/surveys", tok, {
+            "title": "面试体验反馈",
+            "description": "候选人面试流程满意度调查",
+            "questions": [
+                {"type": "rating", "text": "整体面试体验评分", "order": 0},
+                {"type": "single_choice", "text": "面试官专业度如何",
+                 "options": ["很好", "一般", "较差"], "order": 1},
+                {"type": "long_text", "text": "其他建议", "required": False, "order": 2},
+            ],
+        })
+        req("POST", f"/surveys/{s['id']}/status", tok, {"status": "published"})
+        surveys["面试体验反馈"] = s
+        print("  问卷 面试体验反馈 已发布")
+    s1 = req("GET", f"/surveys/{surveys['面试体验反馈']['id']}", tok)
+    if s1.get("status") == "draft":
+        req("POST", f"/surveys/{surveys['面试体验反馈']['id']}/status", tok,
+            {"status": "published"})
+    links = req("GET", f"/surveys/{surveys['面试体验反馈']['id']}/links", tok)
+    if not links and cand_ids.get("陈默"):
+        req("POST", f"/surveys/{surveys['面试体验反馈']['id']}/links", tok,
+            {"candidate_id": cand_ids["陈默"], "expires_in_days": 14})
+        print("  链接已生成(绑定陈默)")
+
+    # ---------- 会议室 + 预约 ----------
+    print("== 会议室 ==")
+    rooms = {r["name"]: r for r in req("GET", "/rooms", tok)}
+    for nm, cap, eq in (
+        ("水星厅", 6, ["投屏", "白板"]),
+        ("火星厅", 10, ["视频会议", "投屏"]),
+    ):
+        if nm not in rooms:
+            rooms[nm] = req("POST", "/rooms", tok,
+                            {"name": nm, "capacity": cap, "equipment": eq})
+    resources = {r["name"]: r for r in req("GET", "/resources", tok)}
+    if "便携投影仪" not in resources:
+        req("POST", "/resources", tok,
+            {"name": "便携投影仪", "type": "equipment"})
+    res_list = req("GET", f"/reservations?start={today}T00:00:00&end={today + timedelta(days=30)}T00:00:00", tok)
+    if not any(r["title"] == "前端一面·陈默" for r in res_list):
+        req("POST", "/reservations", tok, {
+            "kind": "room", "room_id": rooms["水星厅"]["id"],
+            "title": "前端一面·陈默",
+            "starts_at": f"{tomorrow}T10:00:00", "ends_at": f"{tomorrow}T11:00:00",
+            "interviewer_ids": [admin_uid],
+        }, quiet=True)
+        print(f"  预约 水星厅 {tomorrow} 10:00")
+
+    # ---------- 公告 ----------
+    print("== 公告 ==")
+    anns = {a["title"] for a in req("GET", "/announcements?limit=100", tok).get("items", [])}
+    for t_, c_ in (
+        ("Q4 全员大会通知", "本周五 15:00 三层大会议室,同步年度目标进展。"),
+        ("新版报销流程上线", "报销单现在支持明细子表与在线支付标记,详见知识库。"),
+        ("周五弹性办公提醒", "本月最后一个周五可申请远程办公。"),
+    ):
+        if t_ not in anns:
+            req("POST", "/announcements", tok, {"title": t_, "content": c_}, quiet=True)
+    print("  公告就绪")
+
+    # ---------- 员工服务请求 ----------
+    print("== 员工请求 ==")
+    my_reqs = req("GET", "/me/requests", emp1) or []
+    my_subjects = {r["subject"] for r in my_reqs}
+    if "申请新款笔记本" not in my_subjects:
+        req("POST", "/me/requests", emp1, {
+            "kind": "equipment", "subject": "申请新款笔记本",
+            "detail": "现用 Mac 已 4 年,编译明显变慢,申请换新。"}, quiet=True)
+    my_reqs2 = req("GET", "/me/requests", emp2) or []
+    if "Python 进阶培训报名" not in {r["subject"] for r in my_reqs2}:
+        req("POST", "/me/requests", emp2, {
+            "kind": "training", "subject": "Python 进阶培训报名",
+            "detail": "申请参加下月外部培训课程,预算约 3000 元。"}, quiet=True)
+    print("  请求就绪")
+
+    # ---------- HR 工单 ----------
+    print("== HR 工单 ==")
+    my_cases = req("GET", "/me/cases", emp2) or []
+    if "VPN 无法连接" not in {c["subject"] for c in my_cases}:
+        c = req("POST", "/me/cases", emp2, {
+            "kind": "it", "priority": "high", "subject": "VPN 无法连接",
+            "description": "居家办公连不上公司 VPN,影响代码拉取,请尽快处理。"}, quiet=True)
+        if not c.get("_status"):
+            req("POST", f"/cases/{c['id']}/assign", tok,
+                {"assignee_user_id": admin_uid}, quiet=True)
+            req("POST", f"/cases/{c['id']}/status", tok,
+                {"status": "in_progress"}, quiet=True)
+            print(f"  工单 VPN 无法连接 → 已指派处理中")
+    my_cases1 = req("GET", "/me/cases", emp1) or []
+    if "工资条金额疑问" not in {c["subject"] for c in my_cases1}:
+        req("POST", "/me/cases", emp1, {
+            "kind": "payroll", "subject": "工资条金额疑问",
+            "description": "本月绩效奖金与考核结果不符,请 HR 核对。"}, quiet=True)
+        print("  工单 工资条金额疑问")
+
+    # ---------- 知识库 ----------
+    print("== 知识库 ==")
+    arts = {a["title"] for a in req("GET", "/knowledge/articles?limit=200", tok).get("items", [])}
+    for t_, cat_, c_ in (
+        ("报销制度说明", "policy",
+         "报销需在发生后 30 天内提交;单笔超 500 元需附发票照片;差旅报销按城市等级定额。"),
+        ("年假与调休 FAQ", "faq",
+         "年假按自然年发放,入职满一年后可全额使用;加班审批通过后按 8h=1 天折算调休额度。"),
+        ("新人 IT 指引", "it",
+         "入职首日领取笔记本并开通企业邮箱;VPN 账号由 IT 在 24h 内下发;WiFi 使用 HRON-Staff。"),
+    ):
+        if t_ not in arts:
+            req("POST", "/knowledge/articles", tok,
+                {"title": t_, "category": cat_, "content": c_, "tags": ["seed"]},
+                quiet=True)
+    print("  知识库就绪")
+
+    # ---------- 职位编制 ----------
+    print("== 职位编制 ==")
+    positions = req("GET", "/positions", tok).get("items", [])
+    pos_titles = {p["title"] for p in positions}
+    for t_, ou in (("资深前端工程师", dev), ("后端工程师", dev), ("产品设计师", prod)):
+        if t_ not in pos_titles:
+            req("POST", "/positions", tok,
+                {"title": t_, "org_unit_id": ou["id"],
+                 "note": "年度编制内"}, quiet=True)
+    positions = req("GET", "/positions", tok).get("items", [])
+    pos = next((p for p in positions
+                if p["title"] == "资深前端工程师" and not p.get("incumbent_id")), None)
+    if pos:
+        req("POST", f"/positions/{pos['id']}/fill", tok,
+            {"employee_id": emp_by_no["EMP002"]["id"]}, quiet=True)
+    print(f"  编制 {len(positions)} 个")
+
+    # ---------- 项目 ----------
+    print("== 项目 ==")
+    projs = req("GET", "/projects", tok).get("items", [])
+    proj_names = {p["name"] for p in projs}
+    for nm, desc in (
+        ("新版候选人门户", "候选人侧门户改版,目标提升面试完成率"),
+        ("薪酬体系年度评审", "对齐市场分位,完成全员薪酬区间评审"),
+    ):
+        if nm not in proj_names:
+            req("POST", "/projects", tok, {
+                "name": nm, "description": desc, "status": "active",
+                "owner_employee_id": emp_by_no["EMP002"]["id"],
+                "start_date": str(today - timedelta(days=10)),
+            }, quiet=True)
+    print("  项目就绪")
+
+    # ---------- 排班 ----------
+    print("== 排班 ==")
+    shift_map = {s["name"]: s for s in req("GET", "/shifts", tok)}
+    for nm, st, en, col in (("早班", 540, 1020, "#22c55e"), ("晚班", 840, 1380, "#f59e0b")):
+        if nm not in shift_map:
+            shift_map[nm] = req("POST", "/shifts", tok,
+                                {"name": nm, "start_min": st, "end_min": en,
+                                 "required": 2, "color": col})
+    assigns = req("GET", "/shifts/assignments?limit=200", tok).get("items", [])
+    next_mon = today + timedelta(days=(7 - today.weekday()) % 7 or 7)
+    for no, sname, off in (("EMP002", "早班", 0), ("EMP003", "晚班", 0), ("EMP002", "早班", 1)):
+        e = emp_by_no[no]
+        day = next_mon + timedelta(days=off)
+        if not any(a["employee_id"] == e["id"] and a["day"] == str(day) for a in assigns):
+            req("POST", "/shifts/assignments", tok, {
+                "employee_id": e["id"], "shift_id": shift_map[sname]["id"],
+                "day": str(day)}, quiet=True)
+    print(f"  班次 {[s['name'] for s in shift_map.values()]}")
+
+    # ---------- 薪酬区间 + 调薪评审 ----------
+    print("== 薪酬 ==")
+    bands = {b["name"] for b in req("GET", "/salary-bands?limit=100", tok).get("items", [])}
+    for nm, lo, hi in (("P5 高级工程师", 20000, 35000), ("P3 中级工程师", 12000, 20000)):
+        if nm not in bands:
+            req("POST", "/salary-bands", tok, {
+                "name": nm, "gross_min": lo, "gross_max": hi,
+                "org_unit_id": dev["id"]}, quiet=True)
+    matrix = req("GET", "/comp-review/matrix?cycle=default", tok, quiet=True)
+    if not matrix.get("_status"):
+        decided = {d["employee_id"] for d in matrix.get("decisions", [])}
+        for no, pct in (("EMP002", 8.0), ("EMP003", 5.0)):
+            e = emp_by_no[no]
+            if e["id"] not in decided:
+                req("POST", "/comp-review/decisions", tok, {
+                    "employee_id": e["id"], "cycle": "default",
+                    "final_pct": pct, "note": "年度调薪"}, quiet=True)
+
+    # ---------- 自动化规则 ----------
+    print("== 自动化 ==")
+    rules_auto = req("GET", "/automations?limit=100", tok).get("items", [])
+    rule_names = {r["name"] for r in rules_auto}
+    if "新员工入职提醒" not in rule_names:
+        req("POST", "/automations", tok, {
+            "name": "新员工入职提醒", "entity_type": "employee",
+            "trigger_kind": "audit", "trigger": "create",
+            "action": "notify", "title_tpl": "新员工已建档:{{name}}",
+            "body_tpl": "请 HR 完成后续入职任务安排。",
+        }, quiet=True)
+    if "报销审批通过提醒" not in rule_names:
+        req("POST", "/automations", tok, {
+            "name": "报销审批通过提醒", "entity_type": "expense_claim",
+            "trigger_kind": "audit", "trigger": "approve",
+            "action": "notify", "title_tpl": "报销单已通过:{{title}}",
+        }, quiet=True)
+    print("  自动化就绪")
+
+    # ---------- 收藏筛选 ----------
+    filters = req("GET", "/saved-filters", tok)
+    filter_names = {f["name"] for f in filters}
+    for nm, page, params in (
+        ("高分候选人", "talents", {"min_score": 80}),
+        ("在途面试", "interviews", {"status": "in_progress"}),
+    ):
+        if nm not in filter_names:
+            req("POST", "/saved-filters", tok,
+                {"page": page, "name": nm, "params": params}, quiet=True)
+
+    # ---------- 外联活动 ----------
+    camps = req("GET", "/campaigns?limit=100", tok).get("items", [])
+    if not any(c["name"] == "银牌候选人召回" for c in camps):
+        req("POST", "/campaigns", tok, {
+            "name": "银牌候选人召回",
+            "subject": "新岗位机会邀请",
+            "body_text": "您好,我们有与您经历高度匹配的新岗位,欢迎回访。",
+            "filter": {"query": ""},
+        }, quiet=True)
+        print("  外联活动 银牌候选人召回(草稿)")
+
+    # ---------- 审批策略 ----------
+    pols = req("GET", "/approvals/policies?limit=100", tok).get("items", [])
+    if not any(p["request_type"] == "employee_request" for p in pols):
+        req("POST", "/approvals/policies", tok, {
+            "name": "员工请求上级审批", "request_type": "employee_request",
+            "steps": [{"resolver": "manager", "label": "直属上级"}],
+        }, quiet=True)
+        print("  审批策略 员工请求→上级")
+
+    # ---------- 匹配评估(异步,尽力触发不等待) ----------
+    print("== AI 匹配触发 ==")
+    for jtitle in ("高级前端工程师", "Python 后端工程师"):
+        jid = jobs.get(jtitle, {}).get("id")
+        if jid:
+            r = req("POST", f"/matches/job/{jid}/evaluate-all", tok, quiet=True)
+            if not r.get("_status"):
+                print(f"  {jtitle} 匹配评估已排队")
 
     # ---------- 历史打卡 SQL ----------
     emps_for_sql = [emp_by_no["EMP002"], emp_by_no["EMP003"], emp_by_no["EMP004"]]

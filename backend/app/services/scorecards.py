@@ -128,7 +128,7 @@ def aggregate(
 
     分歧标记:任一维度跨面试官极差 >= 2,或表态同时出现 recommend 与 reject。
     """
-    crit = {c["key"]: c for c in (scorecard.criteria or [])}
+    crit = {c["key"]: c for c in (scorecard.criteria or []) if c.get("key")}
     per_crit: dict[str, list[int]] = {k: [] for k in crit}
     ratings: list[int] = []
     tally = {v: 0 for v in VERDICTS}
@@ -150,9 +150,9 @@ def aggregate(
         criteria_out.append(
             {
                 "key": k,
-                "name": c["name"],
-                "dimension": c["dimension"],
-                "weight": c["weight"],
+                "name": c.get("name") or k,
+                "dimension": c.get("dimension") or "general",
+                "weight": c.get("weight", 1),
                 "avg": avg,
                 "min": min(vals) if vals else None,
                 "max": max(vals) if vals else None,
@@ -161,7 +161,7 @@ def aggregate(
         )
         if spread >= 2:
             disagreements.append(
-                {"kind": "criterion", "name": c["name"], "spread": spread}
+                {"kind": "criterion", "name": c.get("name") or k, "spread": spread}
             )
     if tally["recommend"] and tally["reject"]:
         disagreements.append(

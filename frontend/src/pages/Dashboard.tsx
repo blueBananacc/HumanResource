@@ -1,4 +1,4 @@
-import { Sparkles, FileText, Eye, EyeOff, Trash2, ArrowUpRight, Check } from "lucide-react";
+import { Sparkles, FileText, Eye, EyeOff, Trash2, ArrowUpRight, Check, ChevronDown, ChevronUp } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -453,6 +453,12 @@ function ActivityCard() {
   const unread = notes ?? [];
   const items = feed ?? [];
 
+  const COLLAPSED_LIMIT = 10;
+  const [expanded, setExpanded] = useState(false);
+  const unreadVisible = expanded ? unread : unread.slice(0, COLLAPSED_LIMIT);
+  const itemsVisible = expanded ? items : items.slice(0, Math.max(0, COLLAPSED_LIMIT - unreadVisible.length));
+  const totalRows = unread.length + items.length;
+
   return (
     <div className="bg-white border border-[var(--color-border-subtle)] rounded-xl shadow-[var(--shadow-card)] flex flex-col pb-3">
       <CardHeader
@@ -475,7 +481,7 @@ function ActivityCard() {
         </div>
       ) : (
         <>
-          {unread.map((n) => {
+          {unreadVisible.map((n) => {
             const inner = (
               <div className="flex flex-col flex-1 min-w-0 gap-0.5">
                 <span className="text-[13px] font-body text-[var(--color-text-primary)]">{n.title}</span>
@@ -508,7 +514,7 @@ function ActivityCard() {
               </div>
             );
           })}
-          {items.map((it, i) => {
+          {itemsVisible.map((it, i) => {
             const inner = (
               <>
                 <span className="text-[13px] font-body text-[var(--color-text-secondary)] flex-1 min-w-0 truncate">
@@ -557,6 +563,16 @@ function ActivityCard() {
               </div>
             );
           })}
+          {totalRows > COLLAPSED_LIMIT && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="mx-5 mt-1 py-2 border-t border-[var(--color-border-row)] text-[12px] font-body text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] flex items-center justify-center gap-1 transition-colors"
+            >
+              {expanded ? "收起" : `展开全部(还有 ${totalRows - COLLAPSED_LIMIT} 条)`}
+              {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+          )}
         </>
       )}
     </div>
