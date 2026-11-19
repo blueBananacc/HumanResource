@@ -27,7 +27,7 @@ type Skill = {
   tag: string;
 };
 
-const SKILLS: Skill[] = [
+export const SKILLS: Skill[] = [
   {
     icon: UserRoundSearch,
     title: "一句话搜人",

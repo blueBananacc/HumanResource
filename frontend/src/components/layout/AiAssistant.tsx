@@ -6,6 +6,7 @@ import {
   Copy,
   FileText,
   History,
+  LayoutGrid,
   Loader2,
   Mail,
   PanelRight,
@@ -27,6 +28,7 @@ import { cn } from "@/lib/utils";
 import { fetchJSON, getToken } from "@/lib/api";
 import { MarkdownContent } from "@/components/ui/markdown";
 import { ToolResultCard } from "@/components/assistant/ToolResultCard";
+import { SkillsView } from "@/components/assistant/SkillsView";
 
 /** HiBubble 气泡形品牌头像(规范 §6:小尺寸用气泡标识)。 */
 export function AiAvatar({ size = 32 }: { size?: number }) {
@@ -412,7 +414,7 @@ function ChatPanel({
   const [cap, setCap] = useState<Capability | null>(null);
   const [pending, setPending] = useState(false);
   const [convId, setConvId] = useState<string | null>(null);
-  const [view, setView] = useState<"chat" | "history">("chat");
+  const [view, setView] = useState<"chat" | "history" | "skills">("chat");
   const [convs, setConvs] = useState<ConvMeta[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   // 消息反馈(赞/踩)与复制态,先本地可点,接口后续再接
@@ -425,6 +427,7 @@ function ChatPanel({
 
   // 宽布局下左侧常驻会话列表,历史视图无意义
   const showHistory = view === "history" && !wide;
+  const showSkills = view === "skills";
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
@@ -708,13 +711,13 @@ function ChatPanel({
           dragging ? "cursor-grabbing" : "cursor-grab",
         )}
       >
-        {showHistory ? (
+        {showHistory || showSkills ? (
           <HeaderBtn icon={ChevronLeft} label="返回对话" onClick={() => setView("chat")} />
         ) : (
           <AiAvatar size={22} />
         )}
         <span className="font-heading font-semibold text-[14px] text-[var(--color-text-primary)] flex-1 truncate">
-          {showHistory ? "历史会话" : "HROnfire AI 助手"}
+          {showHistory ? "历史会话" : showSkills ? "AI 技能中心" : "HROnfire AI 助手"}
         </span>
         {!wide && (
           <>
@@ -726,6 +729,11 @@ function ChatPanel({
             />
           </>
         )}
+        <HeaderBtn
+          icon={LayoutGrid}
+          label="AI 技能中心"
+          onClick={() => (view === "skills" ? setView("chat") : setView("skills"))}
+        />
         <HeaderBtn
           icon={docked ? PictureInPicture2 : PanelRight}
           label={docked ? "浮动窗口" : "贴靠右侧"}
@@ -779,6 +787,14 @@ function ChatPanel({
                 onRemove={removeConv}
               />
             </div>
+          ) : showSkills ? (
+            <SkillsView
+              onPick={(p) => {
+                setInput(p);
+                setView("chat");
+                inputRef.current?.focus();
+              }}
+            />
           ) : (
             <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-5">
               <div className={cn(wide && "mx-auto w-full max-w-[760px]")}>
