@@ -2,7 +2,7 @@
 
 四种 source(license 来源/有效性):
 - ``none``    : 试用期已过且没有有效 license
-- ``trial``   : 处于 30 天试用期内
+- ``trial``   : 处于 180 天试用期内
 - ``active``  : 有合法且未过期的 license
 - ``expired`` : 有 license 但已过期
 
@@ -95,7 +95,7 @@ _FALLBACK_EDITION = "community"
 TRIAL_FEATURES = EDITIONS[_TRIAL_EDITION]["features"]
 ALWAYS_ON = EDITIONS[_FALLBACK_EDITION]["features"]
 
-TRIAL_DAYS = 30
+TRIAL_DAYS = 180
 
 
 class LicenseState(TypedDict):

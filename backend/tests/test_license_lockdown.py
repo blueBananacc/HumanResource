@@ -168,7 +168,7 @@ def test_full_active_license_unlocks_interview(keypair, db_session):
 
 
 def test_no_license_falls_back_to_trial(db_session):
-    """无 license 行:回退到 trial(30 天起算自第一个 tenant 创建时间)。
+    """无 license 行:回退到 trial(180 天起算自第一个 tenant 创建时间)。
 
     本仓库测试环境的 docker-compose 已经 bootstrap 了 admin tenant,故 trial 有起点。
     """
@@ -176,7 +176,7 @@ def test_no_license_falls_back_to_trial(db_session):
     db_session.commit()
     client = TestClient(app)
     body = client.get("/api/license/status").json()
-    # 可能是 trial(30 天内)或 none(超过)。docker-compose 刚启动时一定是 trial。
+    # 可能是 trial(180 天内)或 none(超过)。docker-compose 刚启动时一定是 trial。
     assert body["source"] in ("trial", "none")
     # 三档改造:trial 等价 professional 全功能;none(过期)降到 community
     # 两种状态下 interview.text 都 True(community 也含核心 4 项)
